@@ -9,25 +9,29 @@ const CALENDARS: string[] = (() => {
     return ["primary"];
   }
 })();
-const TIME_ZONE = "America/Los_Angeles";
-//  America/Los_Angeles
-//  America/Denver
-//  America/Chicago
-//  Europe/London
-//  Europe/Berlin
-const WORKDAYS = [1, 2, 3, 4, 5];
+// Zona horaria base del negocio. Todos los eventos se crean en hora de Costa Rica.
+// Los clientes ven los horarios en su propia zona horaria (manejado en el frontend).
+const TIME_ZONE = "America/Costa_Rica";
+// Días de la semana habilitados como ventana de búsqueda (0=dom, 1=lun, ..., 6=sáb).
+// Se incluye sábado porque pilates es solo sábados. La disponibilidad real la controla
+// el Google Calendar de Dani/instructora — estos días son solo el rango de búsqueda.
+const WORKDAYS = [1, 2, 3, 4, 5, 6];
+// Ventana horaria de búsqueda de slots. Amplia a propósito: el Calendar real de Dani
+// filtra los horarios bloqueados. start/end en horas locales (TIME_ZONE).
 const WORKHOURS = {
-  start: 9,
-  end: 16,
+  start: 7,
+  end: 20,
 };
-const DAYS_IN_ADVANCE = 28;
+// Máximo de días hacia adelante que el portal muestra disponibilidad (8 semanas = 56 días).
+// Confirmado con Dani en reunión del 2 jul 2026.
+const DAYS_IN_ADVANCE = 56;
 //high numbered days in advance cause significant loading time slow down
 const TIMESLOT_DURATION = 30;
 
 const TSDURMS = TIMESLOT_DURATION * 60000;
 
 function doGet(): GoogleAppsScript.HTML.HtmlOutput {
-  return HtmlService.createHtmlOutputFromFile("dist/index")
+  return HtmlService.createHtmlOutputFromFile("index")
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag("viewport", "width=device-width, initial-scale=1");
 }
