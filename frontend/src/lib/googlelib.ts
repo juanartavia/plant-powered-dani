@@ -23,7 +23,7 @@ export const GoogleLib = {
               return {
                 withFailureHandler: (_cb: any) => {
                   return {
-                    fetchAvailability: () => {},
+                    fetchAvailability: (_type: string) => {},
                     bookTimeslot: (...args: any) => {
                       console.log("Booked timeslot", args);
                     },

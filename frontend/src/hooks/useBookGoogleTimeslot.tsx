@@ -11,17 +11,25 @@ export function useBookGoogleTimeslot() {
     setStatus("idle");
   }, []);
   const makeBooking = useCallback(function ({
+    type,
     timeslot,
     name,
     email,
     phone,
-    note,
+    birthdate,
+    cedula,
+    language,
+    modalidad,
   }: {
+    type: string;
     timeslot: Date;
     name: string;
     email: string;
     phone: string;
-    note?: string;
+    birthdate: string;
+    cedula: string;
+    language: string;
+    modalidad: string;
   }) {
     try {
       setStatus("pending");
@@ -35,13 +43,22 @@ export function useBookGoogleTimeslot() {
             new Error("Could not book timeslot, please try again - " + err)
           );
         })
-        .bookTimeslot(timeslot.toISOString(), name, email, phone, note);
+        .bookTimeslot(
+          type,
+          timeslot.toISOString(),
+          name,
+          email,
+          phone,
+          cedula,
+          birthdate,
+          language,
+          modalidad
+        );
     } catch (err) {
       console.error(err);
       setStatus("error");
       setError(new Error("Could not book timeslot, please try again - " + err));
     }
-  },
-  []);
+  }, []);
   return [status, error, makeBooking, reset] as const;
 }

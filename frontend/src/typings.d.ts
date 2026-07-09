@@ -17,7 +17,7 @@ interface GoogleLib {
         cb: (arg0: { timeslots: string[]; durationMinutes: number }) => void
       ) => {
         withFailureHandler: (_cb: any) => {
-          fetchAvailability: () => void;
+          fetchAvailability: (type: string) => void;
           bookTimeslot: (...args: any[]) => void;
         };
       };

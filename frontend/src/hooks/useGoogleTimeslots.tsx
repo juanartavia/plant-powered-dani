@@ -1,7 +1,7 @@
 import { GoogleLib } from "@/lib/googlelib";
 import { useCallback, useEffect, useState } from "react";
 
-export function useGoogleTimeslots() {
+export function useGoogleTimeslots(type: string) {
   const [availableGoogleSlots, setAvailableGoogleSlots] = useState<Date[]>([]);
   const [durationMinutes, setDurationMinutes] = useState(30);
   const [error, setError] = useState<Error | null>(null);
@@ -31,15 +31,16 @@ export function useGoogleTimeslots() {
           setStatus("success");
         })
         .withFailureHandler(function (err: Error) {
+          setStatus("error");
           setError(err);
         })
-        .fetchAvailability();
+        .fetchAvailability(type);
     } catch (error) {
       console.error(error);
       setStatus("error");
       setError(error as Error);
     }
-  }, []);
+  }, [type]);
 
   return [availableGoogleSlots, durationMinutes, status, error, reset] as const;
 }
