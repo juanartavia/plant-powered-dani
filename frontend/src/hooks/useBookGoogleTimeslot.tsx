@@ -13,23 +13,27 @@ export function useBookGoogleTimeslot() {
   const makeBooking = useCallback(function ({
     type,
     timeslot,
-    name,
+    nombre,
+    apellido,
     email,
     phone,
     birthdate,
     cedula,
     language,
     modalidad,
+    clientTimezone,
   }: {
     type: string;
     timeslot: Date;
-    name: string;
+    nombre: string;
+    apellido: string;
     email: string;
     phone: string;
     birthdate: string;
     cedula: string;
     language: string;
     modalidad: string;
+    clientTimezone: string;
   }) {
     try {
       setStatus("pending");
@@ -46,13 +50,15 @@ export function useBookGoogleTimeslot() {
         .bookTimeslot(
           type,
           timeslot.toISOString(),
-          name,
+          nombre,
+          apellido,
           email,
           phone,
           cedula,
           birthdate,
           language,
-          modalidad
+          modalidad,
+          clientTimezone
         );
     } catch (err) {
       console.error(err);

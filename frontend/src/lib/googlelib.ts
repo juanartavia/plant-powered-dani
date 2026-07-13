@@ -10,22 +10,24 @@ export const GoogleLib = {
       return {
         script: {
           run: {
-            withSuccessHandler: (
-              cb: (arg0: {
-                timeslots: string[];
-                durationMinutes: number;
-              }) => void
-            ) => {
-              cb({
-                timeslots: dummyData,
-                durationMinutes: 30,
-              });
+            withSuccessHandler: (cb: (arg0: any) => void) => {
               return {
-                withFailureHandler: (_cb: any) => {
+                withFailureHandler: (_cb: (err: Error) => void) => {
                   return {
-                    fetchAvailability: (_type: string) => {},
+                    fetchAvailability: (_type: string) => {
+                      cb({ timeslots: dummyData, durationMinutes: 30 });
+                    },
                     bookTimeslot: (...args: any) => {
                       console.log("Booked timeslot", args);
+                      cb("dummy-token");
+                    },
+                    findClientByEmail: (_correo: string) => {
+                      console.log("Demo mode: no existing client found");
+                      cb(null);
+                    },
+                    upsertClient: (data: unknown) => {
+                      console.log("Demo mode: upsertClient", data);
+                      cb(undefined);
                     },
                   };
                 },

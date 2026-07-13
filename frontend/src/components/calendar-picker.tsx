@@ -12,10 +12,13 @@ import { Label } from "@/components/ui/label";
 import { OkDialog } from "@/components/ui/ok-dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useBookGoogleTimeslot } from "@/hooks/useBookGoogleTimeslot";
+import { useFindClientByEmail } from "@/hooks/useFindClientByEmail";
 import { useGoogleTimeslots } from "@/hooks/useGoogleTimeslots";
+import { useUpsertClient } from "@/hooks/useUpsertClient";
 
 import { ModeToggle } from "@/components/mode-toggle";
-import { Else, Show, When } from "@/components/WhenShowElse";
+import { Show, When } from "@/components/WhenShowElse";
+import { ClientRecord } from "@/models/ClientRecord";
 import { Timeslots } from "@/models/Timeslots";
 import { addMonths, format } from "date-fns";
 import { es as esLocale } from "date-fns/locale";
@@ -39,6 +42,9 @@ declare global {
 
 export type UiLanguage = "es" | "en";
 
+// Pasos del flujo: correo (busca cliente) -> datos del cliente (precargados si existe) -> calendario (confirma cita).
+type Step = "email" | "form" | "calendar";
+
 // Todas las cadenas visibles de la interfaz, por idioma. Fuente única de verdad para el switch ES/EN.
 const STRINGS = {
   es: {
@@ -54,6 +60,8 @@ const STRINGS = {
     continue: "Continuar",
     back: "Atrás",
     send: "Enviar",
+    confirmAppointment: "Confirmar cita",
+    enterEmailPrompt: "Ingresa tu correo electrónico para continuar",
     selectADate: "Selecciona una fecha",
     dateNotSelected: "Fecha no seleccionada",
     timeNotSelected: "Hora no seleccionada",
@@ -64,7 +72,8 @@ const STRINGS = {
     previousMonth: "Mes anterior",
     nextMonth: "Mes siguiente",
     form: {
-      name: "Nombre y apellido",
+      nombre: "Nombre",
+      apellido: "Apellido",
       email: "Correo electrónico",
       phone: "Número de teléfono",
       cedula: "Cédula",
@@ -89,6 +98,8 @@ const STRINGS = {
     continue: "Continue",
     back: "Back",
     send: "Send",
+    confirmAppointment: "Confirm appointment",
+    enterEmailPrompt: "Enter your email to continue",
     selectADate: "Select a date",
     dateNotSelected: "Date not selected",
     timeNotSelected: "Time not selected",
@@ -99,7 +110,8 @@ const STRINGS = {
     previousMonth: "Previous month",
     nextMonth: "Next month",
     form: {
-      name: "Full name",
+      nombre: "First name",
+      apellido: "Last name",
       email: "Email",
       phone: "Phone number",
       cedula: "ID number",
@@ -130,7 +142,16 @@ export function CalendarPicker() {
     undefined
   );
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
-  const [showForm, setShowForm] = useState(false);
+  const [step, setStep] = useState<Step>("email");
+
+  // Paso 1: correo ingresado y resultado de la búsqueda (null = cliente nuevo).
+  const [clientEmail, setClientEmail] = useState("");
+  const [existingClient, setExistingClient] = useState<ClientRecord | null>(null);
+
+  // Paso 2: datos confirmados del cliente (tras upsert) + modalidad elegida, usados en Paso 3 para reservar.
+  const [confirmedClient, setConfirmedClient] = useState<ClientRecord | null>(null);
+  const [confirmedModalidad, setConfirmedModalidad] = useState("");
+
   const [
     googleSlots,
     ,
@@ -140,6 +161,11 @@ export function CalendarPicker() {
   ] = useGoogleTimeslots(appointmentType);
   const [bookingStatus, bookingError, makeBooking, resetBookGoogle] =
     useBookGoogleTimeslot();
+  const [findClientStatus, findClientError, findClient, resetFindClient] =
+    useFindClientByEmail();
+  const [upsertStatus, upsertError, upsertClientData, resetUpsertClient] =
+    useUpsertClient();
+
   const availableSlots = useMemo(
     () => new Timeslots(googleSlots, timezone),
     [googleSlots, timezone]
@@ -168,20 +194,55 @@ export function CalendarPicker() {
     setSelectedTimeSlot(timeSlot);
   };
 
-  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+  const handleEmailSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
-    if (!selectedTimeSlot) throw new Error("No timeslot selected");
+    const correo = formData.get("correo")?.toString().trim() || "";
+    if (!correo) return;
+    setClientEmail(correo);
+    findClient(correo, (client) => {
+      setExistingClient(client);
+      if (client && (client.idioma === "es" || client.idioma === "en")) {
+        setUiLanguage(client.idioma);
+      }
+      setStep("form");
+    });
+  };
+
+  const handleClientFormSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const formData = new FormData(e.currentTarget);
+    const record: ClientRecord = {
+      correo: clientEmail,
+      nombre:           formData.get("nombre")?.toString()           || "",
+      apellido:         formData.get("apellido")?.toString()         || "",
+      telefono:         formData.get("phone")?.toString()            || "",
+      cedula:            formData.get("cedula")?.toString()          || "",
+      fecha_nacimiento: formData.get("birthdate")?.toString()        || "",
+      idioma:           formData.get("language")?.toString()         || "",
+    };
+    const modalidad = formData.get("modalidad")?.toString() || "";
+    upsertClientData(record, () => {
+      setConfirmedClient(record);
+      setConfirmedModalidad(modalidad);
+      setStep("calendar");
+    });
+  };
+
+  const handleConfirmBooking = () => {
+    if (!selectedTimeSlot || !confirmedClient) return;
     makeBooking({
       type: appointmentType,
       timeslot: selectedTimeSlot,
-      name:      formData.get("name")?.toString()      || "",
-      email:     formData.get("email")?.toString()     || "",
-      phone:     formData.get("phone")?.toString()     || "",
-      birthdate: formData.get("birthdate")?.toString() || "",
-      cedula:    formData.get("cedula")?.toString()    || "",
-      language:  formData.get("language")?.toString()  || "",
-      modalidad: formData.get("modalidad")?.toString() || "",
+      nombre: confirmedClient.nombre,
+      apellido: confirmedClient.apellido,
+      email: confirmedClient.correo,
+      phone: confirmedClient.telefono,
+      birthdate: confirmedClient.fecha_nacimiento,
+      cedula: confirmedClient.cedula,
+      language: confirmedClient.idioma,
+      modalidad: confirmedModalidad,
+      clientTimezone: timezone,
     });
   };
 
@@ -196,9 +257,15 @@ export function CalendarPicker() {
     return !availableSlots.hasSlotsForDate(date);
   };
 
-  const handleBack = () => {
-    setShowForm(false);
+  const handleBackToEmail = () => {
+    setStep("email");
+    resetFindClient();
+  };
+
+  const handleBackToForm = () => {
+    setStep("form");
     setSelectedTimeSlot(undefined);
+    resetUpsertClient();
   };
 
   if (selectedTimeSlot && bookingStatus === "success") {
@@ -229,9 +296,19 @@ export function CalendarPicker() {
         description={bookingError?.message ?? "Unknown error 2"}
         confirm={resetBookGoogle}
       />
+      <OkDialog
+        open={findClientStatus === "error"}
+        description={findClientError?.message ?? "Unknown error 3"}
+        confirm={resetFindClient}
+      />
+      <OkDialog
+        open={upsertStatus === "error"}
+        description={upsertError?.message ?? "Unknown error 4"}
+        confirm={resetUpsertClient}
+      />
 
       <Card className="sm:w-[600px] mx-auto min-h-[400px] space-y-4 relative">
-        <When condition={slotsStatus === "pending"}>
+        <When condition={slotsStatus === "pending" || findClientStatus === "pending" || upsertStatus === "pending"}>
           <Show>
             <div className="bg-primary absolute rounded-xl z-50 opacity-70 inset-0">
               <div className="flex justify-center items-center h-full flex-col stroke-primary-foreground">
@@ -247,109 +324,130 @@ export function CalendarPicker() {
           <ModeToggle className="md:hidden absolute right-1 top-1" />
           <ModeToggle className="absolute -right-10 -top-10 md:block hidden" />
         </div>
-        <When condition={!showForm}>
-          <Show>
-            <CardHeader className="max-w-full">
-              <div className="flex justify-between items-center flex-col sm:flex-row gap-4 relative">
-                <CardTitle className="max-w-64">
-                  <div className="overflow-hidden">
-                    <div className="whitespace-nowrap overflow-ellipsis overflow-hidden">
-                      {title}
-                    </div>
-                  </div>
-                </CardTitle>
 
-                <div className="flex items-center gap-4 flex-wrap justify-end">
-                  <div className="flex items-center gap-2">
-                    <Label className="text-sm text-muted-foreground">
-                      {t.yourLanguage}
-                    </Label>
-                    <LanguageDropdown value={uiLanguage} onChange={setUiLanguage} />
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Label className="text-sm text-muted-foreground">
-                      {t.yourTimezone}
-                    </Label>
-                    <TimezoneDropdown />
+        {step === "email" && (
+          <CardHeader className="max-w-full">
+            <div className="flex justify-between items-center flex-col sm:flex-row gap-4 relative">
+              <CardTitle className="max-w-64">
+                <div className="overflow-hidden">
+                  <div className="whitespace-nowrap overflow-ellipsis overflow-hidden">
+                    {title}
                   </div>
                 </div>
+              </CardTitle>
+
+              <div className="flex items-center gap-4 flex-wrap justify-end">
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm text-muted-foreground">
+                    {t.yourLanguage}
+                  </Label>
+                  <LanguageDropdown value={uiLanguage} onChange={setUiLanguage} />
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm text-muted-foreground">
+                    {t.yourTimezone}
+                  </Label>
+                  <TimezoneDropdown />
+                </div>
               </div>
-            </CardHeader>
-          </Show>
-          <Else>
-            <h2 className="text-xl font-semibold mb-4 pt-6 px-6">
-              {title} —{" "}
-              {selectedDate
-                ? format(selectedDate, "MMMM d, yyyy", dateFnsLocale)
-                : t.dateNotSelected}{" "}
-              {t.at}{" "}
-              {selectedTimeSlot
-                ? selectedTimeSlot.toLocaleTimeString([], {
-                    hour: "2-digit",
-                    minute: "2-digit",
-                  })
-                : t.timeNotSelected}
-            </h2>
-          </Else>
-        </When>
+            </div>
+          </CardHeader>
+        )}
+        {step === "form" && (
+          <CardHeader className="max-w-full">
+            <CardTitle>{title}</CardTitle>
+          </CardHeader>
+        )}
+        {step === "calendar" && (
+          <h2 className="text-xl font-semibold mb-4 pt-6 px-6">
+            {title} —{" "}
+            {selectedDate
+              ? format(selectedDate, "MMMM d, yyyy", dateFnsLocale)
+              : t.dateNotSelected}{" "}
+            {t.at}{" "}
+            {selectedTimeSlot
+              ? selectedTimeSlot.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : t.timeNotSelected}
+          </h2>
+        )}
 
         <CardContent className="p-6 pt-0 sm:pt-2 pb-0">
-          <When condition={!showForm}>
-            <Show>
-              <CalendarTimeslotPicker
-                handlePreviousMonth={handlePreviousMonth}
-                currentMonth={currentMonth}
-                handleNextMonth={handleNextMonth}
-                selectedDate={selectedDate}
-                handleDateSelect={handleDateSelect}
-                setCurrentMonth={setCurrentMonth}
-                isDayDisabled={isDayDisabled}
-                availableSlots={availableSlots}
-                selectedTimeSlot={selectedTimeSlot}
-                handleTimeSlotSelect={handleTimeSlotSelect}
-                uiLanguage={uiLanguage}
-              />
-            </Show>
-            <Else>
-              <ContactForm
-                handleSubmit={handleSubmit}
-                type={appointmentType}
-                uiLanguage={uiLanguage}
-                onLanguageChange={setUiLanguage}
-              />
-            </Else>
-          </When>
+          {step === "email" && (
+            <EmailStep handleSubmit={handleEmailSubmit} uiLanguage={uiLanguage} />
+          )}
+          {step === "form" && (
+            <ContactForm
+              handleSubmit={handleClientFormSubmit}
+              type={appointmentType}
+              uiLanguage={uiLanguage}
+              onLanguageChange={setUiLanguage}
+              clientEmail={clientEmail}
+              defaultValues={existingClient}
+            />
+          )}
+          {step === "calendar" && (
+            <CalendarTimeslotPicker
+              handlePreviousMonth={handlePreviousMonth}
+              currentMonth={currentMonth}
+              handleNextMonth={handleNextMonth}
+              selectedDate={selectedDate}
+              handleDateSelect={handleDateSelect}
+              setCurrentMonth={setCurrentMonth}
+              isDayDisabled={isDayDisabled}
+              availableSlots={availableSlots}
+              selectedTimeSlot={selectedTimeSlot}
+              handleTimeSlotSelect={handleTimeSlotSelect}
+              uiLanguage={uiLanguage}
+            />
+          )}
         </CardContent>
         <CardFooter className="flex justify-between">
-          <When condition={showForm}>
-            <Show>
-              <Button variant="outline" onClick={handleBack}>
+          {step === "email" && (
+            <Button type="submit" form="email-form" className="w-full">
+              {t.continue}
+            </Button>
+          )}
+          {step === "form" && (
+            <>
+              <Button variant="outline" onClick={handleBackToEmail}>
                 <ArrowLeft className="mr-2 h-4 w-4" />
                 {t.back}
               </Button>
               <Button
                 type="submit"
-                form="appointment-form"
-                disabled={bookingStatus === "pending"}
+                form="client-form"
+                disabled={upsertStatus === "pending"}
+              >
+                {t.continue}
+              </Button>
+            </>
+          )}
+          {step === "calendar" && (
+            <>
+              <Button variant="outline" onClick={handleBackToForm}>
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                {t.back}
+              </Button>
+              <Button
+                onClick={handleConfirmBooking}
+                disabled={
+                  !selectedDate ||
+                  !selectedTimeSlot ||
+                  bookingStatus === "pending"
+                }
               >
                 {bookingStatus === "pending" ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <Send className="mr-2 h-4 w-4" />
                 )}
-                {t.send}
+                {t.confirmAppointment}
               </Button>
-            </Show>
-            <Else>
-              <Button
-                className="w-full"
-                onClick={() => setShowForm(true)}
-                disabled={!selectedDate || !selectedTimeSlot}
-              >
-                {t.continue}
-              </Button>
-            </Else>
-          </When>
+            </>
+          )}
         </CardFooter>
       </Card>
     </>
@@ -373,6 +471,29 @@ function LanguageDropdown({
       <option value="es">ES</option>
       <option value="en">EN</option>
     </select>
+  );
+}
+
+function EmailStep({
+  handleSubmit,
+  uiLanguage,
+}: {
+  handleSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
+  uiLanguage: UiLanguage;
+}) {
+  const t = STRINGS[uiLanguage];
+  return (
+    <form
+      id="email-form"
+      onSubmit={handleSubmit}
+      className="text-left space-y-4 min-h-[300px] flex flex-col justify-center"
+    >
+      <p className="text-muted-foreground">{t.enterEmailPrompt}</p>
+      <div className="space-y-2">
+        <Label htmlFor="correo">{t.form.email}</Label>
+        <Input id="correo" name="correo" type="email" required autoFocus />
+      </div>
+    </form>
   );
 }
 
@@ -469,11 +590,15 @@ function ContactForm({
   type,
   uiLanguage,
   onLanguageChange,
+  clientEmail,
+  defaultValues,
 }: {
   handleSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   type: string;
   uiLanguage: UiLanguage;
   onLanguageChange: (value: UiLanguage) => void;
+  clientEmail: string;
+  defaultValues: ClientRecord | null;
 }) {
   // measurement → siempre presencial; pilates → siempre virtual.
   // Para initial y followup el cliente elige.
@@ -484,29 +609,60 @@ function ContactForm({
 
   return (
     <form
-      id="appointment-form"
+      id="client-form"
       onSubmit={handleSubmit}
       className="text-left space-y-4"
     >
       <div className="space-y-2">
-        <Label htmlFor="name">{t.name}</Label>
-        <Input id="name" name="name" required />
+        <Label htmlFor="correo-display">{t.email}</Label>
+        <Input id="correo-display" value={clientEmail} readOnly disabled />
       </div>
       <div className="space-y-2">
-        <Label htmlFor="email">{t.email}</Label>
-        <Input id="email" name="email" type="email" required />
+        <Label htmlFor="nombre">{t.nombre}</Label>
+        <Input
+          id="nombre"
+          name="nombre"
+          required
+          defaultValue={defaultValues?.nombre ?? ""}
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="apellido">{t.apellido}</Label>
+        <Input
+          id="apellido"
+          name="apellido"
+          required
+          defaultValue={defaultValues?.apellido ?? ""}
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="phone">{t.phone}</Label>
-        <Input id="phone" name="phone" type="tel" required />
+        <Input
+          id="phone"
+          name="phone"
+          type="tel"
+          required
+          defaultValue={defaultValues?.telefono ?? ""}
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="cedula">{t.cedula}</Label>
-        <Input id="cedula" name="cedula" required />
+        <Input
+          id="cedula"
+          name="cedula"
+          required
+          defaultValue={defaultValues?.cedula ?? ""}
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="birthdate">{t.birthdate}</Label>
-        <Input id="birthdate" name="birthdate" type="date" required />
+        <Input
+          id="birthdate"
+          name="birthdate"
+          type="date"
+          required
+          defaultValue={defaultValues?.fecha_nacimiento ?? ""}
+        />
       </div>
       <div className="space-y-2">
         <Label htmlFor="language">{t.language}</Label>
