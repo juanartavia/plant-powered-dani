@@ -301,6 +301,13 @@ const CLIENTES_SCHEMA: string[] = [
 const CLIENTES_CANCELACIONES_COL = 9;
 const CLIENTES_REQUIERE_PAGO_COL = 10;
 
+// Columnas (1-based) agregadas al FINAL de "Clientes" en la modificación acordada tras
+// US-18 (sin número de US, ver CLAUDE.md sección 3): checkboxes reales que marcan a qué
+// servicio(s) pertenece cada cliente. Un cliente puede pertenecer a ambos — se acumulan
+// con OR, nunca se reemplazan (ver upsertClient más abajo).
+const CLIENTES_NUTRICION_COL = 11;
+const CLIENTES_PILATES_COL = 12;
+
 // Agrega las columnas "cancelaciones_tardias" y "requiere_pago" (US-06) a la pestaña
 // "Clientes" YA existente (creada por addClientesSheet en US-27), sin volver a ejecutar
 // initializeSheets() ni addClientesSheet() (nota 11 del CLAUDE.md). No-op seguro si ya
@@ -318,6 +325,35 @@ function addCancelacionesColumnsToClientes(): void {
   sheet.getRange(1, CLIENTES_CANCELACIONES_COL).setValue("cancelaciones_tardias").setFontWeight("bold");
   sheet.getRange(1, CLIENTES_REQUIERE_PAGO_COL).setValue("requiere_pago").setFontWeight("bold");
   Logger.log('Columnas "cancelaciones_tardias" y "requiere_pago" agregadas a Clientes.');
+}
+
+// Agrega las columnas "cliente_nutricion" y "cliente_pilates" (checkbox real de Sheets) al
+// FINAL de la pestaña "Clientes" YA existente — modificación acordada tras US-18, sin número
+// de US (CLAUDE.md sección 3). Idempotente por POSICIÓN de columna, nunca por comparación de
+// texto de encabezado (nota técnica #28 del CLAUDE.md — no repetir el bug de US-18 con
+// encabezados que pueden tener inconsistencias invisibles). No-op seguro si ya existen.
+// Filas existentes quedan sin marcar (FALSE) por defecto: no hay forma de inferir
+// retroactivamente a qué servicio pertenecían sin cruzar contra Nutrición/Pilates, aceptable
+// para datos de testing. Ejecutar manualmente una sola vez desde el editor de Apps Script.
+function addServicioColumnsToClientes(): void {
+  const sheet = getSheet("Clientes");
+  const existingHeader = String(sheet.getRange(1, CLIENTES_NUTRICION_COL).getValue());
+
+  if (existingHeader === "cliente_nutricion") {
+    Logger.log('Las columnas "cliente_nutricion"/"cliente_pilates" ya existen en Clientes. No se hizo ningún cambio.');
+    return;
+  }
+
+  sheet.getRange(1, CLIENTES_NUTRICION_COL).setValue("cliente_nutricion").setFontWeight("bold");
+  sheet.getRange(1, CLIENTES_PILATES_COL).setValue("cliente_pilates").setFontWeight("bold");
+
+  // Checkbox real (no texto "TRUE"/"FALSE") en toda la columna de datos, no solo el
+  // encabezado.
+  const numDataRows = Math.max(sheet.getMaxRows() - 1, 1);
+  sheet.getRange(2, CLIENTES_NUTRICION_COL, numDataRows, 1).insertCheckboxes();
+  sheet.getRange(2, CLIENTES_PILATES_COL, numDataRows, 1).insertCheckboxes();
+
+  Logger.log('Columnas "cliente_nutricion" y "cliente_pilates" (checkbox) agregadas a Clientes.');
 }
 
 // Posición (1-based) de la columna "cedula" en cada pestaña, según el schema QUE EL SHEET
@@ -688,10 +724,17 @@ function notifyLateCancellation(correo: string, token: string, accion: "cancelac
 // calendario), independientemente de si el cliente confirma la cita después.
 // Usa LockService para evitar condiciones de carrera si el mismo correo hace dos
 // reservas casi simultáneas (mismo criterio que el cupo de pilates en appendBookingToSheet).
-// A propósito solo escribe las columnas 1-7 (datos personales) — nunca toca 8/9
+// A propósito solo escribe las columnas 1-8 (datos personales) — nunca toca 9/10
 // (cancelaciones_tardias/requiere_pago, US-06), que son responsabilidad exclusiva de
 // incrementClientLateCancellation/resetClientLateCancellationCounter.
-function upsertClient(data: ClientRecord): void {
+//
+// `type` es el tipo de cita que dispara este upsert ("initial"/"followup"/"measurement"
+// para nutrición, "pilates" para pilates — mismo criterio que bookTimeslot). Modificación
+// acordada tras US-18 (CLAUDE.md sección 3): marca TRUE la columna cliente_nutricion o
+// cliente_pilates correspondiente, con lógica de OR acumulativo — la columna que NO
+// corresponde al tipo de cita actual NUNCA se toca, para no pisar un TRUE que ya tuviera
+// por una cita anterior de otro tipo.
+function upsertClient(data: ClientRecord, type: string): void {
   assertValidTipoId(data.tipoId);
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -723,7 +766,15 @@ function upsertClient(data: ClientRecord): void {
       sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
     } else {
       sheet.appendRow(row);
+      rowNumber = sheet.getLastRow();
+      // appendRow solo escribe hasta la última columna del array (8) — las celdas nuevas
+      // en cliente_nutricion/cliente_pilates quedan sin formato de checkbox hasta que se
+      // insertan aquí explícitamente para esta fila.
+      sheet.getRange(rowNumber, CLIENTES_NUTRICION_COL, 1, 2).insertCheckboxes();
     }
+
+    const servicioCol = type === "pilates" ? CLIENTES_PILATES_COL : CLIENTES_NUTRICION_COL;
+    sheet.getRange(rowNumber, servicioCol).setValue(true);
   } finally {
     lock.releaseLock();
   }

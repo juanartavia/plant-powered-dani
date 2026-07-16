@@ -14,7 +14,7 @@ interface GoogleScriptRunEndpoints {
   fetchAvailability: (type: string) => void;
   bookTimeslot: (...args: any[]) => void;
   findClientByEmail: (correo: string) => void;
-  upsertClient: (data: unknown) => void;
+  upsertClient: (data: unknown, type: string) => void;
 }
 
 interface GoogleLib {

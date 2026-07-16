@@ -25,8 +25,8 @@ export const GoogleLib = {
                       console.log("Demo mode: no existing client found");
                       cb(null);
                     },
-                    upsertClient: (data: unknown) => {
-                      console.log("Demo mode: upsertClient", data);
+                    upsertClient: (data: unknown, type: string) => {
+                      console.log("Demo mode: upsertClient", data, type);
                       cb(undefined);
                     },
                   };

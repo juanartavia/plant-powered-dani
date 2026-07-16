@@ -13,6 +13,7 @@ export function useUpsertClient() {
   }, []);
   const upsertClient = useCallback(function (
     data: ClientRecord,
+    type: string,
     onSuccess: () => void
   ) {
     try {
@@ -28,7 +29,7 @@ export function useUpsertClient() {
             new Error("Could not save client data, please try again - " + err)
           );
         })
-        .upsertClient(data);
+        .upsertClient(data, type);
     } catch (err) {
       console.error(err);
       setStatus("error");

@@ -1,7 +1,7 @@
 # CLAUDE.md — Plant Powered by Dani
 ## Sistema de Agendamiento Automatizado
 > Documento vivo — actualizar conforme avanza el desarrollo
-> Última actualización: 15 julio 2026 — **US-19 Done (reorden de pantallas Calendario→Correo→Datos), validada en testing real.** Deploy activo: v17. Sprint 2 en curso — siguiente tarjeta: US-18 (campo de ID flexible).
+> Última actualización: 15 julio 2026 — **US-18 Done (campo de ID flexible: tipo_id + numero_id), validada en testing real.** Deploy activo: v18. Sprint 2 en curso — siguiente: modificación extra (columnas cliente_nutricion/cliente_pilates en "Clientes", sin número de US), luego resto del backlog de Sprint 2.
 
 ---
 
@@ -10,11 +10,12 @@
 Si estás retomando este proyecto en un chat nuevo, este documento es tu única fuente de verdad. Antes de generar cualquier prompt para Claude Code:
 
 1. Lee completo este documento, especialmente las secciones 11 (estado de sprints), 13 (notas técnicas — contiene lecciones aprendidas que evitan repetir bugs ya resueltos), y 14/15 (método de trabajo y reglas de Trello).
-2. **US-19 (reorden de pantallas) ya está Done** — ver sección 3 para el diseño final implementado y validado.
-3. **Siguiente tarjeta: US-18 — Campo de ID flexible (cédula, pasaporte o driver's license).** Es pequeña (1 punto), pero **desbloquea un ajuste pendiente en US-19**: la Pantalla 3 (Datos) del flujo ya reordenado hoy solo maneja el campo `cedula` tal como estaba en Sprint 1 — cuando US-18 agregue tipo/número de ID, hay que volver a tocar esa misma pantalla para reemplazar `cedula` por los campos nuevos.
+2. **US-19 (reorden de pantallas) y US-18 (campo de ID flexible) ya están Done** — ver sección 3 para el diseño final implementado y validado de ambas.
+3. **Siguiente paso: modificación extra sin número de US** — agregar columnas `cliente_nutricion`/`cliente_pilates` (booleanas, checkbox real de Sheets) a la pestaña "Clientes", para identificar a qué servicio(s) pertenece cada cliente (un cliente puede ir a ambos). Ver sección 3 para el diseño acordado. Se decidió hacerla como modificación aparte, no como US de Trello, aprovechando que ya se está tocando la pestaña "Clientes".
 4. El resto del Sprint 2 según el tablero real de Trello (ver sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29 — todas en Backlog.
 5. **Antes de tocar US-11/US-12/US-28**, el usuario tiene carpetas descargadas de Drive (branding/colores, comunicaciones/plantillas de correo, gráficos de Dani) que subirá al repo en una carpeta `design-reference/` separada de `backend/`/`frontend/` cuando lleguemos a esas tarjetas — no asumir que ya están ahí sin confirmar.
 6. Sigue el mismo flujo de trabajo documentado en la sección 14: generar prompt → Claude Code ejecuta → **commit inmediato tras deploy exitoso** (lección nueva, ver sección 13 nota 27) → probar en real antes de marcar cualquier checkbox → actualizar este documento.
+7. **Lección de US-18 (ver sección 13, nota 28):** cuando una función de migración de schema busca columnas por TEXTO en la fila 1, verificar primero con el usuario (captura de pantalla del Sheet real) si el texto coincide exactamente — un espacio en blanco invisible o una tilde puede hacer fallar la comparación sin lanzar ningún error visible. Preferir migrar por POSICIÓN de columna (la misma que el resto del código ya usa) en vez de por texto, siempre que sea posible.
 
 ---
 
@@ -118,20 +119,42 @@ Un cliente no puede agendar una cita que empiece en menos de 48 horas desde el m
 
 Esta regla es **distinta** de la política de cancelación/reagendamiento (24 horas) — ambas coexisten como reglas de negocio separadas.
 
-### Formulario del cliente ✅ CONFIRMADO (actualizado 12 jul — US-17, US-27)
+### Formulario del cliente ✅ CONFIRMADO (actualizado 15 jul — US-17, US-27, US-18)
 Nombre y apellido van en campos **separados**.
 Campos exactos requeridos (en este orden):
 1. Nombre
 2. Apellido
 3. Correo electrónico
 4. Número de teléfono
-5. Cédula
+5. Tipo de identificación (dropdown) + Número de identificación (texto)
 6. Fecha de nacimiento
 7. Idioma (ES/EN) *(sincronizado con el selector global de idioma)*
 8. Modalidad *(solo para initial y followup — automático para los demás)*
 
 > ⚠️ **Sin campo de notas** — eliminado para mantener el proceso simple.
-> ⚠️ **Pendiente US-18:** el campo #5 (Cédula) va a evolucionar a un campo de ID flexible (tipo + número — cédula, pasaporte o driver's license), para cubrir clientes de EEUU. Cuando esto se implemente, hay que volver a tocar la Pantalla 3 del flujo (ver más abajo) para reemplazar el campo actual.
+
+### Campo de ID flexible ✅ IMPLEMENTADO Y VALIDADO (US-18, 15 jul)
+El campo único "Cédula" se reemplazó por dos campos:
+1. **"Tipo de identificación"** — DROPDOWN con 4 opciones fijas, traducido según idioma, pero el **valor interno guardado en el Sheet es siempre el mismo** sin importar el idioma elegido por el cliente:
+
+   | Se muestra ES | Se muestra EN | Valor guardado (fijo) |
+   |----------------|-----------------|--------------------------|
+   | Cédula | ID Card | `cedula` |
+   | Pasaporte | Passport | `pasaporte` |
+   | Licencia de conducir | Driver's License | `licencia` |
+   | Otro | Other | `otro` |
+
+   Mismo patrón que ya existe para el campo "idioma" (se guarda "es"/"en" internamente, no el texto traducido).
+
+2. **"Número de identificación"** — campo de texto libre que acepta letras y números (alfanumérico), para cubrir formatos de licencias de conducir de EE.UU. que no son solo dígitos.
+
+**Schema:** en Nutrición, Pilates y Clientes, la columna `cedula` se renombró a `tipo_id` y se insertó una columna nueva `numero_id` justo después (ver sección 8).
+
+**Validado en testing real (15 jul):** confirmado que un cliente seleccionando en español guarda el mismo valor interno que uno seleccionando en inglés (ej. "Licencia de conducir" y "Driver's License" ambos guardan `licencia`); probado en los 4 tipos de cita; cliente existente precarga correctamente el dropdown con su tipo guardado.
+
+**Deploy:** v18 (15 jul), mismo `deploymentId` de siempre.
+
+**Nota técnica sobre la migración (ver sección 13, nota 28):** la primera versión de la función de migración buscaba la columna `cedula` por texto exacto en la fila 1, y falló silenciosamente en Nutrición/Pilates por un espacio en blanco invisible en el encabezado real ("cedula " con espacio, confirmado en el log de ejecución). Se corrigió migrando por POSICIÓN de columna en vez de texto — ver la función `migrateCedulaToTipoNumeroId()` en el stack técnico (sección 10).
 
 ### Flujo del formulario en 3 pasos ✅ REORDENADO Y VALIDADO (US-19, 15 jul)
 Nuevo orden implementado: **Calendario → Correo → Datos**.
@@ -145,7 +168,11 @@ Nuevo orden implementado: **Calendario → Correo → Datos**.
 
 **Hallazgo real de Code durante la implementación:** los selectores de idioma/zona horaria vivían solo en el header del paso "correo" (antes el primero). Al mover el calendario al Paso 1, si no se movían también los selectores, un cliente de EEUU habría elegido horario antes de poder fijar su zona horaria — se corrigió moviéndolos al nuevo Paso 1, requerido por RNF-5, no opcional.
 
-**Deploy:** v17 (15 jul), mismo `deploymentId` de siempre.
+### Modificación pendiente — Servicios del cliente en pestaña "Clientes" ⏳ ACORDADA, NO IMPLEMENTADA
+Se identificó que la pestaña "Clientes" no distingue a qué servicio(s) pertenece cada cliente (puede ir solo a nutrición, solo a pilates, o a ambos). Diseño acordado:
+- Dos columnas nuevas en "Clientes": `cliente_nutricion` y `cliente_pilates`, tipo **checkbox real de Google Sheets** (booleano TRUE/FALSE), no texto libre "Sí"/"No" — evita inconsistencias de escritura y permite filtrar directamente en el Sheet.
+- **Lógica de escritura:** al hacer `upsertClient` durante un agendamiento, se marca `TRUE` en la columna correspondiente al tipo de cita agendada (nutrición para `initial`/`followup`/`measurement`, pilates para `pilates`). **Nunca se pone en `FALSE`** si ya estaba en `TRUE` por una cita anterior de otro tipo — es un OR acumulativo, no un reemplazo. Así un cliente que agenda primero nutrición y después pilates termina con ambas columnas en `TRUE`, sin que se pisen entre sí.
+- Se decidió implementar esto como una **modificación aparte, sin número de US de Trello**, aprovechando que ya se estaba tocando el schema de "Clientes" en US-18. Pendiente de generar el prompt.
 
 ### Zona horaria ✅ CONFIRMADO
 - El sistema debe manejar múltiples zonas horarias, incluyendo Estados Unidos
@@ -235,14 +262,15 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 
 ## 7. FLUJOS COMPLETOS
 
-### Flujo principal — Agendar cita de nutrición (orden reordenado en US-19, ver sección 3)
+### Flujo principal — Agendar cita de nutrición (orden reordenado en US-19, campos de ID actualizados en US-18)
 ```
 1. Ali o Dani comparte link ?type=initial/followup/measurement por WhatsApp
 2. Cliente accede → Paso 1: ve Calendario (con selector idioma/zona horaria ahí),
    selecciona fecha y hora dentro de la ventana permitida (48hrs-8sem)
 3. Paso 2: cliente ingresa su correo → sistema busca en pestaña "Clientes"
-4. Paso 3: formulario precargado o vacío según exista el correo, con resumen
-   fijo del horario elegido en Paso 1 → upsert en "Clientes" al enviar
+4. Paso 3: formulario precargado o vacío según exista el correo (incluye 
+   dropdown de tipo_id + campo numero_id), con resumen fijo del horario 
+   elegido en Paso 1 → upsert en "Clientes" al enviar
 5. Apps Script re-verifica ventana 48hrs + LockService (protege contra colisiones
    entre tipos de cita) justo antes de confirmar
 6. Si el slot ya no está disponible: error claro + regreso automático al Paso 1
@@ -256,12 +284,13 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 13. Cita se realiza → Dani marca show/no-show en Sheet
 ```
 
-### Flujo pilates — Inscripción a clase grupal (orden reordenado en US-19)
+### Flujo pilates — Inscripción a clase grupal (orden reordenado en US-19, campos de ID actualizados en US-18)
 ```
 1. Ali o Dani comparte link ?type=pilates
 2. Cliente accede → Paso 1: ve disponibilidad de sábados con cupos, selecciona
 3. Paso 2: correo → busca en "Clientes" (compartida con nutrición)
-4. Paso 3: formulario precargado o vacío → upsert, resumen fijo del horario elegido
+4. Paso 3: formulario precargado o vacío (incluye dropdown de tipo_id + 
+   numero_id) → upsert, resumen fijo del horario elegido
 5. Si hay cupo: verifica en Cupos_Pilates (LockService) al confirmar
 6. Escribe fila en Pilates PRIMERO (flush()), incrementa contador
 7. Si es la primera inscripción del slot: crea evento en calendario dedicado con Meet, guarda event_id/meet_link
@@ -303,21 +332,20 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 - **ID:** 16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw
 - **URL:** https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit
 
-### Pestaña "Nutrición" (schema actual, verificado 14 jul)
+### Pestaña "Nutrición" (schema actualizado tras US-18, verificado 15 jul)
 ```
-token | nombre | apellido | correo | telefono | cedula | fecha_nacimiento |
+token | nombre | apellido | correo | telefono | tipo_id | numero_id | fecha_nacimiento |
 tipo_cita | fecha | hora | zona_horaria_cliente | modalidad | idioma |
 meet_link | estado | fecha_creacion | recordatorio_enviado | show_no_show |
 cancelaciones_tardias (legacy, sin usar) | requiere_pago (legacy, sin usar) | event_id
 ```
 **Estados posibles:** `Agendada` → `Reagendada` → `Cancelada`, y también `Error_Calendar`.
 
-> ⚠️ **Nota operativa:** los TÍTULOS de la fila 1 de esta pestaña (y de "Pilates") pueden estar desactualizados visualmente respecto al orden real de columnas, porque el schema fue evolucionando (US-17 separó nombre/apellido, US-10 agregó event_id) y los encabezados de texto no se actualizaron automáticamente. **Los datos SÍ se escriben en las columnas correctas según el código actual** — solo el texto de la fila 1 puede confundir visualmente. Si esto genera confusión al operar el Sheet, limpiar y reescribir manualmente la fila 1 con los nombres de columna correctos (no requiere tocar código, ver conversación del 14 jul si se necesita el detalle paso a paso).
-> ⚠️ **Pendiente US-18:** la columna `cedula` va a evolucionar a `tipo_id` + `numero_id` — no hacer este cambio de schema hasta generar el prompt de US-18.
+> ⚠️ **Nota operativa (resuelta parcialmente en US-18):** los encabezados de fila 1 de Nutrición/Pilates habían quedado con inconsistencias de texto invisible (espacios en blanco) respecto al string interno que usa el código — esto causó que la primera versión de la migración de US-18 fallara silenciosamente (ver nota técnica #28, sección 13). La migración final NO depende de texto, usa posición de columna fija. Si se necesita otra migración de esquema en el futuro, preferir el mismo enfoque por posición.
 
-### Pestaña "Pilates"
+### Pestaña "Pilates" (schema actualizado tras US-18, verificado 15 jul)
 ```
-token | nombre | apellido | correo | telefono | cedula | fecha_nacimiento |
+token | nombre | apellido | correo | telefono | tipo_id | numero_id | fecha_nacimiento |
 fecha_clase | hora_clase | zona_horaria_cliente | idioma |
 estado | fecha_inscripcion | recordatorio_enviado | show_no_show
 ```
@@ -327,11 +355,19 @@ estado | fecha_inscripcion | recordatorio_enviado | show_no_show
 fecha_clase | hora_clase | inscritos | max_participantes | event_id | meet_link
 ```
 
-### Pestaña "Clientes" — correo es la clave única (fuente de verdad del tracker de cancelaciones)
+### Pestaña "Clientes" — correo es la clave única (fuente de verdad del tracker de cancelaciones) (schema actualizado tras US-18, verificado 15 jul)
 ```
-correo | nombre | apellido | telefono | cedula | fecha_nacimiento | idioma | cancelaciones_tardias | requiere_pago
+correo | nombre | apellido | telefono | tipo_id | numero_id | fecha_nacimiento | idioma | cancelaciones_tardias | requiere_pago
 ```
 Las columnas `cancelaciones_tardias`/`requiere_pago` de esta pestaña (agregadas en US-06 vía `addCancelacionesColumnsToClientes()`) son la **única fuente de verdad** para la regla de "2 tardías consecutivas → debe pagar". Las columnas del mismo nombre en Nutrición/Pilates son legacy y no se usan para la lógica de negocio.
+
+> ⏳ **Pendiente (modificación acordada, sin número de US):** agregar columnas `cliente_nutricion`/`cliente_pilates` (checkbox booleano) a esta pestaña — ver sección 3 para el diseño acordado.
+
+### Valores válidos de `tipo_id` (fijos, ver sección 3 para tabla de traducción)
+```
+cedula | pasaporte | licencia | otro
+```
+Estos son los ÚNICOS 4 valores internos aceptados — el backend valida contra esta lista y rechaza cualquier otro valor (ver `TIPO_ID_VALUES` en sección 10).
 
 ---
 
@@ -342,7 +378,7 @@ Las columnas `cancelaciones_tardias`/`requiere_pago` de esta pestaña (agregadas
 |----|--------------|--------|
 | RF-1.1 | Cliente accede por link ?type= y ve disponibilidad en tiempo real | ✅ |
 | RF-1.2 | Duración automática por tipo. Pilates: lógica de cupos grupales (máx 5) | ✅ |
-| RF-1.3 | Formulario: nombre y apellido separados, correo, teléfono, cédula, fecha de nacimiento, idioma, modalidad | ✅ US-17 |
+| RF-1.3 | Formulario: nombre y apellido separados, correo, teléfono, tipo/número de ID flexible, fecha de nacimiento, idioma, modalidad | ✅ US-17, US-18 |
 | RF-1.4 | Sin cuenta de Google — portal público por link con token | ✅ (⚠️ nota 17 — pendiente investigar fallo reportado en acceso desde móvil) |
 | RF-1.5 | Datos en Sheets. Pilates: también actualizar contador en Cupos_Pilates | ✅ US-05 |
 | RF-1.11 | Correo como identificador único del cliente — flujo de 3 pasos | ✅ US-27, orden actualizado en US-19 |
@@ -352,6 +388,7 @@ Las columnas `cancelaciones_tardias`/`requiere_pago` de esta pestaña (agregadas
 | RF-1.8 | Ventana máxima de agendamiento: 56 días (8 semanas) | ✅ |
 | RF-1.9 | Horarios en zona horaria del cliente. Evento creado en hora CR. | ✅ US-08 |
 | RF-1.10 | Selector de idioma ES/EN desde primera pantalla | ✅ (ahora en Paso 1 tras US-19) |
+| RF-1.15 (nuevo) | Campo de ID flexible (tipo + número), valor interno consistente sin importar idioma | ✅ **Done — US-18, 15 jul** |
 
 ### RF-2 — Correos y Automatizaciones (SPRINT 2 — TODO PENDIENTE)
 | ID | Requerimiento | Estado |
@@ -392,16 +429,19 @@ MIN_BOOKING_HOURS = 48                 // ✅ US-09
 CANCELLATION_HOURS = 24               // ✅ US-06
 MAX_PILATES_PARTICIPANTS = 5
 PILATES_CALENDAR_ID                   // Script Property, no constante — calendario dedicado de pilates (US-10)
+TIPO_ID_VALUES = ["cedula", "pasaporte", "licencia", "otro"]  // ✅ US-18, valores internos fijos
+CEDULA_COLUMN_BY_SHEET = { "Nutrición": 6, "Pilates": 6, "Clientes": 5 }  // ✅ US-18, usado por la migración
 ```
 
-### Firma actual de funciones en backend (al cierre de Sprint 1, 14 jul)
+### Firma actual de funciones en backend (al cierre de US-18, 15 jul)
 ```typescript
 getDurationForType(type: string): number
 fetchAvailability(type: string): { timeslots: string[], durationMinutes: number }
 
-bookTimeslot(type, timeslot, nombre, apellido, email, phone, cedula, birthdate, language, modalidad, clientTimezone): string
+bookTimeslot(type, timeslot, nombre, apellido, email, phone, tipoId, numeroId, birthdate, language, modalidad, clientTimezone): string
 // Orden interno: 1) appendBookingToSheet (con flush) 2) solo si tuvo éxito, crea evento +
 // Meet. Si Calendar falla después: markBookingRowError + rollback cupo (pilates) + flush.
+// Valida tipoId contra TIPO_ID_VALUES antes de escribir.
 
 findBookingByToken(token: string): { sheet, row, data }
 // Lanza TOKEN_NO_ENCONTRADO si no existe. Busca en Nutrición y Pilates.
@@ -417,9 +457,16 @@ cancelBooking(token: string): { lateCancellation: boolean }
 
 incrementClientLateCancellation(correo) / resetClientLateCancellationCounter(correo)
 // Tocan las columnas cancelaciones_tardias/requiere_pago en pestaña "Clientes" (fuente de verdad).
+// ⚠️ El failsafe de appendRow para correos sin fila existente debe tener exactamente 10 
+// elementos (schema actual de Clientes) — bug real encontrado y corregido en US-18 
+// (tenía 9, desalineaba columnas en ese caso límite). Ver nota técnica #28.
 getClientPaymentStatus(correo): { cancelaciones_tardias, requiere_pago }
 notifyLateCancellation(...) // STUB con TODO — implementar de verdad en Sprint 2
 
+migrateCedulaToTipoNumeroId(): void
+// ✅ US-18, ejecutada manualmente 15 jul. Migra por POSICIÓN de columna (CEDULA_COLUMN_BY_SHEET),
+// NO por texto — ver nota técnica #28 sobre por qué la primera versión (por texto) falló.
+// Idempotente por pestaña individual (evalúa cada una por separado, no todo-o-nada).
 addCancelacionesColumnsToClientes(): void  // ✅ ejecutada manualmente 13 jul
 addEventIdColumnToNutricion(): void        // ✅ ejecutada manualmente 13 jul
 addEventIdColumnToCuposPilates(): void     // ✅ ejecutada manualmente 13 jul
@@ -435,6 +482,8 @@ getPilatesCalendarId(): string
 > **Nota:** los wrappers temporales `manualTestCancelBooking`/`manualTestRescheduleBooking` que existieron brevemente para testing manual de US-06 (13-14 jul) ya fueron **removidos del código** el 14 de julio, tras validar la US por completo. Si se necesita un mecanismo similar en el futuro para probar funciones sin frontend, ver el patrón documentado en nota técnica #23 (sección 13) — no reinventar el enfoque, solo recrear wrappers análogos y volver a borrarlos al terminar.
 
 > **Nota frontend (US-19, 15 jul):** no hay componentes de paso separados en archivos individuales — `EmailStep`, `ContactForm` y `CalendarTimeslotPicker` son funciones dentro de `frontend/src/components/calendar-picker.tsx`, junto con el orquestador `CalendarPicker`. Tenerlo en cuenta al generar prompts que toquen el frontend: todo vive en ese único archivo.
+
+> **Nota test-harness (US-18, 15 jul):** `backend/test-harness/` (gas-mock.js y run-tests.js) también tenía referencias hardcodeadas a `cedula` (11 llamadas a `bookTimeslot` con el argumento suelto, más ~15 índices de columna) — todas actualizadas a tipoId/numeroId. Al modificar el schema de cualquier pestaña en el futuro, revisar también el harness, no solo `app.ts`.
 
 ---
 
@@ -464,7 +513,8 @@ getPilatesCalendarId(): string
 | US | Título | Puntos | Checklist | Estado |
 |----|--------|--------|-----------|--------|
 | US-19 | Cambiar orden de pantallas (Calendario→Correo→Datos) | 2 | 5/5 | ✅ **Done (15 jul)** — validado en testing real, 4 tipos de cita, cliente nuevo/existente, recuperación de slot ocupado. Deploy v17. |
-| US-18 | Campo de ID flexible: cédula, pasaporte o driver's license | 1 | 0/1 | ⏳ **Siguiente tarjeta** — desbloquea ajuste pendiente en Pantalla 3 de US-19 |
+| US-18 | Campo de ID flexible: cédula, pasaporte o driver's license | 1 | 1/1 | ✅ **Done (15 jul)** — dropdown 4 opciones (ES/EN) con valor interno fijo, numero_id alfanumérico, validado en los 4 tipos de cita y con cliente existente. Deploy v18. |
+| (sin número) | Modificación extra: columnas cliente_nutricion/cliente_pilates en "Clientes" | — | 0/? | ⏳ **Siguiente** — acordada, ver sección 3, prompt pendiente de generar |
 | US-16 | Fix: calendario no abre en el mes actual por defecto | 2 | 0/4 | ⏳ Backlog |
 | US-11 | Plantillas HTML bilingües (nutrición y pilates) | 3 | 1/7 | ⏳ Backlog — necesita carpeta "Comunicaciones" de Drive |
 | US-12 | Correo de confirmación inmediato al cliente | 3 | 1/8 | ⏳ Backlog — depende de US-11 |
@@ -491,16 +541,16 @@ getPilatesCalendarId(): string
 | Credenciales | Guardadas en Drive: AutomáTica / Plant Powered Dani / Interno |
 | URL de testing activa | https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec |
 | Editor Apps Script | https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit |
-| Versión actual | **v17** |
+| Versión actual | **v18** |
 | Repo | https://github.com/juanartavia/plant-powered-dani |
 | Spreadsheet testing | https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit |
 | Calendario pilates (testing) | "Pilates - Testing" |
-| Harness de pruebas backend | `backend/test-harness/` (run-tests.js + gas-mock.js + README.md) — 37 aserciones, todas pasando al cierre de Sprint 1 |
+| Harness de pruebas backend | `backend/test-harness/` (run-tests.js + gas-mock.js + README.md) — 37 aserciones, todas pasando (actualizado con tipoId/numeroId en US-18) |
 
 ### ⚠️ Lección crítica de proceso — deploy vs. push (ver nota técnica #25)
 `clasp push` actualiza el código fuente del proyecto (lo que se ve en el editor), pero la URL pública `/exec` de un deployment queda **congelada** a la versión que tenía en el último `clasp deploy` sobre ese mismo `deploymentId`. Si se hace solo `push` sin `deploy`, cualquier prueba a través del link real seguirá corriendo código viejo, aunque el editor muestre el código nuevo y los wrappers manuales (que sí leen del HEAD) funcionen bien. **Siempre confirmar que se hizo `clasp deploy` antes de dar una prueba por válida usando el link público.**
 
-### Links de testing por tipo de cita (v17)
+### Links de testing por tipo de cita (v18)
 ```
 Consulta Inicial (60 min)
 https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec?type=initial
@@ -524,7 +574,8 @@ Clase de Pilates (60 min)
 | v14 | 13 jul | Fix del bug de v13: `SpreadsheetApp.flush()` en 3 puntos. **US-10 Done.** |
 | v15 | 14 jul | US-06: reagendar/cancelar por token, tracker por cliente. Deploy hecho tras detectar que v14 seguía activo en la URL (gap de deploy, no bug de código — ver nota 25). |
 | v16 | 14 jul | Wrappers temporales de testing manual removidos del código tras validar US-06 por completo. **Sprint 1 100% cerrado.** |
-| v17 | 15 jul | **US-19 Done.** Reordenado el flujo del portal a Calendario→Correo→Datos. Selectores de idioma/zona horaria movidos al Paso 1. Validado en testing real: 4 tipos de cita, cliente nuevo, cliente existente, y recuperación de slot ocupado a mitad de flujo. **Deploy activo.** |
+| v17 | 15 jul | **US-19 Done.** Reordenado el flujo del portal a Calendario→Correo→Datos. Selectores de idioma/zona horaria movidos al Paso 1. Validado en testing real: 4 tipos de cita, cliente nuevo, cliente existente, y recuperación de slot ocupado a mitad de flujo. |
+| v18 | 15 jul | **US-18 Done.** Campo de ID flexible: `cedula` → `tipo_id` + `numero_id` en Nutrición/Pilates/Clientes. Dropdown de 4 opciones traducidas (ES/EN) con valor interno fijo. Migración corregida de búsqueda por texto a búsqueda por posición tras fallo real (ver nota técnica #28). Validado en testing real: consistencia de valor guardado entre idiomas, los 4 tipos de cita, precarga de cliente existente. **Deploy activo.** |
 
 ---
 
@@ -539,12 +590,12 @@ Clase de Pilates (60 min)
 7. **Cancelaciones tardías — fuente de verdad es "Clientes", no Nutrición/Pilates** (confirmado en US-06): las columnas `cancelaciones_tardias`/`requiere_pago` de Nutrición/Pilates son legacy, sin usar; el tracker real vive por correo en la pestaña "Clientes", cruzando tipos de cita.
 8. **Correos pilates** salen desde cuenta de la instructora — o Reply-To, decisión pendiente Sprint 2 (sección 6).
 9. **Idioma del cliente** guardado en Sheet → determina idioma de todos los correos automáticos (Sprint 2).
-10. **Cédula** ya NO es el identificador único (reemplazada por correo desde US-27) — se mantiene como campo normal del formulario, pendiente de evolucionar a ID flexible en US-18.
+10. **Cédula** ya NO es el identificador único (reemplazada por correo desde US-27) — y desde US-18 tampoco es un campo único: se dividió en `tipo_id` + `numero_id`, con `tipo_id` restringido a 4 valores internos fijos.
 11. **initializeSheets()** — UNA SOLA VEZ, ya ejecutada. NO volver a correr.
 12. **Permisos en appsscript.json** — incluye spreadsheets, drive, calendar. Agregar scope si se suman integraciones nuevas (ej. Gmail para Sprint 2).
 13. **Pilates: eventos duplicados — RESUELTO en US-10.** Un solo evento por slot con múltiples invitados vía `addGuest`/`patch`.
 14. **`WORKDAYS`/`WORKHOURS` genéricos (pendiente Sprint 3)** — no reflejan el horario real de Dani (martes-sábado, 7am-7pm entre semana, 7am-2pm sábados, cerrado domingo-lunes, no último sábado del mes, sin virtuales los sábados).
-15. **Criterio validado dos veces: auditar y adaptar código heredado de Someday, no asumir que ya cumple las reglas del cliente** — funcionó en US-09 (lock faltante) y US-10 (eventos duplicados, Meet nunca implementado de verdad). Aplicar el mismo criterio a cualquier código heredado restante.
+15. **Criterio validado varias veces: auditar y adaptar código heredado de Someday, no asumir que ya cumple las reglas del cliente** — funcionó en US-09 (lock faltante) y US-10 (eventos duplicados, Meet nunca implementado de verdad). Aplicar el mismo criterio a cualquier código heredado restante.
 16. **Coerción de tipos en Google Sheets** — un string de fecha/hora puede autodetectarse y guardarse como objeto `Date`, rompiendo comparaciones `===`. Mitigación: `normalizeSheetDateCell()` + `setNumberFormat("@")`. Ya aplicado consistentemente en US-05/US-06/US-10.
 17. **Acceso desde móvil — pendiente investigar.** Reporte inicial: el link de testing no cargó desde un teléfono. No bloquea el trabajo actual, pero debe resolverse antes de Sprint 3 / producción (RNF-3, RF-1.4) — la mayoría de clientes reales van a abrir el link desde el celular (compartido por WhatsApp).
 18. **El lock de conflict-check protege el Calendar real, no el "tipo" de cita** (US-09) — `initial`/`followup`/`measurement` comparten Calendar; validado con colisión cruzada entre tipos distintos.
@@ -557,6 +608,8 @@ Clase de Pilates (60 min)
 25. **Gap de deploy causó un falso positivo de bug (lección de proceso, 14 jul)** — al pedir explícitamente "solo push, sin deploy" en una iteración anterior, quedó pendiente un `clasp deploy`. Cuando se probó vía el link público, el código corrido era el de la versión desplegada anterior (v14), no el más reciente en el editor — pareciendo un bug real (`bookNutricionCalendarEvent` "no guardaba event_id") que en realidad no existía: el código en el HEAD del proyecto ya era correcto (confirmado con una prueba de harness dedicada, Test 10, 37/37 pasando). **Regla reforzada:** antes de dar cualquier resultado de prueba por "bug confirmado", verificar primero con `clasp deployments` que la URL usada para probar corresponde a la versión de código que se cree estar probando.
 26. **Wrappers temporales de US-06 removidos (14 jul)** — `manualTestCancelBooking`/`manualTestRescheduleBooking` cumplieron su propósito (validar reagendar/cancelar en testing real sin frontend) y fueron eliminados del código tras confirmar los 8 checkboxes de la US. Si Sprint 2 necesita un mecanismo similar antes de que el frontend de reagendar/cancelar exista (RF-2.6), recrear wrappers análogos siguiendo el patrón de la nota 23, y volver a borrarlos al finalizar esa US.
 27. **Trabajo funcionando en producción sin `git commit` — ocurrió dos veces antes de detectarse (lección de proceso, 15 jul).** El trabajo de US-10 (13 jul) y US-06 (14 jul) quedó desplegado y funcionando en producción vía `clasp push`/`clasp deploy`, pero sin comitear a git, hasta que se detectó al iniciar US-19 (~1000 líneas sin comitear en `backend/src/app.ts`). Se verificó el diff antes de comitear (no se asumió a ciegas) y coincidía con el trabajo documentado — no era código inesperado, solo faltaba el commit. **Regla reforzada:** hacer `git commit` inmediatamente después de cada `clasp deploy` exitoso, no esperar al cierre del sprint (ver paso 6.5 en sección 14).
+28. **Migración de schema por texto falló silenciosamente por un espacio en blanco invisible (lección de proceso, 15 jul, US-18).** La primera versión de `migrateCedulaToTipoNumeroId()` buscaba la columna `cedula` con `headers.indexOf("cedula")` (comparación exacta de texto) en las 3 pestañas. Funcionó en "Clientes" (header escrito 100% por código, nunca tocado a mano) pero falló silenciosamente en "Nutrición" y "Pilates" — el log solo decía "no se encontró la columna, revisar manualmente", sin lanzar ningún error. Al inspeccionar el Sheet real con capturas de pantalla, se confirmó que el header real era `"cedula "` (con un espacio en blanco al final, invisible a simple vista) — consistente con la advertencia ya documentada en sección 8 sobre encabezados de esas dos pestañas editados manualmente en algún punto de Sprint 1. **Regla reforzada:** cuando una migración de schema busca columnas por texto en la fila 1, verificar primero con captura de pantalla del Sheet real si aplica, y preferir migrar por POSICIÓN de columna (usando la misma constante que el resto del código ya usa para leer/escribir esa columna) en vez de por comparación de texto — la posición es la fuente de verdad real, el texto del encabezado puede tener inconsistencias invisibles. La versión final usa `CEDULA_COLUMN_BY_SHEET` (posición fija por pestaña) y quedó validada en las 3 pestañas.
+29. **Bug real en failsafe de `incrementClientLateCancellation` encontrado por el test-harness tras el cambio de schema de US-18** — el `appendRow` defensivo (para el caso hipotético de un correo sin fila en "Clientes" todavía) tenía un elemento de menos que el nuevo schema de 10 columnas, lo que habría desalineado `cancelaciones_tardias`/`requiere_pago` en ese caso límite. Se detectó porque 4 de las 37 aserciones del harness fallaron tras el cambio de schema — el harness cumplió su propósito de atrapar el bug antes de llegar a producción. Corregido (ahora 10 elementos), 37/37 pasando de nuevo.
 
 ---
 
@@ -595,10 +648,11 @@ El desarrollo se divide entre dos herramientas de Claude:
 ```
 
 ### ⚠️ Cuándo ir al editor de Apps Script manualmente
-- **Ejecutar funciones de inicialización/migración** (initializeSheets, addClientesSheet, setupPilatesTestCalendar, addEventIdColumnToNutricion, addEventIdColumnToCuposPilates, addCancelacionesColumnsToClientes) — dropdown de funciones → Ejecutar. Son de UNA SOLA VEZ salvo que sean explícitamente idempotentes.
+- **Ejecutar funciones de inicialización/migración** (initializeSheets, addClientesSheet, setupPilatesTestCalendar, addEventIdColumnToNutricion, addEventIdColumnToCuposPilates, addCancelacionesColumnsToClientes, migrateCedulaToTipoNumeroId) — dropdown de funciones → Ejecutar. Son de UNA SOLA VEZ salvo que sean explícitamente idempotentes.
 - **Autorizar permisos nuevos** — Revisar permisos → Avanzado → Ir a (no seguro) → Permitir.
 - **Ver logs de ejecución** — Registro de ejecución, para debuggear.
 - **El editor solo muestra código ya subido con `clasp push`** — si algo no aparece en el dropdown, recargar la página del editor primero.
+- **Al correr una migración de schema, revisar el log con cuidado línea por línea** — un mensaje de "no se hizo ningún cambio" o "no se encontró" puede ocultar un bug real de comparación (ver nota técnica #28). No asumir que "se completó la ejecución" sin errores significa que hizo lo esperado en las 3 pestañas.
 
 **URL del editor:** https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit
 
@@ -610,6 +664,7 @@ El desarrollo se divide entre dos herramientas de Claude:
 - Si hay que agregar permisos nuevos → agregar scope en dist/appsscript.json Y appsscript.json (raíz)
 - **Antes de aceptar un resultado de prueba como bug confirmado, verificar que se probó contra la versión de deploy correcta** (ver nota 25)
 - **Comitear a git inmediatamente después de cada deploy exitoso** (ver nota 27, paso 6.5 arriba)
+- **Migraciones de schema por posición, no por texto, cuando sea posible** (ver nota 28)
 
 ---
 
@@ -640,6 +695,9 @@ Las tarjetas, descripciones y checklists de Trello reflejan la mejor comprensió
 1. Discutirlo primero en el chat para alinear el entendimiento.
 2. Si aplica, ajustar el checklist o la descripción de la tarjeta en Trello para que coincida con la realidad.
 3. Documentar el cambio de interpretación en el CLAUDE.md, para que quede registro de por qué se interpretó así.
+
+### Modificaciones sin número de US
+No todo cambio necesita pasar por una tarjeta formal de Trello — si surge una mejora pequeña y bien acotada en medio de otra tarea (como cliente_nutricion/cliente_pilates, surgida mientras se trabajaba en US-18), se puede acordar en el chat, documentar en el CLAUDE.md (sección 3 y el changelog de sección 17), y ejecutarla directamente sin crear una tarjeta nueva — siempre que se documente igual de bien que una US formal.
 
 ---
 
@@ -686,7 +744,8 @@ git push
 | 14 jul 2026 | **US-06 Done.** Mecánica de reagendar/cancelar por token, ventana 24hrs con asimetría intencional (confirmada con el equipo), tracker de tardías por cliente (no por cita), requiere_pago tras 2 consecutivas. Bug real encontrado y corregido: inconsistencia entre cancelBooking/rescheduleBooking ante citas sin event_id. Falso positivo de bug diagnosticado como gap de deploy (nota 25) — lección de proceso reforzada. Validado en testing real: reagendar dentro/fuera de ventana, cancelar dentro/fuera de ventana, 2 tardías consecutivas → requiere_pago=true confirmado en Sheet real, evento de Calendar movido/eliminado confirmado en Calendar real. Wrappers temporales de testing removidos tras validar. Deploy v16. **Sprint 1 100% completo — las 12 US de Sprint 1 en Done.** |
 | 14 jul 2026 | Reunión de equipo: confirmada la asimetría cancelar/reagendar sin cambios. Decisión nueva: reordenar el flujo del portal a Calendario → Correo → Datos (pendiente de implementar en Sprint 2, ver sección 3). |
 | 15 jul 2026 | **US-19 Done.** Flujo reordenado Calendario→Correo→Datos. Selectores de idioma/zona horaria movidos al Paso 1 (hallazgo de Code: necesario para que el cliente pueda fijar su zona horaria antes de ver horarios). Corregido bug latente: modalidad no se precargaba al rebotar al Paso 1. Validado en testing real: 4 tipos de cita, cliente existente, y recuperación de slot ocupado a mitad de flujo (probado por el usuario en vivo, quitándole el slot a un cliente nuevo desde otra pestaña). Deploy v17. Detectado y resuelto: ~1000 líneas de US-10/US-06 llevaban desde el 13-14 jul funcionando en producción sin `git commit` — verificado el diff antes de comitear (nota 27), no era código inesperado. Agregado paso 6.5 al flujo de trabajo: commit inmediato tras cada deploy exitoso. Tablero real de Trello del Sprint 2 incorporado a la sección 11 (US-16, 18, 19, 11, 12, 13, 14, 20, 28, 29 — 30 puntos totales). |
+| 15 jul 2026 | **US-18 Done.** Campo de ID flexible: `cedula` → `tipo_id` (dropdown, 4 valores internos fijos: cedula/pasaporte/licencia/otro, traducidos en pantalla ES/EN) + `numero_id` (texto alfanumérico) en Nutrición, Pilates y Clientes. Datos de prueba viejos borrados manualmente por el usuario antes de la migración (no se escribió lógica de migración de datos, solo de estructura). Bug real encontrado y corregido: la primera versión de `migrateCedulaToTipoNumeroId()` buscaba la columna por texto exacto y falló silenciosamente en Nutrición/Pilates por un espacio en blanco invisible en el encabezado real — diagnosticado con capturas de pantalla del Sheet real, corregido migrando por posición de columna fija en vez de texto (nota técnica #28). Segundo bug real encontrado por el test-harness: el failsafe de `incrementClientLateCancellation` tenía un elemento de menos tras el cambio de schema de "Clientes" a 10 columnas (nota técnica #29) — detectado porque 4/37 aserciones fallaron, corregido, 37/37 de nuevo. Validado en testing real: mismo valor interno guardado sin importar idioma (ES/EN) del cliente, los 4 tipos de cita, precarga correcta en cliente existente. Deploy v18. Acordada modificación extra sin número de US: columnas `cliente_nutricion`/`cliente_pilates` (checkbox booleano, lógica OR acumulativa) en "Clientes", para el siguiente paso. |
 
 ---
 
-*Última actualización: 15 julio 2026 — **US-19 Done**, reorden de pantallas Calendario→Correo→Datos validado en testing real (4 tipos de cita, cliente nuevo/existente, recuperación de slot ocupado). Deploy activo: v17. Siguiente tarjeta: **US-18** (campo de ID flexible), que desbloquea un ajuste pendiente en la Pantalla 3 de US-19. Resto del Sprint 2 pendiente según tablero real de Trello (sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29. Pendientes de fondo para Sprint 3: acceso desde móvil (nota 17), horario real de Dani (nota 14), checklist de acceso de producción (sección 6).*
+*Última actualización: 15 julio 2026 — **US-18 Done**, campo de ID flexible (tipo_id + numero_id) validado en testing real (consistencia entre idiomas, 4 tipos de cita, cliente existente). Deploy activo: v18. Siguiente paso: modificación extra acordada (columnas cliente_nutricion/cliente_pilates en "Clientes", sin número de US — ver sección 3). Resto del Sprint 2 pendiente según tablero real de Trello (sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29. Pendientes de fondo para Sprint 3: acceso desde móvil (nota 17), horario real de Dani (nota 14), checklist de acceso de producción (sección 6).*

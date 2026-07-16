@@ -295,7 +295,7 @@ export function CalendarPicker() {
     // al Paso 1 (ver handleBookingErrorDismiss).
     setConfirmedClient(record);
     setConfirmedModalidad(modalidad);
-    upsertClientData(record, () => {
+    upsertClientData(record, appointmentType, () => {
       makeBooking({
         type: appointmentType,
         timeslot: selectedTimeSlot,
