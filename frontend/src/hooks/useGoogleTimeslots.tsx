@@ -8,6 +8,13 @@ export function useGoogleTimeslots(type: string) {
   const [status, setStatus] = useState<
     "idle" | "pending" | "success" | "error"
   >("idle");
+  // Se incrementa para forzar un refetch de disponibilidad sin depender de un cambio
+  // de `type` — usado cuando el backend rechaza una reserva (slot tomado, clase llena,
+  // ventana de 48hrs vencida) y hay que traer los slots actualizados.
+  const [refreshIndex, setRefreshIndex] = useState(0);
+  const refetch = useCallback(() => {
+    setRefreshIndex((i) => i + 1);
+  }, []);
   const reset = useCallback(() => {
     setStatus("idle");
     setError(null);
@@ -40,7 +47,7 @@ export function useGoogleTimeslots(type: string) {
       setStatus("error");
       setError(error as Error);
     }
-  }, [type]);
+  }, [type, refreshIndex]);
 
-  return [availableGoogleSlots, durationMinutes, status, error, reset] as const;
+  return [availableGoogleSlots, durationMinutes, status, error, reset, refetch] as const;
 }

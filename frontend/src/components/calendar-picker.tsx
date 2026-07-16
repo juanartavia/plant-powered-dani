@@ -42,8 +42,9 @@ declare global {
 
 export type UiLanguage = "es" | "en";
 
-// Pasos del flujo: correo (busca cliente) -> datos del cliente (precargados si existe) -> calendario (confirma cita).
-type Step = "email" | "form" | "calendar";
+// Pasos del flujo (Sprint 2): calendario (selección tentativa, sin lock) -> correo (busca cliente)
+// -> datos del cliente (precargados si existe, resumen fijo del horario, confirma y reserva).
+type Step = "calendar" | "email" | "form";
 
 // Todas las cadenas visibles de la interfaz, por idioma. Fuente única de verdad para el switch ES/EN.
 const STRINGS = {
@@ -71,6 +72,14 @@ const STRINGS = {
     thankYouBody: "Tu cita ha sido agendada exitosamente.",
     previousMonth: "Mes anterior",
     nextMonth: "Mes siguiente",
+    errors: {
+      ventanaMinima:
+        "Este horario ya no cumple con el mínimo de 48 horas de anticipación. Por favor elige otro horario disponible.",
+      slotNoDisponible:
+        "Este horario acaba de ser reservado por otra persona. Por favor elige otro horario disponible.",
+      claseLlena:
+        "Esta clase de pilates ya está llena. Por favor elige otro horario disponible.",
+    },
     form: {
       nombre: "Nombre",
       apellido: "Apellido",
@@ -109,6 +118,14 @@ const STRINGS = {
     thankYouBody: "Your appointment has been booked successfully.",
     previousMonth: "Previous month",
     nextMonth: "Next month",
+    errors: {
+      ventanaMinima:
+        "This time slot no longer meets the 48-hour minimum booking window. Please choose another available time.",
+      slotNoDisponible:
+        "This time slot was just booked by someone else. Please choose another available time.",
+      claseLlena:
+        "This pilates class is now full. Please choose another available time.",
+    },
     form: {
       nombre: "First name",
       apellido: "Last name",
@@ -124,6 +141,35 @@ const STRINGS = {
     },
   },
 } as const;
+
+// Códigos de error que bookTimeslot puede lanzar cuando el slot elegido dejó de estar
+// disponible entre que el cliente cargó el calendario y confirmó la cita (US-09).
+// El mensaje de error que llega del backend (vía google.script.run failure handler)
+// incluye este código como substring — se usa para mostrar un mensaje bilingüe claro
+// en vez del error crudo, y para saber cuándo hay que refrescar la disponibilidad.
+const BOOKING_ERROR_CODES = [
+  "VENTANA_MINIMA_NO_CUMPLIDA",
+  "SLOT_NO_DISPONIBLE",
+  "CLASE_LLENA",
+] as const;
+
+function getStaleBookingErrorCode(
+  error: Error | null
+): (typeof BOOKING_ERROR_CODES)[number] | null {
+  if (!error) return null;
+  return BOOKING_ERROR_CODES.find((code) => error.message.includes(code)) ?? null;
+}
+
+function getBookingErrorMessage(
+  error: Error | null,
+  t: (typeof STRINGS)[UiLanguage]
+): string {
+  const code = getStaleBookingErrorCode(error);
+  if (code === "VENTANA_MINIMA_NO_CUMPLIDA") return t.errors.ventanaMinima;
+  if (code === "SLOT_NO_DISPONIBLE") return t.errors.slotNoDisponible;
+  if (code === "CLASE_LLENA") return t.errors.claseLlena;
+  return error?.message ?? "Unknown error 2";
+}
 
 // Clase CSS reutilizable para selectores nativos que coincide con el estilo de Input de Shadcn.
 const selectClassName =
@@ -142,7 +188,7 @@ export function CalendarPicker() {
     undefined
   );
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
-  const [step, setStep] = useState<Step>("email");
+  const [step, setStep] = useState<Step>("calendar");
 
   // Paso 1: correo ingresado y resultado de la búsqueda (null = cliente nuevo).
   const [clientEmail, setClientEmail] = useState("");
@@ -158,6 +204,7 @@ export function CalendarPicker() {
     slotsStatus,
     timeslotError,
     resetGoogleTimeslot,
+    refetchGoogleTimeslots,
   ] = useGoogleTimeslots(appointmentType);
   const [bookingStatus, bookingError, makeBooking, resetBookGoogle] =
     useBookGoogleTimeslot();
@@ -194,6 +241,12 @@ export function CalendarPicker() {
     setSelectedTimeSlot(timeSlot);
   };
 
+  // Paso 1 (Calendario): selección tentativa, sin lock ni llamada al backend.
+  const handleCalendarContinue = () => {
+    if (!selectedDate || !selectedTimeSlot) return;
+    setStep("email");
+  };
+
   const handleEmailSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const formData = new FormData(e.currentTarget);
@@ -209,8 +262,12 @@ export function CalendarPicker() {
     });
   };
 
+  // Paso 3 (Datos): confirma el horario elegido en el Paso 1 (fijo, no editable aquí).
+  // upsert de "Clientes" seguido de bookTimeslot — el lock/conflict-check real (48hrs +
+  // colisión) corre recién aquí, dentro de bookTimeslot, igual que en el flujo viejo.
   const handleClientFormSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (!selectedTimeSlot) return;
     const formData = new FormData(e.currentTarget);
     const record: ClientRecord = {
       correo: clientEmail,
@@ -222,27 +279,25 @@ export function CalendarPicker() {
       idioma:           formData.get("language")?.toString()         || "",
     };
     const modalidad = formData.get("modalidad")?.toString() || "";
+    // Se guardan de inmediato (no solo tras el éxito) para que, si bookTimeslot falla
+    // por slot ocupado, los datos ya escritos por el cliente no se pierdan al regresar
+    // al Paso 1 (ver handleBookingErrorDismiss).
+    setConfirmedClient(record);
+    setConfirmedModalidad(modalidad);
     upsertClientData(record, () => {
-      setConfirmedClient(record);
-      setConfirmedModalidad(modalidad);
-      setStep("calendar");
-    });
-  };
-
-  const handleConfirmBooking = () => {
-    if (!selectedTimeSlot || !confirmedClient) return;
-    makeBooking({
-      type: appointmentType,
-      timeslot: selectedTimeSlot,
-      nombre: confirmedClient.nombre,
-      apellido: confirmedClient.apellido,
-      email: confirmedClient.correo,
-      phone: confirmedClient.telefono,
-      birthdate: confirmedClient.fecha_nacimiento,
-      cedula: confirmedClient.cedula,
-      language: confirmedClient.idioma,
-      modalidad: confirmedModalidad,
-      clientTimezone: timezone,
+      makeBooking({
+        type: appointmentType,
+        timeslot: selectedTimeSlot,
+        nombre: record.nombre,
+        apellido: record.apellido,
+        email: record.correo,
+        phone: record.telefono,
+        birthdate: record.fecha_nacimiento,
+        cedula: record.cedula,
+        language: record.idioma,
+        modalidad,
+        clientTimezone: timezone,
+      });
     });
   };
 
@@ -257,14 +312,26 @@ export function CalendarPicker() {
     return !availableSlots.hasSlotsForDate(date);
   };
 
-  const handleBackToEmail = () => {
-    setStep("email");
-    resetFindClient();
+  const handleBookingErrorDismiss = () => {
+    const isStaleSlot = getStaleBookingErrorCode(bookingError) !== null;
+    resetBookGoogle();
+    if (isStaleSlot) {
+      // El slot elegido en el Paso 1 dejó de estar disponible entre que se seleccionó y
+      // se confirmó en el Paso 3. Se regresa al Paso 1 con disponibilidad recargada; el
+      // correo (clientEmail) y los datos ya ingresados (confirmedClient/confirmedModalidad,
+      // usados como defaultValues) se preservan a propósito — no se limpian aquí.
+      setSelectedTimeSlot(undefined);
+      refetchGoogleTimeslots();
+      setStep("calendar");
+    }
   };
 
-  const handleBackToForm = () => {
-    setStep("form");
-    setSelectedTimeSlot(undefined);
+  const handleBackToCalendar = () => {
+    setStep("calendar");
+  };
+
+  const handleBackToEmail = () => {
+    setStep("email");
     resetUpsertClient();
   };
 
@@ -293,8 +360,8 @@ export function CalendarPicker() {
       />
       <OkDialog
         open={bookingStatus === "error"}
-        description={bookingError?.message ?? "Unknown error 2"}
-        confirm={resetBookGoogle}
+        description={getBookingErrorMessage(bookingError, t)}
+        confirm={handleBookingErrorDismiss}
       />
       <OkDialog
         open={findClientStatus === "error"}
@@ -325,7 +392,7 @@ export function CalendarPicker() {
           <ModeToggle className="absolute -right-10 -top-10 md:block hidden" />
         </div>
 
-        {step === "email" && (
+        {step === "calendar" && (
           <CardHeader className="max-w-full">
             <div className="flex justify-between items-center flex-col sm:flex-row gap-4 relative">
               <CardTitle className="max-w-64">
@@ -353,12 +420,12 @@ export function CalendarPicker() {
             </div>
           </CardHeader>
         )}
-        {step === "form" && (
+        {step === "email" && (
           <CardHeader className="max-w-full">
             <CardTitle>{title}</CardTitle>
           </CardHeader>
         )}
-        {step === "calendar" && (
+        {(step === "calendar" || step === "form") && (
           <h2 className="text-xl font-semibold mb-4 pt-6 px-6">
             {title} —{" "}
             {selectedDate
@@ -375,19 +442,6 @@ export function CalendarPicker() {
         )}
 
         <CardContent className="p-6 pt-0 sm:pt-2 pb-0">
-          {step === "email" && (
-            <EmailStep handleSubmit={handleEmailSubmit} uiLanguage={uiLanguage} />
-          )}
-          {step === "form" && (
-            <ContactForm
-              handleSubmit={handleClientFormSubmit}
-              type={appointmentType}
-              uiLanguage={uiLanguage}
-              onLanguageChange={setUiLanguage}
-              clientEmail={clientEmail}
-              defaultValues={existingClient}
-            />
-          )}
           {step === "calendar" && (
             <CalendarTimeslotPicker
               handlePreviousMonth={handlePreviousMonth}
@@ -403,12 +457,45 @@ export function CalendarPicker() {
               uiLanguage={uiLanguage}
             />
           )}
+          {step === "email" && (
+            <EmailStep
+              handleSubmit={handleEmailSubmit}
+              uiLanguage={uiLanguage}
+              defaultEmail={clientEmail}
+            />
+          )}
+          {step === "form" && (
+            <ContactForm
+              handleSubmit={handleClientFormSubmit}
+              type={appointmentType}
+              uiLanguage={uiLanguage}
+              onLanguageChange={setUiLanguage}
+              clientEmail={clientEmail}
+              defaultValues={confirmedClient ?? existingClient}
+              defaultModalidad={confirmedModalidad}
+            />
+          )}
         </CardContent>
         <CardFooter className="flex justify-between">
-          {step === "email" && (
-            <Button type="submit" form="email-form" className="w-full">
+          {step === "calendar" && (
+            <Button
+              onClick={handleCalendarContinue}
+              disabled={!selectedDate || !selectedTimeSlot}
+              className="w-full"
+            >
               {t.continue}
             </Button>
+          )}
+          {step === "email" && (
+            <>
+              <Button variant="outline" onClick={handleBackToCalendar}>
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                {t.back}
+              </Button>
+              <Button type="submit" form="email-form">
+                {t.continue}
+              </Button>
+            </>
           )}
           {step === "form" && (
             <>
@@ -419,27 +506,9 @@ export function CalendarPicker() {
               <Button
                 type="submit"
                 form="client-form"
-                disabled={upsertStatus === "pending"}
+                disabled={upsertStatus === "pending" || bookingStatus === "pending"}
               >
-                {t.continue}
-              </Button>
-            </>
-          )}
-          {step === "calendar" && (
-            <>
-              <Button variant="outline" onClick={handleBackToForm}>
-                <ArrowLeft className="mr-2 h-4 w-4" />
-                {t.back}
-              </Button>
-              <Button
-                onClick={handleConfirmBooking}
-                disabled={
-                  !selectedDate ||
-                  !selectedTimeSlot ||
-                  bookingStatus === "pending"
-                }
-              >
-                {bookingStatus === "pending" ? (
+                {upsertStatus === "pending" || bookingStatus === "pending" ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : (
                   <Send className="mr-2 h-4 w-4" />
@@ -477,9 +546,11 @@ function LanguageDropdown({
 function EmailStep({
   handleSubmit,
   uiLanguage,
+  defaultEmail,
 }: {
   handleSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   uiLanguage: UiLanguage;
+  defaultEmail: string;
 }) {
   const t = STRINGS[uiLanguage];
   return (
@@ -491,7 +562,14 @@ function EmailStep({
       <p className="text-muted-foreground">{t.enterEmailPrompt}</p>
       <div className="space-y-2">
         <Label htmlFor="correo">{t.form.email}</Label>
-        <Input id="correo" name="correo" type="email" required autoFocus />
+        <Input
+          id="correo"
+          name="correo"
+          type="email"
+          required
+          autoFocus
+          defaultValue={defaultEmail}
+        />
       </div>
     </form>
   );
@@ -592,6 +670,7 @@ function ContactForm({
   onLanguageChange,
   clientEmail,
   defaultValues,
+  defaultModalidad,
 }: {
   handleSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   type: string;
@@ -599,6 +678,7 @@ function ContactForm({
   onLanguageChange: (value: UiLanguage) => void;
   clientEmail: string;
   defaultValues: ClientRecord | null;
+  defaultModalidad: string;
 }) {
   // measurement → siempre presencial; pilates → siempre virtual.
   // Para initial y followup el cliente elige.
@@ -685,7 +765,7 @@ function ContactForm({
             id="modalidad"
             name="modalidad"
             required
-            defaultValue=""
+            defaultValue={defaultModalidad}
             className={selectClassName}
           >
             <option value="" disabled>
