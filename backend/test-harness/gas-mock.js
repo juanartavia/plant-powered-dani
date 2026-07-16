@@ -153,18 +153,18 @@ function createMockContext() {
   const spreadsheet = new MockSpreadsheet();
 
   const NUTRICION_HEADERS = [
-    "token", "nombre", "apellido", "correo", "telefono", "cedula", "fecha_nacimiento",
+    "token", "nombre", "apellido", "correo", "telefono", "tipo_id", "numero_id", "fecha_nacimiento",
     "tipo_cita", "fecha", "hora", "zona_horaria_cliente", "modalidad", "idioma",
     "meet_link", "estado", "fecha_creacion", "recordatorio_enviado", "show_no_show",
     "cancelaciones_tardias", "requiere_pago", "event_id",
   ];
   const PILATES_HEADERS = [
-    "token", "nombre", "apellido", "correo", "telefono", "cedula", "fecha_nacimiento",
+    "token", "nombre", "apellido", "correo", "telefono", "tipo_id", "numero_id", "fecha_nacimiento",
     "fecha_clase", "hora_clase", "zona_horaria_cliente", "idioma",
     "estado", "fecha_inscripcion", "recordatorio_enviado", "show_no_show",
   ];
   const CUPOS_HEADERS = ["fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link"];
-  const CLIENTES_HEADERS = ["correo", "nombre", "apellido", "telefono", "cedula", "fecha_nacimiento", "idioma", "cancelaciones_tardias", "requiere_pago"];
+  const CLIENTES_HEADERS = ["correo", "nombre", "apellido", "telefono", "tipo_id", "numero_id", "fecha_nacimiento", "idioma", "cancelaciones_tardias", "requiere_pago"];
 
   spreadsheet.sheets["Nutrición"] = new MockSheet("Nutrición", NUTRICION_HEADERS);
   spreadsheet.sheets["Pilates"] = new MockSheet("Pilates", PILATES_HEADERS);

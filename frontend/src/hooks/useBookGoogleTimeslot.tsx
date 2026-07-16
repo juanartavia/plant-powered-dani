@@ -18,7 +18,8 @@ export function useBookGoogleTimeslot() {
     email,
     phone,
     birthdate,
-    cedula,
+    tipoId,
+    numeroId,
     language,
     modalidad,
     clientTimezone,
@@ -30,7 +31,8 @@ export function useBookGoogleTimeslot() {
     email: string;
     phone: string;
     birthdate: string;
-    cedula: string;
+    tipoId: string;
+    numeroId: string;
     language: string;
     modalidad: string;
     clientTimezone: string;
@@ -54,7 +56,8 @@ export function useBookGoogleTimeslot() {
           apellido,
           email,
           phone,
-          cedula,
+          tipoId,
+          numeroId,
           birthdate,
           language,
           modalidad,

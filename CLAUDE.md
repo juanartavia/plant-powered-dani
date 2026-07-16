@@ -1,7 +1,7 @@
 # CLAUDE.md — Plant Powered by Dani
 ## Sistema de Agendamiento Automatizado
 > Documento vivo — actualizar conforme avanza el desarrollo
-> Última actualización: 14 julio 2026 — **Sprint 1 completo.** Todas las US (01-10, 17, 27) en Done, validadas en testing real. Deploy activo: v16. Listo para iniciar Sprint 2 (correos + cambio de orden de pantallas).
+> Última actualización: 15 julio 2026 — **US-19 Done (reorden de pantallas Calendario→Correo→Datos), validada en testing real.** Deploy activo: v17. Sprint 2 en curso — siguiente tarjeta: US-18 (campo de ID flexible).
 
 ---
 
@@ -10,11 +10,11 @@
 Si estás retomando este proyecto en un chat nuevo, este documento es tu única fuente de verdad. Antes de generar cualquier prompt para Claude Code:
 
 1. Lee completo este documento, especialmente las secciones 11 (estado de sprints), 13 (notas técnicas — contiene lecciones aprendidas que evitan repetir bugs ya resueltos), y 14/15 (método de trabajo y reglas de Trello).
-2. **Dos cosas quedaron confirmadas en la reunión de equipo del 14 de julio, pendientes de implementar al iniciar Sprint 2** (ver sección 3, "Cambios confirmados en reunión del 14 julio"):
-   - Nuevo orden de las 3 pantallas del portal: **Calendario → Correo → Datos** (actualmente es Correo → Datos → Calendario, implementado en US-27). Esto es un cambio de flujo, no solo de UI.
-   - Mostrar dirección física (si presencial) o link de Meet (si virtual) en el correo de confirmación y en la pantalla de "¡Gracias!" — dirección ya confirmada, ver sección 1.
-3. El Sprint 2 empieza en la tabla de la sección 11 con US-11 en adelante (plantillas de correo, confirmación, notificaciones internas, recordatorio 48hrs) — todas en Backlog.
-4. Sigue el mismo flujo de trabajo documentado en la sección 14: generar prompt → Claude Code ejecuta → deploy → **probar en real antes de marcar cualquier checkbox** → actualizar este documento.
+2. **US-19 (reorden de pantallas) ya está Done** — ver sección 3 para el diseño final implementado y validado.
+3. **Siguiente tarjeta: US-18 — Campo de ID flexible (cédula, pasaporte o driver's license).** Es pequeña (1 punto), pero **desbloquea un ajuste pendiente en US-19**: la Pantalla 3 (Datos) del flujo ya reordenado hoy solo maneja el campo `cedula` tal como estaba en Sprint 1 — cuando US-18 agregue tipo/número de ID, hay que volver a tocar esa misma pantalla para reemplazar `cedula` por los campos nuevos.
+4. El resto del Sprint 2 según el tablero real de Trello (ver sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29 — todas en Backlog.
+5. **Antes de tocar US-11/US-12/US-28**, el usuario tiene carpetas descargadas de Drive (branding/colores, comunicaciones/plantillas de correo, gráficos de Dani) que subirá al repo en una carpeta `design-reference/` separada de `backend/`/`frontend/` cuando lleguemos a esas tarjetas — no asumir que ya están ahí sin confirmar.
+6. Sigue el mismo flujo de trabajo documentado en la sección 14: generar prompt → Claude Code ejecuta → **commit inmediato tras deploy exitoso** (lección nueva, ver sección 13 nota 27) → probar en real antes de marcar cualquier checkbox → actualizar este documento.
 
 ---
 
@@ -99,7 +99,7 @@ Consultorio #33
 ### ⚠️ Asimetría intencional: cancelar vs. reagendar con menos de 24hrs ✅ CONFIRMADO Y VALIDADO (US-06, 14 jul)
 Estas dos acciones se comportan **distinto** a propósito cuando faltan menos de 24 horas para la cita:
 
-| Acción | Con &lt;24hrs de anticipación |
+| Acción | Con <24hrs de anticipación |
 |--------|------------------------------|
 | **Cancelar** | Siempre se permite. Se marca como tardía (incrementa el contador del cliente), pero la cita SÍ se cancela y el slot se libera. |
 | **Reagendar** | Se BLOQUEA por completo (error `VENTANA_REAGENDAMIENTO_VENCIDA`). La cita no se mueve. El intento bloqueado también incrementa el contador de cancelaciones tardías del cliente. |
@@ -131,19 +131,21 @@ Campos exactos requeridos (en este orden):
 8. Modalidad *(solo para initial y followup — automático para los demás)*
 
 > ⚠️ **Sin campo de notas** — eliminado para mantener el proceso simple.
+> ⚠️ **Pendiente US-18:** el campo #5 (Cédula) va a evolucionar a un campo de ID flexible (tipo + número — cédula, pasaporte o driver's license), para cubrir clientes de EEUU. Cuando esto se implemente, hay que volver a tocar la Pantalla 3 del flujo (ver más abajo) para reemplazar el campo actual.
 
-### Flujo del formulario en 3 pasos ✅ IMPLEMENTADO EN US-27 — ⚠️ ORDEN A CAMBIAR EN SPRINT 2
-Implementación actual (US-27, 12 jul), correo como clave única de búsqueda del cliente:
-1. **Paso 1 — Correo:** el cliente ingresa solo su correo. El sistema busca ese correo en la pestaña "Clientes" (`findClientByEmail`).
-2. **Paso 2 — Datos del cliente:** si el correo existe, el formulario aparece precargado (todos editables); si no existe, vacío. Al continuar, upsert en "Clientes".
-3. **Paso 3 — Calendario:** se muestra la disponibilidad con el botón final "Confirmar cita" (`bookTimeslot`).
+### Flujo del formulario en 3 pasos ✅ REORDENADO Y VALIDADO (US-19, 15 jul)
+Nuevo orden implementado: **Calendario → Correo → Datos**.
+1. **Paso 1 — Calendario:** cliente ve disponibilidad y elige fecha/hora (con regla de 48hrs mínimo). Selector de idioma y zona horaria vive aquí ahora. Selección tentativa, sin lock todavía.
+2. **Paso 2 — Correo:** cliente ingresa su correo, sistema busca en "Clientes" (`findClientByEmail`).
+3. **Paso 3 — Datos:** si el correo existe, formulario precargado (todos los campos editables excepto correo) + resumen FIJO del horario elegido en el Paso 1 (no editable ahí — para cambiar de horario hay que reiniciar el flujo); si es cliente nuevo, formulario vacío. Al hacer clic en Enviar, se ejecuta el lock/conflict-check real (`bookTimeslot`) — igual que antes, solo cambió el paso donde vive (ahora es el último paso en vez del Paso 3 viejo).
 
-**⚠️ CAMBIO CONFIRMADO EN REUNIÓN DEL 14 JULIO — PENDIENTE DE IMPLEMENTAR EN SPRINT 2:**
-El equipo decidió que el **nuevo orden debe ser: Calendario → Correo → Datos** (el cliente elige primero fecha/hora, luego se identifica con su correo, y luego completa/confirma sus datos). Esto es lo único que cambió de fondo en esa reunión respecto a lo ya construido. Implicaciones a considerar al implementarlo:
-- La lógica de `findClientByEmail`/upsert de "Clientes" sigue siendo válida, solo cambia CUÁNDO se dispara en el flujo.
-- Hay que revisar si la ventana de 48hrs y el lock/conflict-check (que hoy corren en el Paso 3 actual) deben moverse a validarse más temprano, ya que ahora el calendario es el primer paso — podría ser necesario re-validar la disponibilidad al final igualmente (justo antes de confirmar), para cubrir el caso de que el cliente tarde en llenar el correo/datos y el slot se ocupe mientras tanto.
-- Revisar cómo interactúa esto con el precargado de datos: si el cliente ya eligió un horario y LUEGO se identifica con un correo que ya existe, hay que decidir si se le muestra el resumen del horario elegido junto con sus datos precargados, o si se le permite cambiar de horario en ese punto.
-- No se discutió el detalle de implementación en la reunión — esto queda para el análisis del próximo chat al iniciar Sprint 2.
+**Manejo de slot ocupado a mitad de flujo:** si el slot se ocupa mientras el cliente llena correo/datos, al confirmar falla con error claro y el cliente es devuelto al **Paso 1** con el calendario refrescado — el correo y los datos ya ingresados quedan **preservados** (no se pierden, no hay que reescribirlos). Validado en testing real quitándole el slot a un cliente nuevo desde otra pestaña a mitad de flujo — confirmado que los datos persisten y no se duplica el registro.
+
+**Aplica a los 4 tipos de cita:** Inicial, Seguimiento, Medición y Pilates — probado end-to-end en los 4, incluyendo cliente nuevo y cliente existente.
+
+**Hallazgo real de Code durante la implementación:** los selectores de idioma/zona horaria vivían solo en el header del paso "correo" (antes el primero). Al mover el calendario al Paso 1, si no se movían también los selectores, un cliente de EEUU habría elegido horario antes de poder fijar su zona horaria — se corrigió moviéndolos al nuevo Paso 1, requerido por RNF-5, no opcional.
+
+**Deploy:** v17 (15 jul), mismo `deploymentId` de siempre.
 
 ### Zona horaria ✅ CONFIRMADO
 - El sistema debe manejar múltiples zonas horarias, incluyendo Estados Unidos
@@ -233,38 +235,40 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 
 ## 7. FLUJOS COMPLETOS
 
-### Flujo principal — Agendar cita de nutrición (orden actual, PENDIENTE de reordenar en Sprint 2 — ver sección 3)
+### Flujo principal — Agendar cita de nutrición (orden reordenado en US-19, ver sección 3)
 ```
 1. Ali o Dani comparte link ?type=initial/followup/measurement por WhatsApp
-2. Cliente accede → selecciona idioma (ES/EN)
-3. Paso 1: cliente ingresa su correo → sistema busca en pestaña "Clientes"
-4. Paso 2: formulario precargado o vacío → upsert en "Clientes"
-5. Paso 3: ve disponibilidad (excluyendo <48hrs), selecciona fecha y hora
-6. Apps Script re-verifica ventana 48hrs + LockService (protege contra colisiones entre tipos de cita)
-7. Si el slot ya no está disponible: error claro + recarga automática
-8. Escribe fila en Sheet de Nutrición (con flush()) PRIMERO
-9. Solo si tuvo éxito: crea evento en Calendar de Dani + Meet real si es virtual
-10. Si el evento falla después de un Sheet exitoso: fila queda 'Error_Calendar' (no se borra)
-11. Envía correo de confirmación (dirección física o Meet según modalidad) — pendiente Sprint 2
-12. Envía notificación interna a Dani — pendiente Sprint 2
-13. Trigger 48hrs antes → recordatorio — pendiente Sprint 2
-14. Cita se realiza → Dani marca show/no-show en Sheet
+2. Cliente accede → Paso 1: ve Calendario (con selector idioma/zona horaria ahí),
+   selecciona fecha y hora dentro de la ventana permitida (48hrs-8sem)
+3. Paso 2: cliente ingresa su correo → sistema busca en pestaña "Clientes"
+4. Paso 3: formulario precargado o vacío según exista el correo, con resumen
+   fijo del horario elegido en Paso 1 → upsert en "Clientes" al enviar
+5. Apps Script re-verifica ventana 48hrs + LockService (protege contra colisiones
+   entre tipos de cita) justo antes de confirmar
+6. Si el slot ya no está disponible: error claro + regreso automático al Paso 1
+   con calendario recargado y correo/datos preservados
+7. Escribe fila en Sheet de Nutrición (con flush()) PRIMERO
+8. Solo si tuvo éxito: crea evento en Calendar de Dani + Meet real si es virtual
+9. Si el evento falla después de un Sheet exitoso: fila queda 'Error_Calendar' (no se borra)
+10. Envía correo de confirmación (dirección física o Meet según modalidad) — pendiente Sprint 2
+11. Envía notificación interna a Dani — pendiente Sprint 2
+12. Trigger 48hrs antes → recordatorio — pendiente Sprint 2
+13. Cita se realiza → Dani marca show/no-show en Sheet
 ```
 
-### Flujo pilates — Inscripción a clase grupal
+### Flujo pilates — Inscripción a clase grupal (orden reordenado en US-19)
 ```
 1. Ali o Dani comparte link ?type=pilates
-2. Cliente selecciona idioma
-3. Paso 1: correo → busca en "Clientes" (compartida con nutrición)
-4. Paso 2: formulario precargado o vacío → upsert
-5. Paso 3: disponibilidad de sábados con cupos
-6. Si hay cupo: verifica en Cupos_Pilates (LockService)
-7. Escribe fila en Pilates PRIMERO (flush()), incrementa contador
-8. Si es la primera inscripción del slot: crea evento en calendario dedicado con Meet, guarda event_id/meet_link
-9. Si ya existe event_id: agrega al cliente como invitado (no crea evento nuevo)
-10. Si cupo = 5: "clase llena"
-11-13. Correos y notificaciones — pendiente Sprint 2
-14. Clase se realiza → instructora marca show/no-show
+2. Cliente accede → Paso 1: ve disponibilidad de sábados con cupos, selecciona
+3. Paso 2: correo → busca en "Clientes" (compartida con nutrición)
+4. Paso 3: formulario precargado o vacío → upsert, resumen fijo del horario elegido
+5. Si hay cupo: verifica en Cupos_Pilates (LockService) al confirmar
+6. Escribe fila en Pilates PRIMERO (flush()), incrementa contador
+7. Si es la primera inscripción del slot: crea evento en calendario dedicado con Meet, guarda event_id/meet_link
+8. Si ya existe event_id: agrega al cliente como invitado (no crea evento nuevo)
+9. Si cupo = 5: "clase llena"
+10-12. Correos y notificaciones — pendiente Sprint 2
+13. Clase se realiza → instructora marca show/no-show
 ```
 
 ### Flujo reagendamiento ✅ IMPLEMENTADO Y VALIDADO (US-06)
@@ -309,6 +313,7 @@ cancelaciones_tardias (legacy, sin usar) | requiere_pago (legacy, sin usar) | ev
 **Estados posibles:** `Agendada` → `Reagendada` → `Cancelada`, y también `Error_Calendar`.
 
 > ⚠️ **Nota operativa:** los TÍTULOS de la fila 1 de esta pestaña (y de "Pilates") pueden estar desactualizados visualmente respecto al orden real de columnas, porque el schema fue evolucionando (US-17 separó nombre/apellido, US-10 agregó event_id) y los encabezados de texto no se actualizaron automáticamente. **Los datos SÍ se escriben en las columnas correctas según el código actual** — solo el texto de la fila 1 puede confundir visualmente. Si esto genera confusión al operar el Sheet, limpiar y reescribir manualmente la fila 1 con los nombres de columna correctos (no requiere tocar código, ver conversación del 14 jul si se necesita el detalle paso a paso).
+> ⚠️ **Pendiente US-18:** la columna `cedula` va a evolucionar a `tipo_id` + `numero_id` — no hacer este cambio de schema hasta generar el prompt de US-18.
 
 ### Pestaña "Pilates"
 ```
@@ -340,13 +345,13 @@ Las columnas `cancelaciones_tardias`/`requiere_pago` de esta pestaña (agregadas
 | RF-1.3 | Formulario: nombre y apellido separados, correo, teléfono, cédula, fecha de nacimiento, idioma, modalidad | ✅ US-17 |
 | RF-1.4 | Sin cuenta de Google — portal público por link con token | ✅ (⚠️ nota 17 — pendiente investigar fallo reportado en acceso desde móvil) |
 | RF-1.5 | Datos en Sheets. Pilates: también actualizar contador en Cupos_Pilates | ✅ US-05 |
-| RF-1.11 | Correo como identificador único del cliente — flujo de 3 pasos | ✅ US-27 (⚠️ orden a cambiar en Sprint 2, ver sección 3) |
-| RF-1.12 | Ventana mínima de 48 horas + verificación de conflictos con lock en tiempo real | ✅ US-09 |
+| RF-1.11 | Correo como identificador único del cliente — flujo de 3 pasos | ✅ US-27, orden actualizado en US-19 |
+| RF-1.12 | Ventana mínima de 48 horas + verificación de conflictos con lock en tiempo real | ✅ US-09, sigue viviendo en el paso final tras US-19 |
 | RF-1.13 | Creación de evento de Calendar tras escritura exitosa en Sheet; Meet real; evento único con múltiples invitados en pilates; calendario dedicado | ✅ US-10 |
 | RF-1.14 | Reagendar/cancelar por token; política 24hrs con asimetría intencional; tracker de tardías por cliente; requiere_pago tras 2 consecutivas; Calendar consistente | ✅ US-06 — **falta frontend** (hoy solo probado vía backend/wrappers manuales, ya removidos) |
 | RF-1.8 | Ventana máxima de agendamiento: 56 días (8 semanas) | ✅ |
 | RF-1.9 | Horarios en zona horaria del cliente. Evento creado en hora CR. | ✅ US-08 |
-| RF-1.10 | Selector de idioma ES/EN desde primera pantalla | ✅ |
+| RF-1.10 | Selector de idioma ES/EN desde primera pantalla | ✅ (ahora en Paso 1 tras US-19) |
 
 ### RF-2 — Correos y Automatizaciones (SPRINT 2 — TODO PENDIENTE)
 | ID | Requerimiento | Estado |
@@ -357,7 +362,7 @@ Las columnas `cancelaciones_tardias`/`requiere_pago` de esta pestaña (agregadas
 | RF-2.4 | Recordatorio 48 hrs antes. Solo si estado='Agendada' o 'Reagendada'. | ⏳ Pendiente Sprint 2 |
 | RF-2.5 | Notificación a Dani y Ali si cancelación/reagendamiento fuera de ventana | ⏳ Pendiente Sprint 2 (stub ya cableado, ver RF-2.3) |
 | RF-2.6 (nuevo) | Frontend para que el cliente reagende/cancele desde el link único del correo (hoy solo existe el backend) | ⏳ Pendiente Sprint 2 |
-| RF-2.7 (nuevo) | Reordenar las 3 pantallas del portal: Calendario → Correo → Datos (ver sección 3) | ⏳ Pendiente Sprint 2 |
+| RF-2.7 | Reordenar las 3 pantallas del portal: Calendario → Correo → Datos | ✅ **Done — US-19, 15 jul** |
 
 ---
 
@@ -429,6 +434,8 @@ getPilatesCalendarId(): string
 
 > **Nota:** los wrappers temporales `manualTestCancelBooking`/`manualTestRescheduleBooking` que existieron brevemente para testing manual de US-06 (13-14 jul) ya fueron **removidos del código** el 14 de julio, tras validar la US por completo. Si se necesita un mecanismo similar en el futuro para probar funciones sin frontend, ver el patrón documentado en nota técnica #23 (sección 13) — no reinventar el enfoque, solo recrear wrappers análogos y volver a borrarlos al terminar.
 
+> **Nota frontend (US-19, 15 jul):** no hay componentes de paso separados en archivos individuales — `EmailStep`, `ContactForm` y `CalendarTimeslotPicker` son funciones dentro de `frontend/src/components/calendar-picker.tsx`, junto con el orquestador `CalendarPicker`. Tenerlo en cuenta al generar prompts que toquen el frontend: todo vive en ese único archivo.
+
 ---
 
 ## 11. SPRINTS Y ESTADO ACTUAL
@@ -448,20 +455,24 @@ getPilatesCalendarId(): string
 | US-09 | Verificación de conflictos, lock y ventana mínima de 48 hrs | ✅ Done — incluyendo hallazgo real de falta de lock en conflict-check heredado |
 | US-10 | Creación de evento en Calendar y generación de Meet | ✅ Done — incluyendo 3 bugs reales encontrados y corregidos (orden Sheet/Calendar, evento duplicado pilates, flush() de SpreadsheetApp) |
 | US-17 | Separar nombre y apellido en campos independientes | ✅ Done |
-| US-27 | Correo como identificador único — pestaña "Clientes" + flujo de 3 pasos | ✅ Done — orden de pasos pendiente de cambiar en Sprint 2 (ver sección 3) |
+| US-27 | Correo como identificador único — pestaña "Clientes" + flujo de 3 pasos | ✅ Done |
 
 **Todas las tarjetas movidas a Done en Trello. Deploy activo: v16.**
 
-### Sprint 2 (a iniciar) — Correos + Reagendamiento/Cancelación (frontend) + Reordenar flujo
+### Sprint 2 (Jul 14 – Jul 20) — ESP: 30 — tablero real de Trello
 
-| US | Título | Estado |
-|----|--------|--------|
-| US-11 | Plantillas HTML bilingües (nutrición y pilates) — debe incluir dirección física (presencial) o Meet (virtual), ver sección 1 | ⏳ Backlog |
-| US-12 | Correo de confirmación inmediato al cliente | ⏳ Backlog |
-| US-13 | Notificación interna a Dani o instructora (implementar de verdad el stub `notifyLateCancellation` + extender a agendar) | ⏳ Backlog |
-| US-14 | Recordatorio automático 48 horas antes de la cita (time-based trigger) | ⏳ Backlog |
-| US-15+ | Frontend de reagendamiento y cancelación (hoy solo existe backend, ver RF-1.14/RF-2.6) | ⏳ Backlog |
-| (nueva, sin número aún) | Reordenar flujo del portal: Calendario → Correo → Datos (decisión de reunión 14 jul, ver sección 3) | ⏳ Backlog — analizar implicaciones antes de generar el prompt |
+| US | Título | Puntos | Checklist | Estado |
+|----|--------|--------|-----------|--------|
+| US-19 | Cambiar orden de pantallas (Calendario→Correo→Datos) | 2 | 5/5 | ✅ **Done (15 jul)** — validado en testing real, 4 tipos de cita, cliente nuevo/existente, recuperación de slot ocupado. Deploy v17. |
+| US-18 | Campo de ID flexible: cédula, pasaporte o driver's license | 1 | 0/1 | ⏳ **Siguiente tarjeta** — desbloquea ajuste pendiente en Pantalla 3 de US-19 |
+| US-16 | Fix: calendario no abre en el mes actual por defecto | 2 | 0/4 | ⏳ Backlog |
+| US-11 | Plantillas HTML bilingües (nutrición y pilates) | 3 | 1/7 | ⏳ Backlog — necesita carpeta "Comunicaciones" de Drive |
+| US-12 | Correo de confirmación inmediato al cliente | 3 | 1/8 | ⏳ Backlog — depende de US-11 |
+| US-13 | Notificación interna a Secretaria | 5 | 1/6 | ⏳ Backlog |
+| US-14 | Recordatorio automático 48 horas antes de la cita | 5 | 1/6 | ⏳ Backlog |
+| US-20 | Generación y validación de token único por cita | 2 | 1/8 | ⏳ Backlog — **revisar solapamiento**, el token UUID v4 ya se implementó en US-05/US-06; confirmar con Trello qué falta exactamente antes de generar el prompt |
+| US-28 | Actualizar look & feel del portal según brandbook de Plant Powered | 4 | 0/7 | ⏳ Backlog — necesita carpeta de branding/colores de Drive |
+| US-29 | Bloquear registro de datos de menores de 13 años | 5 | 0/8 | ⏳ Backlog — requerimiento nuevo, discutir validación (¿cálculo de edad desde fecha de nacimiento?) antes de generar el prompt |
 
 ### Sprint 3 (pendiente) — Producción + Pruebas
 **Epics:** Flujos independientes nutrición y pilates · Pruebas end-to-end · Paso a producción y capacitación
@@ -480,7 +491,7 @@ getPilatesCalendarId(): string
 | Credenciales | Guardadas en Drive: AutomáTica / Plant Powered Dani / Interno |
 | URL de testing activa | https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec |
 | Editor Apps Script | https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit |
-| Versión actual | **v16** |
+| Versión actual | **v17** |
 | Repo | https://github.com/juanartavia/plant-powered-dani |
 | Spreadsheet testing | https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit |
 | Calendario pilates (testing) | "Pilates - Testing" |
@@ -489,7 +500,7 @@ getPilatesCalendarId(): string
 ### ⚠️ Lección crítica de proceso — deploy vs. push (ver nota técnica #25)
 `clasp push` actualiza el código fuente del proyecto (lo que se ve en el editor), pero la URL pública `/exec` de un deployment queda **congelada** a la versión que tenía en el último `clasp deploy` sobre ese mismo `deploymentId`. Si se hace solo `push` sin `deploy`, cualquier prueba a través del link real seguirá corriendo código viejo, aunque el editor muestre el código nuevo y los wrappers manuales (que sí leen del HEAD) funcionen bien. **Siempre confirmar que se hizo `clasp deploy` antes de dar una prueba por válida usando el link público.**
 
-### Links de testing por tipo de cita (v16)
+### Links de testing por tipo de cita (v17)
 ```
 Consulta Inicial (60 min)
 https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec?type=initial
@@ -512,7 +523,8 @@ Clase de Pilates (60 min)
 | v13 | 13 jul | US-10 primera iteración: Sheet-antes-Calendar, evento único pilates, Meet real, calendario dedicado. Bug encontrado: "Fila de Cupos_Pilates no encontrada" en slots nuevos. |
 | v14 | 13 jul | Fix del bug de v13: `SpreadsheetApp.flush()` en 3 puntos. **US-10 Done.** |
 | v15 | 14 jul | US-06: reagendar/cancelar por token, tracker por cliente. Deploy hecho tras detectar que v14 seguía activo en la URL (gap de deploy, no bug de código — ver nota 25). |
-| v16 | 14 jul | Wrappers temporales de testing manual removidos del código tras validar US-06 por completo. **Sprint 1 100% cerrado. Deploy activo.** |
+| v16 | 14 jul | Wrappers temporales de testing manual removidos del código tras validar US-06 por completo. **Sprint 1 100% cerrado.** |
+| v17 | 15 jul | **US-19 Done.** Reordenado el flujo del portal a Calendario→Correo→Datos. Selectores de idioma/zona horaria movidos al Paso 1. Validado en testing real: 4 tipos de cita, cliente nuevo, cliente existente, y recuperación de slot ocupado a mitad de flujo. **Deploy activo.** |
 
 ---
 
@@ -527,7 +539,7 @@ Clase de Pilates (60 min)
 7. **Cancelaciones tardías — fuente de verdad es "Clientes", no Nutrición/Pilates** (confirmado en US-06): las columnas `cancelaciones_tardias`/`requiere_pago` de Nutrición/Pilates son legacy, sin usar; el tracker real vive por correo en la pestaña "Clientes", cruzando tipos de cita.
 8. **Correos pilates** salen desde cuenta de la instructora — o Reply-To, decisión pendiente Sprint 2 (sección 6).
 9. **Idioma del cliente** guardado en Sheet → determina idioma de todos los correos automáticos (Sprint 2).
-10. **Cédula** ya NO es el identificador único (reemplazada por correo desde US-27) — se mantiene como campo normal del formulario.
+10. **Cédula** ya NO es el identificador único (reemplazada por correo desde US-27) — se mantiene como campo normal del formulario, pendiente de evolucionar a ID flexible en US-18.
 11. **initializeSheets()** — UNA SOLA VEZ, ya ejecutada. NO volver a correr.
 12. **Permisos en appsscript.json** — incluye spreadsheets, drive, calendar. Agregar scope si se suman integraciones nuevas (ej. Gmail para Sprint 2).
 13. **Pilates: eventos duplicados — RESUELTO en US-10.** Un solo evento por slot con múltiples invitados vía `addGuest`/`patch`.
@@ -538,12 +550,13 @@ Clase de Pilates (60 min)
 18. **El lock de conflict-check protege el Calendar real, no el "tipo" de cita** (US-09) — `initial`/`followup`/`measurement` comparten Calendar; validado con colisión cruzada entre tipos distintos.
 19. **`SpreadsheetApp` cachea escrituras — requiere `flush()` explícito antes de releer en la misma ejecución** (lección de US-10, reforzada en US-06). Cualquier código que escriba y luego relea el mismo Sheet dentro de la MISMA ejecución necesita `SpreadsheetApp.flush()` entre medio — no asumir que una escritura es visible de inmediato a una lectura posterior en el mismo run. Ya aplicado en `appendBookingToSheet`, `bookPilatesCalendarEvent`, el catch de `bookTimeslot`, y en `cancelBooking`/`rescheduleBooking`.
 20. **Calendar de pilates nunca estuvo realmente separado del de nutrición hasta US-10** — resuelto con `PILATES_CALENDAR_ID` dedicado, separado de `CALENDARS` (que sigue siendo específico del conflict-check de Freebusy de nutrición).
-21. **Asimetría intencional cancelar/reagendar** (US-06) — ver tabla completa en sección 3. Cancelar siempre se permite (solo marca tardía); reagendar se bloquea duro con &lt;24hrs. Confirmado con el equipo en reunión del 14 jul, sin cambios solicitados.
+21. **Asimetría intencional cancelar/reagendar** (US-06) — ver tabla completa en sección 3. Cancelar siempre se permite (solo marca tardía); reagendar se bloquea duro con <24hrs. Confirmado con el equipo en reunión del 14 jul, sin cambios solicitados.
 22. **Ventana de 24hrs para reagendar se evalúa contra la cita ACTUAL, no la nueva** — al reagendar, primero se valida si la cita que se quiere mover ya está a menos de 24hrs (se bloquea si sí); si se permite avanzar, el NUEVO horario se valida por separado con las reglas normales de `bookTimeslot` (ventana 48hrs mínima, lock, cupos).
 23. **Patrón para testing manual sin frontend (US-06)** — cuando una función de backend no tiene todavía un punto de entrada en frontend, se pueden crear wrappers temporales en `app.ts` (ej. `manualTestX()`) con un valor hardcodeado (token, etc.), ejecutarlos desde el dropdown del editor de Apps Script, revisar el Registro de ejecución + Sheet + Calendar real, y **borrarlos del código antes de dar la US por Done** (o documentarlos explícitamente si se decide conservarlos). Alternativa más robusta pero con más setup: `clasp run <función> --params '[...]'`, que requiere habilitar la Apps Script API y desplegar como "API executable" — evaluar si vale la pena en Sprint 3 si se repite mucho la necesidad de probar funciones sin UI.
 24. **rescheduleBooking y cancelBooking deben comportarse igual ante citas sin `event_id` (pre-migración)** — ambas deben actualizar el Sheet igual y solo loguear un aviso, sin lanzar un error duro que bloquee toda la operación. Se encontró y corrigió una inconsistencia real en US-06 donde `cancelBooking` ya era tolerante pero `rescheduleBooking` lanzaba `EVENTO_CALENDAR_NO_ENCONTRADO` y bloqueaba todo — ya unificado.
 25. **Gap de deploy causó un falso positivo de bug (lección de proceso, 14 jul)** — al pedir explícitamente "solo push, sin deploy" en una iteración anterior, quedó pendiente un `clasp deploy`. Cuando se probó vía el link público, el código corrido era el de la versión desplegada anterior (v14), no el más reciente en el editor — pareciendo un bug real (`bookNutricionCalendarEvent` "no guardaba event_id") que en realidad no existía: el código en el HEAD del proyecto ya era correcto (confirmado con una prueba de harness dedicada, Test 10, 37/37 pasando). **Regla reforzada:** antes de dar cualquier resultado de prueba por "bug confirmado", verificar primero con `clasp deployments` que la URL usada para probar corresponde a la versión de código que se cree estar probando.
 26. **Wrappers temporales de US-06 removidos (14 jul)** — `manualTestCancelBooking`/`manualTestRescheduleBooking` cumplieron su propósito (validar reagendar/cancelar en testing real sin frontend) y fueron eliminados del código tras confirmar los 8 checkboxes de la US. Si Sprint 2 necesita un mecanismo similar antes de que el frontend de reagendar/cancelar exista (RF-2.6), recrear wrappers análogos siguiendo el patrón de la nota 23, y volver a borrarlos al finalizar esa US.
+27. **Trabajo funcionando en producción sin `git commit` — ocurrió dos veces antes de detectarse (lección de proceso, 15 jul).** El trabajo de US-10 (13 jul) y US-06 (14 jul) quedó desplegado y funcionando en producción vía `clasp push`/`clasp deploy`, pero sin comitear a git, hasta que se detectó al iniciar US-19 (~1000 líneas sin comitear en `backend/src/app.ts`). Se verificó el diff antes de comitear (no se asumió a ciegas) y coincidía con el trabajo documentado — no era código inesperado, solo faltaba el commit. **Regla reforzada:** hacer `git commit` inmediatamente después de cada `clasp deploy` exitoso, no esperar al cierre del sprint (ver paso 6.5 en sección 14).
 
 ---
 
@@ -572,6 +585,9 @@ El desarrollo se divide entre dos herramientas de Claude:
 4. Dev pega la respuesta de Claude Code en este chat
 5. Este chat analiza, detecta problemas o inconsistencias, genera siguiente prompt si hace falta
 6. clasp push (para revisar en el editor) → si aplica, pasos manuales en el editor (migraciones) → clasp deploy
+6.5. Inmediatamente después de un clasp deploy exitoso: git add . && git commit (no esperar
+     al final del sprint — ya pasó dos veces que trabajo funcionando en producción quedó
+     sin comitear varios días, ver nota técnica 27)
 7. Probar en el navegador real contra el deploy — NO se marca nada como completado solo porque el código se escribió
 8. Solo si la prueba real confirma que funciona → marcar checkbox(es) en Trello
 9. Cuando todos los checkboxes de la tarjeta estén marcados → mover la tarjeta a Done
@@ -593,6 +609,7 @@ El desarrollo se divide entre dos herramientas de Claude:
 - Nunca tocar la cuenta real de Dani hasta Sprint 3
 - Si hay que agregar permisos nuevos → agregar scope en dist/appsscript.json Y appsscript.json (raíz)
 - **Antes de aceptar un resultado de prueba como bug confirmado, verificar que se probó contra la versión de deploy correcta** (ver nota 25)
+- **Comitear a git inmediatamente después de cada deploy exitoso** (ver nota 27, paso 6.5 arriba)
 
 ---
 
@@ -640,6 +657,9 @@ Copy-Item frontend/dist/* dist/ -Force   # solo si hubo cambios en frontend
 clasp push
 # Si hay migraciones nuevas: ir al editor, ejecutarlas manualmente, ANTES del deploy
 clasp deploy --deploymentId <mismo-id-de-siempre>   # mantiene la misma URL de testing
+git add .
+git commit -m "descripción del cambio"               # inmediatamente después del deploy — ver nota 27
+git push
 ```
 
 ### Notas importantes para Windows
@@ -648,8 +668,9 @@ clasp deploy --deploymentId <mismo-id-de-siempre>   # mantiene la misma URL de t
 - El `.claspignore` está renombrado a `.claspignore.bak` — no revertir
 - El `rootDir` en `.clasp.json` apunta a `dist/` — no cambiar
 - Siempre `clasp push` antes de `clasp deploy`
-- **Usar siempre el mismo `--deploymentId`** para mantener la misma URL de testing en vez de crear deployments nuevos sueltos — el deploymentId actual es el que corresponde a la URL documentada en sección 12
+- **Usar siempre el mismo `--deploymentId`** para mantener la misma URL de testing en vez de crear deployments nuevos sueltos — el deploymentId actual es el que corresponde a la URL documentada en sección 12: `AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ`
 - Si clasp push pide confirmación del manifest → usar `clasp push --force`
+- **Comitear a git inmediatamente después del deploy** — no dejarlo pendiente (ver nota 27)
 
 ---
 
@@ -664,7 +685,8 @@ clasp deploy --deploymentId <mismo-id-de-siempre>   # mantiene la misma URL de t
 | 13 jul 2026 | US-09 Done (ventana 48hrs + lock, bug real corregido). Regla de Trello flexible agregada. US-10 Done (Sheet-antes-Calendar, evento único pilates, Meet real, calendario dedicado, bug de flush() encontrado y corregido — deploy v14). Dirección física confirmada, pendiente mostrarla en Sprint 2. |
 | 14 jul 2026 | **US-06 Done.** Mecánica de reagendar/cancelar por token, ventana 24hrs con asimetría intencional (confirmada con el equipo), tracker de tardías por cliente (no por cita), requiere_pago tras 2 consecutivas. Bug real encontrado y corregido: inconsistencia entre cancelBooking/rescheduleBooking ante citas sin event_id. Falso positivo de bug diagnosticado como gap de deploy (nota 25) — lección de proceso reforzada. Validado en testing real: reagendar dentro/fuera de ventana, cancelar dentro/fuera de ventana, 2 tardías consecutivas → requiere_pago=true confirmado en Sheet real, evento de Calendar movido/eliminado confirmado en Calendar real. Wrappers temporales de testing removidos tras validar. Deploy v16. **Sprint 1 100% completo — las 12 US de Sprint 1 en Done.** |
 | 14 jul 2026 | Reunión de equipo: confirmada la asimetría cancelar/reagendar sin cambios. Decisión nueva: reordenar el flujo del portal a Calendario → Correo → Datos (pendiente de implementar en Sprint 2, ver sección 3). |
+| 15 jul 2026 | **US-19 Done.** Flujo reordenado Calendario→Correo→Datos. Selectores de idioma/zona horaria movidos al Paso 1 (hallazgo de Code: necesario para que el cliente pueda fijar su zona horaria antes de ver horarios). Corregido bug latente: modalidad no se precargaba al rebotar al Paso 1. Validado en testing real: 4 tipos de cita, cliente existente, y recuperación de slot ocupado a mitad de flujo (probado por el usuario en vivo, quitándole el slot a un cliente nuevo desde otra pestaña). Deploy v17. Detectado y resuelto: ~1000 líneas de US-10/US-06 llevaban desde el 13-14 jul funcionando en producción sin `git commit` — verificado el diff antes de comitear (nota 27), no era código inesperado. Agregado paso 6.5 al flujo de trabajo: commit inmediato tras cada deploy exitoso. Tablero real de Trello del Sprint 2 incorporado a la sección 11 (US-16, 18, 19, 11, 12, 13, 14, 20, 28, 29 — 30 puntos totales). |
 
 ---
 
-*Última actualización: 14 julio 2026 — **Sprint 1 cerrado por completo** (US-01 a US-10, US-17, US-27, todas Done y validadas en testing real). Deploy activo: v16. Próximo paso: Sprint 2 — plantillas de correo bilingües, notificaciones internas, recordatorio 48hrs, frontend de reagendar/cancelar, y reordenar el flujo del portal a Calendario → Correo → Datos. Pendientes de fondo para Sprint 3: acceso desde móvil (nota 17), horario real de Dani (nota 14), checklist de acceso de producción (sección 6).*
+*Última actualización: 15 julio 2026 — **US-19 Done**, reorden de pantallas Calendario→Correo→Datos validado en testing real (4 tipos de cita, cliente nuevo/existente, recuperación de slot ocupado). Deploy activo: v17. Siguiente tarjeta: **US-18** (campo de ID flexible), que desbloquea un ajuste pendiente en la Pantalla 3 de US-19. Resto del Sprint 2 pendiente según tablero real de Trello (sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29. Pendientes de fondo para Sprint 3: acceso desde móvil (nota 17), horario real de Dani (nota 14), checklist de acceso de producción (sección 6).*

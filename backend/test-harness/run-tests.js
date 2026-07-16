@@ -56,7 +56,7 @@ function findTokenRow(sheet, token) {
   console.log("Test 1: reagendar dentro de la ventana (éxito)");
   const { sandbox } = freshCtx();
   const token = sandbox.bookTimeslot(
-    "initial", isoInHours(72), "Ana", "Perez", "ana@test.com", "8888-0000", "1-2222-3333",
+    "initial", isoInHours(72), "Ana", "Perez", "ana@test.com", "8888-0000", "cedula", "1-2222-3333",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
@@ -64,8 +64,8 @@ function findTokenRow(sheet, token) {
   // La cita ya está a 72hrs (> 24hrs) — no hace falta moverla, se reagenda tal cual.
   const returnedToken = sandbox.rescheduleBooking(token, isoInHours(96), "America/Costa_Rica");
   assert(returnedToken === token, "retorna el mismo token");
-  assert(nutSheet.getRange(row, 15, 1, 1).getValue() === "Reagendada", "estado pasa a 'Reagendada'");
-  assert(nutSheet.getRange(row, 9, 1, 1).getValue() === formatDate(new Date(isoInHours(96)), "", "yyyy-MM-dd"), "fecha actualizada");
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Reagendada", "estado pasa a 'Reagendada'");
+  assert(nutSheet.getRange(row, 10, 1, 1).getValue() === formatDate(new Date(isoInHours(96)), "", "yyyy-MM-dd"), "fecha actualizada");
 })();
 
 // ── Test 2: reagendar FUERA de la ventana → bloqueado + contador de CLIENTE incrementado ─
@@ -73,12 +73,12 @@ function findTokenRow(sheet, token) {
   console.log("Test 2: reagendar fuera de la ventana (bloqueado, incrementa contador de cliente)");
   const { sandbox } = freshCtx();
   const token = sandbox.bookTimeslot(
-    "initial", isoInHours(72), "Beto", "Gomez", "beto@test.com", "8888-0001", "1-2222-4444",
+    "initial", isoInHours(72), "Beto", "Gomez", "beto@test.com", "8888-0001", "cedula", "1-2222-4444",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
   const row = findTokenRow(nutSheet, token);
-  moveBookingTo(sandbox, "Nutrición", row, 9, 10, 10); // ahora falta menos de 24hrs
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 10); // ahora falta menos de 24hrs
 
   let threw = null;
   try {
@@ -98,7 +98,7 @@ function findTokenRow(sheet, token) {
   console.log("Test 3: cancelar dentro de la ventana (a tiempo)");
   const { sandbox } = freshCtx();
   const token = sandbox.bookTimeslot(
-    "followup", isoInHours(72), "Carla", "Diaz", "carla@test.com", "8888-0002", "1-2222-5555",
+    "followup", isoInHours(72), "Carla", "Diaz", "carla@test.com", "8888-0002", "cedula", "1-2222-5555",
     "1990-01-01", "es", "presencial", "America/Costa_Rica"
   );
   const result = sandbox.cancelBooking(token);
@@ -106,7 +106,7 @@ function findTokenRow(sheet, token) {
 
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
   const row = findTokenRow(nutSheet, token);
-  assert(nutSheet.getRange(row, 15, 1, 1).getValue() === "Cancelada", "estado pasa a 'Cancelada'");
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Cancelada", "estado pasa a 'Cancelada'");
 
   const status = sandbox.getClientPaymentStatus("carla@test.com");
   assert(status.cancelaciones_tardias === 0, "contador de cliente permanece en 0");
@@ -117,16 +117,16 @@ function findTokenRow(sheet, token) {
   console.log("Test 4: cancelar fuera de la ventana (tardía)");
   const { sandbox } = freshCtx();
   const token = sandbox.bookTimeslot(
-    "measurement", isoInHours(72), "Dario", "Leon", "dario@test.com", "8888-0003", "1-2222-6666",
+    "measurement", isoInHours(72), "Dario", "Leon", "dario@test.com", "8888-0003", "cedula", "1-2222-6666",
     "1990-01-01", "es", "presencial", "America/Costa_Rica"
   );
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
   const row = findTokenRow(nutSheet, token);
-  moveBookingTo(sandbox, "Nutrición", row, 9, 10, 5); // faltan 5hrs, < CANCELLATION_HOURS
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 5); // faltan 5hrs, < CANCELLATION_HOURS
 
   const result = sandbox.cancelBooking(token);
   assert(result.lateCancellation === true, "se marca como tardía");
-  assert(nutSheet.getRange(row, 15, 1, 1).getValue() === "Cancelada", "estado igual pasa a 'Cancelada' (no se bloquea la cancelación)");
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Cancelada", "estado igual pasa a 'Cancelada' (no se bloquea la cancelación)");
 
   const status = sandbox.getClientPaymentStatus("dario@test.com");
   assert(status.cancelaciones_tardias === 1, "contador de cliente sube a 1");
@@ -139,22 +139,22 @@ function findTokenRow(sheet, token) {
   const correo = "elena@test.com";
 
   const token1 = sandbox.bookTimeslot(
-    "initial", isoInHours(72), "Elena", "Ruiz", correo, "8888-0004", "1-2222-7777",
+    "initial", isoInHours(72), "Elena", "Ruiz", correo, "8888-0004", "cedula", "1-2222-7777",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
   const row1 = findTokenRow(nutSheet, token1);
-  moveBookingTo(sandbox, "Nutrición", row1, 9, 10, 3);
+  moveBookingTo(sandbox, "Nutrición", row1, 10, 11, 3);
   const r1 = sandbox.cancelBooking(token1);
   assert(r1.lateCancellation === true, "primera cancelación (initial) es tardía");
   assert(sandbox.getClientPaymentStatus(correo).requiere_pago === false, "requiere_pago sigue false tras 1");
 
   const token2 = sandbox.bookTimeslot(
-    "followup", isoInHours(80), "Elena", "Ruiz", correo, "8888-0004", "1-2222-7777",
+    "followup", isoInHours(80), "Elena", "Ruiz", correo, "8888-0004", "cedula", "1-2222-7777",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   const row2 = findTokenRow(nutSheet, token2);
-  moveBookingTo(sandbox, "Nutrición", row2, 9, 10, 4);
+  moveBookingTo(sandbox, "Nutrición", row2, 10, 11, 4);
   const r2 = sandbox.cancelBooking(token2);
   assert(r2.lateCancellation === true, "segunda cancelación (followup, tipo distinto) también es tardía");
 
@@ -173,11 +173,11 @@ function findTokenRow(sheet, token) {
   const rowsBeforePil = pilSheet.data.length;
 
   const tokenA = sandbox.bookTimeslot(
-    "initial", isoInHours(72), "Fabio", "Soto", "fabio@test.com", "8888-0005", "1-2222-8888",
+    "initial", isoInHours(72), "Fabio", "Soto", "fabio@test.com", "8888-0005", "cedula", "1-2222-8888",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   const tokenB = sandbox.bookTimeslot(
-    "pilates", isoInHours(96), "Gina", "Vega", "gina@test.com", "8888-0006", "1-2222-9999",
+    "pilates", isoInHours(96), "Gina", "Vega", "gina@test.com", "8888-0006", "cedula", "1-2222-9999",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   assert(nutSheet.data.length === rowsBeforeNut + 1, "Nutrición crece en 1 fila al agendar");
@@ -192,8 +192,8 @@ function findTokenRow(sheet, token) {
   const rowB = findTokenRow(pilSheet, tokenB);
   assert(rowA > 0, "fila de Nutrición sigue existiendo con su token intacto");
   assert(rowB > 0, "fila de Pilates sigue existiendo con su token intacto");
-  assert(nutSheet.getRange(rowA, 15, 1, 1).getValue() === "Cancelada", "fila de Nutrición queda marcada 'Cancelada', no borrada");
-  assert(pilSheet.getRange(rowB, 12, 1, 1).getValue() === "Cancelada", "fila de Pilates queda marcada 'Cancelada', no borrada");
+  assert(nutSheet.getRange(rowA, 16, 1, 1).getValue() === "Cancelada", "fila de Nutrición queda marcada 'Cancelada', no borrada");
+  assert(pilSheet.getRange(rowB, 13, 1, 1).getValue() === "Cancelada", "fila de Pilates queda marcada 'Cancelada', no borrada");
 })();
 
 // ── Test 7: findBookingByToken lanza TOKEN_NO_ENCONTRADO para un token inexistente ──────
@@ -214,7 +214,7 @@ function findTokenRow(sheet, token) {
   console.log("Test 8: reagendar pilates (grupal) mueve de slot y respeta cupo");
   const { sandbox } = freshCtx();
   const token = sandbox.bookTimeslot(
-    "pilates", isoInHours(72), "Hugo", "Rojas", "hugo@test.com", "8888-0007", "1-2223-0000",
+    "pilates", isoInHours(72), "Hugo", "Rojas", "hugo@test.com", "8888-0007", "cedula", "1-2223-0000",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
@@ -223,8 +223,8 @@ function findTokenRow(sheet, token) {
 
   const pilSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Pilates");
   const row = findTokenRow(pilSheet, token);
-  assert(pilSheet.getRange(row, 12, 1, 1).getValue() === "Reagendada", "estado pasa a 'Reagendada'");
-  assert(pilSheet.getRange(row, 8, 1, 1).getValue() === formatDate(new Date(isoInHours(120)), "", "yyyy-MM-dd"), "fecha_clase actualizada al nuevo slot");
+  assert(pilSheet.getRange(row, 13, 1, 1).getValue() === "Reagendada", "estado pasa a 'Reagendada'");
+  assert(pilSheet.getRange(row, 9, 1, 1).getValue() === formatDate(new Date(isoInHours(120)), "", "yyyy-MM-dd"), "fecha_clase actualizada al nuevo slot");
 })();
 
 // ── Test 9: reagendar una cita VIEJA de nutrición sin event_id (pre-US-06) no bloquea ──
@@ -232,14 +232,14 @@ function findTokenRow(sheet, token) {
   console.log("Test 9: reagendar cita sin event_id (pre-migración) actualiza el Sheet igual, sin lanzar error");
   const { sandbox } = freshCtx();
   const token = sandbox.bookTimeslot(
-    "initial", isoInHours(72), "Ivan", "Mora", "ivan@test.com", "8888-0008", "1-2223-1111",
+    "initial", isoInHours(72), "Ivan", "Mora", "ivan@test.com", "8888-0008", "cedula", "1-2223-1111",
     "1990-01-01", "es", "presencial", "America/Costa_Rica"
   );
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
   const row = findTokenRow(nutSheet, token);
 
   // Simula una fila creada ANTES de correr addEventIdColumnToNutricion(): sin event_id.
-  nutSheet.getRange(row, 21, 1, 1).setValue("");
+  nutSheet.getRange(row, 22, 1, 1).setValue("");
 
   let threw = null;
   let returnedToken = null;
@@ -251,8 +251,8 @@ function findTokenRow(sheet, token) {
 
   assert(threw === null, "NO lanza ningún error (a diferencia del comportamiento anterior con EVENTO_CALENDAR_NO_ENCONTRADO)");
   assert(returnedToken === token, "retorna el mismo token");
-  assert(nutSheet.getRange(row, 15, 1, 1).getValue() === "Reagendada", "estado sí pasa a 'Reagendada' en el Sheet");
-  assert(nutSheet.getRange(row, 9, 1, 1).getValue() === formatDate(new Date(isoInHours(96)), "", "yyyy-MM-dd"), "fecha sí se actualiza en el Sheet");
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Reagendada", "estado sí pasa a 'Reagendada' en el Sheet");
+  assert(nutSheet.getRange(row, 10, 1, 1).getValue() === formatDate(new Date(isoInHours(96)), "", "yyyy-MM-dd"), "fecha sí se actualiza en el Sheet");
 })();
 
 // ── Test 10: una reserva NUEVA de nutrición sí guarda event_id, y reschedule/cancel mueven ─
@@ -262,13 +262,13 @@ function findTokenRow(sheet, token) {
   const { sandbox, events } = freshCtx();
 
   const token = sandbox.bookTimeslot(
-    "initial", isoInHours(72), "Julia", "Vindas", "julia@test.com", "8888-0009", "1-2223-2222",
+    "initial", isoInHours(72), "Julia", "Vindas", "julia@test.com", "8888-0009", "cedula", "1-2223-2222",
     "1990-01-01", "es", "virtual", "America/Costa_Rica"
   );
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
   const row = findTokenRow(nutSheet, token);
 
-  const eventId = nutSheet.getRange(row, 21, 1, 1).getValue();
+  const eventId = nutSheet.getRange(row, 22, 1, 1).getValue();
   assert(!!eventId, "bookTimeslot guarda un event_id no vacío en la columna 21 al crear la cita");
 
   const calendarId = "primary"; // CALENDARS por defecto cuando no hay Script Property CALENDARS

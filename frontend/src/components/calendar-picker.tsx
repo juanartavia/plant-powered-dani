@@ -85,7 +85,12 @@ const STRINGS = {
       apellido: "Apellido",
       email: "Correo electrónico",
       phone: "Número de teléfono",
-      cedula: "Cédula",
+      tipoId: "Tipo de identificación",
+      numeroId: "Número de identificación",
+      tipoIdCedula: "Cédula",
+      tipoIdPasaporte: "Pasaporte",
+      tipoIdLicencia: "Licencia de conducir",
+      tipoIdOtro: "Otro",
       birthdate: "Fecha de nacimiento",
       language: "Idioma",
       modalidad: "Modalidad",
@@ -131,7 +136,12 @@ const STRINGS = {
       apellido: "Last name",
       email: "Email",
       phone: "Phone number",
-      cedula: "ID number",
+      tipoId: "ID type",
+      numeroId: "ID number",
+      tipoIdCedula: "ID Card",
+      tipoIdPasaporte: "Passport",
+      tipoIdLicencia: "Driver's License",
+      tipoIdOtro: "Other",
       birthdate: "Date of birth",
       language: "Language",
       modalidad: "Modality",
@@ -274,7 +284,8 @@ export function CalendarPicker() {
       nombre:           formData.get("nombre")?.toString()           || "",
       apellido:         formData.get("apellido")?.toString()         || "",
       telefono:         formData.get("phone")?.toString()            || "",
-      cedula:            formData.get("cedula")?.toString()          || "",
+      tipoId:           (formData.get("tipoId")?.toString()          || "") as ClientRecord["tipoId"],
+      numeroId:         formData.get("numeroId")?.toString()         || "",
       fecha_nacimiento: formData.get("birthdate")?.toString()        || "",
       idioma:           formData.get("language")?.toString()         || "",
     };
@@ -293,7 +304,8 @@ export function CalendarPicker() {
         email: record.correo,
         phone: record.telefono,
         birthdate: record.fecha_nacimiento,
-        cedula: record.cedula,
+        tipoId: record.tipoId,
+        numeroId: record.numeroId,
         language: record.idioma,
         modalidad,
         clientTimezone: timezone,
@@ -726,12 +738,30 @@ function ContactForm({
         />
       </div>
       <div className="space-y-2">
-        <Label htmlFor="cedula">{t.cedula}</Label>
-        <Input
-          id="cedula"
-          name="cedula"
+        <Label htmlFor="tipoId">{t.tipoId}</Label>
+        <select
+          id="tipoId"
+          name="tipoId"
           required
-          defaultValue={defaultValues?.cedula ?? ""}
+          defaultValue={defaultValues?.tipoId ?? ""}
+          className={selectClassName}
+        >
+          <option value="" disabled>
+            {t.selectPlaceholder}
+          </option>
+          <option value="cedula">{t.tipoIdCedula}</option>
+          <option value="pasaporte">{t.tipoIdPasaporte}</option>
+          <option value="licencia">{t.tipoIdLicencia}</option>
+          <option value="otro">{t.tipoIdOtro}</option>
+        </select>
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="numeroId">{t.numeroId}</Label>
+        <Input
+          id="numeroId"
+          name="numeroId"
+          required
+          defaultValue={defaultValues?.numeroId ?? ""}
         />
       </div>
       <div className="space-y-2">

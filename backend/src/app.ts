@@ -265,13 +265,13 @@ const SPREADSHEET_NAME = "PlantPoweredDani - Base de Datos (Testing)";
 // Definición de columnas por pestaña, en el orden exacto confirmado en CLAUDE.md (sección 8).
 const SHEET_SCHEMAS: Record<string, string[]> = {
   "Nutrición": [
-    "token", "nombre", "apellido", "correo", "telefono", "cedula", "fecha_nacimiento",
+    "token", "nombre", "apellido", "correo", "telefono", "tipo_id", "numero_id", "fecha_nacimiento",
     "tipo_cita", "fecha", "hora", "zona_horaria_cliente", "modalidad", "idioma",
     "meet_link", "estado", "fecha_creacion", "recordatorio_enviado", "show_no_show",
     "cancelaciones_tardias", "requiere_pago", "event_id",
   ],
   "Pilates": [
-    "token", "nombre", "apellido", "correo", "telefono", "cedula", "fecha_nacimiento",
+    "token", "nombre", "apellido", "correo", "telefono", "tipo_id", "numero_id", "fecha_nacimiento",
     "fecha_clase", "hora_clase", "zona_horaria_cliente", "idioma",
     "estado", "fecha_inscripcion", "recordatorio_enviado", "show_no_show",
   ],
@@ -294,12 +294,12 @@ const SHEET_SCHEMAS: Record<string, string[]> = {
 // son por-cita y se dejan solo como log informativo (ver notifyLateCancellation/
 // incrementClientLateCancellation más abajo).
 const CLIENTES_SCHEMA: string[] = [
-  "correo", "nombre", "apellido", "telefono", "cedula", "fecha_nacimiento", "idioma",
+  "correo", "nombre", "apellido", "telefono", "tipo_id", "numero_id", "fecha_nacimiento", "idioma",
   "cancelaciones_tardias", "requiere_pago",
 ];
 
-const CLIENTES_CANCELACIONES_COL = 8;
-const CLIENTES_REQUIERE_PAGO_COL = 9;
+const CLIENTES_CANCELACIONES_COL = 9;
+const CLIENTES_REQUIERE_PAGO_COL = 10;
 
 // Agrega las columnas "cancelaciones_tardias" y "requiere_pago" (US-06) a la pestaña
 // "Clientes" YA existente (creada por addClientesSheet en US-27), sin volver a ejecutar
@@ -318,6 +318,49 @@ function addCancelacionesColumnsToClientes(): void {
   sheet.getRange(1, CLIENTES_CANCELACIONES_COL).setValue("cancelaciones_tardias").setFontWeight("bold");
   sheet.getRange(1, CLIENTES_REQUIERE_PAGO_COL).setValue("requiere_pago").setFontWeight("bold");
   Logger.log('Columnas "cancelaciones_tardias" y "requiere_pago" agregadas a Clientes.');
+}
+
+// Posición (1-based) de la columna "cedula" en cada pestaña, según el schema QUE EL SHEET
+// REAL tiene hoy (antes de esta migración) — la misma posición que appendBookingToSheet/
+// findClientByEmail/upsertClient ya leen y escriben en producción. A propósito NO se busca
+// por el texto del encabezado: se confirmó en testing real que los encabezados de fila 1 de
+// Nutrición/Pilates no coinciden exactamente con el string interno "cedula" (probablemente
+// reescritos a mano en algún punto — ver CLAUDE.md sección 8, que ya advertía sobre headers
+// desactualizados visualmente), lo que hacía fallar un indexOf("cedula") case/accent-sensitive
+// silenciosamente en esas dos pestañas aunque "Clientes" (headers escritos 100% por código,
+// nunca editados a mano) sí funcionaba.
+const CEDULA_COLUMN_BY_SHEET: Record<string, number> = {
+  "Nutrición": 6,
+  "Pilates": 6,
+  "Clientes": 5,
+};
+
+// US-18 — reemplaza la columna "cedula" por "tipo_id" + "numero_id" en las 3 pestañas
+// (Nutrición, Pilates, Clientes), en la misma posición donde estaba cedula. Solo toca los
+// ENCABEZADOS (fila 1) e inserta una columna nueva — el usuario borra manualmente las filas
+// de datos existentes antes de correr esto (ver CLAUDE.md, no se escribió lógica de migración
+// de datos). Cada pestaña se evalúa de forma independiente (no todo-o-nada): si una ya está
+// migrada no se toca, aunque otra todavía la necesite. Ejecutar manualmente una sola vez desde
+// el editor de Apps Script, igual que addCancelacionesColumnsToClientes().
+function migrateCedulaToTipoNumeroId(): void {
+  Object.keys(CEDULA_COLUMN_BY_SHEET).forEach((sheetName) => {
+    const sheet = getSheet(sheetName);
+    const cedulaCol = CEDULA_COLUMN_BY_SHEET[sheetName];
+    const currentHeader = String(sheet.getRange(1, cedulaCol).getValue());
+
+    // Idempotencia por posición, no por texto de "cedula": si la columna en esa posición
+    // exacta YA dice "tipo_id" (valor que esta misma función escribe, controlado), esta
+    // pestaña ya fue migrada — no volver a insertar una segunda "numero_id" ahí.
+    if (currentHeader === "tipo_id") {
+      Logger.log(`"${sheetName}": la columna ${cedulaCol} ya es "tipo_id". No se hizo ningún cambio.`);
+      return;
+    }
+
+    sheet.insertColumnAfter(cedulaCol);
+    sheet.getRange(1, cedulaCol).setValue("tipo_id").setFontWeight("bold");
+    sheet.getRange(1, cedulaCol + 1).setValue("numero_id").setFontWeight("bold");
+    Logger.log(`"${sheetName}": columna ${cedulaCol} (encabezado anterior: "${currentHeader}") renombrada a "tipo_id"; columna "numero_id" insertada después.`);
+  });
 }
 
 // Crea (o reutiliza) el spreadsheet de base de datos con las 3 pestañas requeridas:
@@ -401,18 +444,18 @@ const CUPOS_PILATES_MEET_LINK_COL = 6;
 // Columnas (1-based) de la pestaña "Nutrición" usadas por cancelBooking/rescheduleBooking
 // (US-06) para localizar y mover/eliminar el evento de Calendar real de una cita, y para
 // escribir el nuevo estado/fecha/hora. Coinciden con SHEET_SCHEMAS["Nutrición"] arriba.
-const NUTRICION_FECHA_COL = 9;
-const NUTRICION_HORA_COL = 10;
-const NUTRICION_ZONA_HORARIA_COL = 11;
-const NUTRICION_MEET_LINK_COL = 14;
-const NUTRICION_ESTADO_COL = 15;
-const NUTRICION_EVENT_ID_COL = 21;
+const NUTRICION_FECHA_COL = 10;
+const NUTRICION_HORA_COL = 11;
+const NUTRICION_ZONA_HORARIA_COL = 12;
+const NUTRICION_MEET_LINK_COL = 15;
+const NUTRICION_ESTADO_COL = 16;
+const NUTRICION_EVENT_ID_COL = 22;
 
 // Columnas (1-based) equivalentes para "Pilates".
-const PILATES_FECHA_COL = 8;
-const PILATES_HORA_COL = 9;
-const PILATES_ZONA_HORARIA_COL = 10;
-const PILATES_ESTADO_COL = 12;
+const PILATES_FECHA_COL = 9;
+const PILATES_HORA_COL = 10;
+const PILATES_ZONA_HORARIA_COL = 11;
+const PILATES_ESTADO_COL = 13;
 
 // Agrega la columna "event_id" (US-06) a la pestaña "Nutrición" YA existente, sin volver a
 // ejecutar initializeSheets() (nota 11). Necesaria para que cancelBooking/rescheduleBooking
@@ -490,12 +533,27 @@ function normalizeSheetDateCell(value: unknown, pattern: string): string {
   return String(value);
 }
 
+// Valores internos fijos del tipo de identificación (US-18) — nunca el texto traducido que
+// ve el cliente en el dropdown (ver STRINGS del frontend); mismo criterio que "idioma"
+// ("es"/"en" internamente, no "Español"/"Spanish").
+const VALID_TIPO_ID_VALUES = ["cedula", "pasaporte", "licencia", "otro"] as const;
+type TipoId = (typeof VALID_TIPO_ID_VALUES)[number];
+
+// Valida que tipoId sea uno de los 4 valores internos fijos. El frontend solo debería enviar
+// estos 4 (dropdown cerrado), pero el backend no confía ciegamente en el cliente.
+function assertValidTipoId(tipoId: string): void {
+  if (VALID_TIPO_ID_VALUES.indexOf(tipoId as TipoId) < 0) {
+    throw new Error(`TIPO_ID_INVALIDO: "${tipoId}" no es un tipo de identificación válido.`);
+  }
+}
+
 interface ClientRecord {
   correo: string;
   nombre: string;
   apellido: string;
   telefono: string;
-  cedula: string;
+  tipoId: string;
+  numeroId: string;
   fecha_nacimiento: string;
   idioma: string;
   // Solo lectura desde findClientByEmail (US-06) — el tracker se escribe exclusivamente vía
@@ -520,9 +578,10 @@ function findClientByEmail(correo: string): ClientRecord | null {
         nombre: String(data[i][1]),
         apellido: String(data[i][2]),
         telefono: String(data[i][3]),
-        cedula: String(data[i][4]),
-        fecha_nacimiento: normalizeSheetDateCell(data[i][5], "yyyy-MM-dd"),
-        idioma: String(data[i][6]),
+        tipoId: String(data[i][4]),
+        numeroId: String(data[i][5]),
+        fecha_nacimiento: normalizeSheetDateCell(data[i][6], "yyyy-MM-dd"),
+        idioma: String(data[i][7]),
         cancelaciones_tardias: Number(data[i][CLIENTES_CANCELACIONES_COL - 1]) || 0,
         requiere_pago: data[i][CLIENTES_REQUIERE_PAGO_COL - 1] === true,
       };
@@ -582,7 +641,7 @@ function incrementClientLateCancellation(correo: string): { cancelaciones_tardia
     } else {
       // Failsafe defensivo: no debería pasar, ya que upsertClient corre antes de llegar al
       // calendario en el flujo de 3 pasos (US-27) y toda cita tiene un correo asociado.
-      sheet.appendRow([correo, "", "", "", "", "", "", updated, requierePago]);
+      sheet.appendRow([correo, "", "", "", "", "", "", "", updated, requierePago]);
     }
     SpreadsheetApp.flush();
     return { cancelaciones_tardias: updated, requiere_pago: requierePago };
@@ -633,6 +692,7 @@ function notifyLateCancellation(correo: string, token: string, accion: "cancelac
 // (cancelaciones_tardias/requiere_pago, US-06), que son responsabilidad exclusiva de
 // incrementClientLateCancellation/resetClientLateCancellationCounter.
 function upsertClient(data: ClientRecord): void {
+  assertValidTipoId(data.tipoId);
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
@@ -653,7 +713,8 @@ function upsertClient(data: ClientRecord): void {
       data.nombre,
       data.apellido,
       data.telefono,
-      data.cedula,
+      data.tipoId,
+      data.numeroId,
       data.fecha_nacimiento,
       data.idioma,
     ];
@@ -685,7 +746,8 @@ interface BookingData {
   apellido: string;
   email: string;
   phone: string;
-  cedula: string;
+  tipoId: string;
+  numeroId: string;
   birthdate: string;
   language: string;
   modalidad: string;
@@ -752,7 +814,8 @@ function appendBookingToSheet(type: string, data: BookingData): string {
         data.apellido,
         data.email,
         data.phone,
-        data.cedula,
+        data.tipoId,
+        data.numeroId,
         data.birthdate,
         fecha,
         hora,
@@ -773,7 +836,8 @@ function appendBookingToSheet(type: string, data: BookingData): string {
       data.apellido,
       data.email,
       data.phone,
-      data.cedula,
+      data.tipoId,
+      data.numeroId,
       data.birthdate,
       type,
       fecha,
@@ -937,14 +1001,15 @@ function bookNutricionCalendarEvent(
   apellido: string,
   email: string,
   phone: string,
-  cedula: string,
+  tipoId: string,
+  numeroId: string,
   birthdate: string,
   language: string,
   modalidad: string
 ): void {
   const calendarId = CALENDARS[0];
   const wantsMeet = modalidad === "virtual";
-  const description = `Name: ${nombre} ${apellido}\nEmail: ${email}\nPhone: ${phone}\nID: ${cedula}\nDate of birth: ${birthdate}\nLanguage: ${language}\nAppointment type: ${type}\nModality: ${modalidad}`;
+  const description = `Name: ${nombre} ${apellido}\nEmail: ${email}\nPhone: ${phone}\nID: ${tipoId} ${numeroId}\nDate of birth: ${birthdate}\nLanguage: ${language}\nAppointment type: ${type}\nModality: ${modalidad}`;
 
   // Lock de script (US-09): el conflict-check de Freebusy y la creación del evento deben
   // ser atómicos entre sí. Sin este lock, dos clientes confirmando el mismo slot casi al
@@ -1004,7 +1069,8 @@ function bookPilatesCalendarEvent(
   apellido: string,
   email: string,
   phone: string,
-  cedula: string,
+  tipoId: string,
+  numeroId: string,
   birthdate: string,
   language: string
 ): void {
@@ -1014,7 +1080,7 @@ function bookPilatesCalendarEvent(
   const calendarId = getPilatesCalendarId();
   const fecha = Utilities.formatDate(startTime, TIME_ZONE, "yyyy-MM-dd");
   const hora = Utilities.formatDate(startTime, TIME_ZONE, "HH:mm");
-  const description = `Name: ${nombre} ${apellido}\nEmail: ${email}\nPhone: ${phone}\nID: ${cedula}\nDate of birth: ${birthdate}\nLanguage: ${language}\nAppointment type: pilates\nModality: virtual`;
+  const description = `Name: ${nombre} ${apellido}\nEmail: ${email}\nPhone: ${phone}\nID: ${tipoId} ${numeroId}\nDate of birth: ${birthdate}\nLanguage: ${language}\nAppointment type: pilates\nModality: virtual`;
 
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -1084,12 +1150,14 @@ function bookTimeslot(
   apellido: string,
   email: string,
   phone: string,
-  cedula: string,
+  tipoId: string,
+  numeroId: string,
   birthdate: string,
   language: string,
   modalidad: string,
   clientTimezone: string
 ): string {
+  assertValidTipoId(tipoId);
   // La duración del evento depende del tipo de cita, igual que en fetchAvailability.
   const duration = getDurationForType(type);
   const startTime = new Date(timeslot);
@@ -1120,7 +1188,8 @@ function bookTimeslot(
     apellido,
     email,
     phone,
-    cedula,
+    tipoId,
+    numeroId,
     birthdate,
     language,
     modalidad,
@@ -1129,9 +1198,9 @@ function bookTimeslot(
 
   try {
     if (type === "pilates") {
-      bookPilatesCalendarEvent(startTime, endTime, nombre, apellido, email, phone, cedula, birthdate, language);
+      bookPilatesCalendarEvent(startTime, endTime, nombre, apellido, email, phone, tipoId, numeroId, birthdate, language);
     } else {
-      bookNutricionCalendarEvent(type, token, startTime, endTime, nombre, apellido, email, phone, cedula, birthdate, language, modalidad);
+      bookNutricionCalendarEvent(type, token, startTime, endTime, nombre, apellido, email, phone, tipoId, numeroId, birthdate, language, modalidad);
     }
   } catch (e) {
     // El Sheet ya quedó escrito exitosamente (token=token) pero el paso de Calendar falló
@@ -1168,7 +1237,8 @@ interface BookingLookup {
   apellido: string;
   correo: string;
   telefono: string;
-  cedula: string;
+  tipoId: string;
+  numeroId: string;
   birthdate: string;
   type: string; // "initial"/"followup"/"measurement" para Nutrición, "pilates" para Pilates
   fecha: string; // yyyy-MM-dd, hora del negocio (TIME_ZONE)
@@ -1201,15 +1271,16 @@ function findBookingByToken(token: string): BookingLookup {
         apellido: String(values[2]),
         correo: String(values[3]),
         telefono: String(values[4]),
-        cedula: String(values[5]),
-        birthdate: normalizeSheetDateCell(values[6], "yyyy-MM-dd"),
-        type: String(values[7]),
-        fecha: normalizeSheetDateCell(values[8], "yyyy-MM-dd"),
-        hora: normalizeSheetDateCell(values[9], "HH:mm"),
-        clientTimezone: String(values[10]),
-        modalidad: String(values[11]),
-        language: String(values[12]),
-        estado: String(values[14]),
+        tipoId: String(values[5]),
+        numeroId: String(values[6]),
+        birthdate: normalizeSheetDateCell(values[7], "yyyy-MM-dd"),
+        type: String(values[8]),
+        fecha: normalizeSheetDateCell(values[9], "yyyy-MM-dd"),
+        hora: normalizeSheetDateCell(values[10], "HH:mm"),
+        clientTimezone: String(values[11]),
+        modalidad: String(values[12]),
+        language: String(values[13]),
+        estado: String(values[15]),
       };
     }
 
@@ -1219,15 +1290,16 @@ function findBookingByToken(token: string): BookingLookup {
       apellido: String(values[2]),
       correo: String(values[3]),
       telefono: String(values[4]),
-      cedula: String(values[5]),
-      birthdate: normalizeSheetDateCell(values[6], "yyyy-MM-dd"),
+      tipoId: String(values[5]),
+      numeroId: String(values[6]),
+      birthdate: normalizeSheetDateCell(values[7], "yyyy-MM-dd"),
       type: "pilates",
-      fecha: normalizeSheetDateCell(values[7], "yyyy-MM-dd"),
-      hora: normalizeSheetDateCell(values[8], "HH:mm"),
-      clientTimezone: String(values[9]),
+      fecha: normalizeSheetDateCell(values[8], "yyyy-MM-dd"),
+      hora: normalizeSheetDateCell(values[9], "HH:mm"),
+      clientTimezone: String(values[10]),
       modalidad: "",
-      language: String(values[10]),
-      estado: String(values[11]),
+      language: String(values[11]),
+      estado: String(values[12]),
     };
   }
 
@@ -1344,12 +1416,13 @@ function joinPilatesSlot(
   apellido: string,
   email: string,
   phone: string,
-  cedula: string,
+  tipoId: string,
+  numeroId: string,
   birthdate: string,
   language: string
 ): void {
   const calendarId = getPilatesCalendarId();
-  const description = `Name: ${nombre} ${apellido}\nEmail: ${email}\nPhone: ${phone}\nID: ${cedula}\nDate of birth: ${birthdate}\nLanguage: ${language}\nAppointment type: pilates\nModality: virtual`;
+  const description = `Name: ${nombre} ${apellido}\nEmail: ${email}\nPhone: ${phone}\nID: ${tipoId} ${numeroId}\nDate of birth: ${birthdate}\nLanguage: ${language}\nAppointment type: pilates\nModality: virtual`;
 
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -1500,7 +1573,7 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
     // vez de quedarse sin ninguna clase.
     joinPilatesSlot(
       newFecha, newHora,
-      booking.nombre, booking.apellido, booking.correo, booking.telefono, booking.cedula, booking.birthdate, booking.language
+      booking.nombre, booking.apellido, booking.correo, booking.telefono, booking.tipoId, booking.numeroId, booking.birthdate, booking.language
     );
     leavePilatesSlot(booking.fecha, booking.hora, booking.correo);
 
