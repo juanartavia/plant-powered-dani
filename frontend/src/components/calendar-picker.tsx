@@ -16,7 +16,6 @@ import { useFindClientByEmail } from "@/hooks/useFindClientByEmail";
 import { useGoogleTimeslots } from "@/hooks/useGoogleTimeslots";
 import { useUpsertClient } from "@/hooks/useUpsertClient";
 
-import { ModeToggle } from "@/components/mode-toggle";
 import { Show, When } from "@/components/WhenShowElse";
 import { ClientRecord } from "@/models/ClientRecord";
 import { Timeslots } from "@/models/Timeslots";
@@ -231,13 +230,6 @@ export function CalendarPicker() {
   useEffect(() => {
     if (timezone) resetSelectedDate();
   }, [timezone]);
-  useEffect(() => {
-    if (!selectedDate) {
-      const firstTimeslot = [...availableSlots.timeslots].sort().reverse()[0];
-      if (!firstTimeslot) return;
-      setCurrentMonth(firstTimeslot);
-    }
-  }, [timezone, availableSlots, selectedDate]);
 
   const handleDateSelect = (date: Date | undefined) => {
     if (date) {
@@ -399,11 +391,6 @@ export function CalendarPicker() {
             </div>
           </Show>
         </When>
-        <div className="relative max-h-0">
-          <ModeToggle className="md:hidden absolute right-1 top-1" />
-          <ModeToggle className="absolute -right-10 -top-10 md:block hidden" />
-        </div>
-
         {step === "calendar" && (
           <CardHeader className="max-w-full">
             <div className="flex justify-between items-center flex-col sm:flex-row gap-4 relative">

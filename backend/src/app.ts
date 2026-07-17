@@ -88,6 +88,13 @@ const WORKHOURS = {
 // Confirmado con Dani en reunión del 2 jul 2026.
 const DAYS_IN_ADVANCE = 56;
 
+// Pilates: único horario habilitado hoy es sábado (6) a las 10:00 AM (hora TIME_ZONE).
+// Confirmado en Preguntas_Reunion_02-07-2026 (P16/P21) y minuta 02_07_26 — posibilidad de
+// agregar más horarios en el futuro, pero hoy es solo este. No confundir con WORKDAYS/
+// WORKHOURS (genéricos, compartidos con nutrición) — esta restricción aplica solo a pilates.
+const PILATES_DAY_OF_WEEK = 6; // sábado
+const PILATES_START_HOUR = 10;
+
 // Ventana mínima de anticipación para agendar una cita: no se puede reservar un slot
 // que empiece en menos de 48 horas desde el momento actual. Confirmada en la reunión
 // del 2 jul 2026 (documento de preguntas, P3). Distinta de CANCELLATION_HOURS (24 hrs),
@@ -245,6 +252,9 @@ function fetchAvailability(type: string): {
     if (WORKDAYS.indexOf(startTZ.getDay()) < 0) continue;
 
     if (type === "pilates") {
+      if (startTZ.getDay() !== PILATES_DAY_OF_WEEK) continue;
+      if (startTZ.getHours() !== PILATES_START_HOUR || startTZ.getMinutes() !== 0) continue;
+
       const fecha = Utilities.formatDate(start, TIME_ZONE, "yyyy-MM-dd");
       const hora = Utilities.formatDate(start, TIME_ZONE, "HH:mm");
       const inscritos = cuposMap[`${fecha}_${hora}`] || 0;

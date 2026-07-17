@@ -1,7 +1,7 @@
 # CLAUDE.md — Plant Powered by Dani
 ## Sistema de Agendamiento Automatizado
 > Documento vivo — actualizar conforme avanza el desarrollo
-> Última actualización: 15 julio 2026 — **US-18 Done (campo de ID flexible: tipo_id + numero_id), validada en testing real.** Deploy activo: v18. Sprint 2 en curso — siguiente: modificación extra (columnas cliente_nutricion/cliente_pilates en "Clientes", sin número de US), luego resto del backlog de Sprint 2.
+> Última actualización: 17 julio 2026 — **Modificación cliente_nutricion/cliente_pilates cerrada y validada en testing real (3 bugs reales encontrados y corregidos en el camino).** Deploy activo: v20. **Primer demo con la dueña del producto hoy.** Pendientes de fondo documentados para después del demo (ver sección 3 y 13).
 
 ---
 
@@ -10,12 +10,14 @@
 Si estás retomando este proyecto en un chat nuevo, este documento es tu única fuente de verdad. Antes de generar cualquier prompt para Claude Code:
 
 1. Lee completo este documento, especialmente las secciones 11 (estado de sprints), 13 (notas técnicas — contiene lecciones aprendidas que evitan repetir bugs ya resueltos), y 14/15 (método de trabajo y reglas de Trello).
-2. **US-19 (reorden de pantallas) y US-18 (campo de ID flexible) ya están Done** — ver sección 3 para el diseño final implementado y validado de ambas.
-3. **Siguiente paso: modificación extra sin número de US** — agregar columnas `cliente_nutricion`/`cliente_pilates` (booleanas, checkbox real de Sheets) a la pestaña "Clientes", para identificar a qué servicio(s) pertenece cada cliente (un cliente puede ir a ambos). Ver sección 3 para el diseño acordado. Se decidió hacerla como modificación aparte, no como US de Trello, aprovechando que ya se está tocando la pestaña "Clientes".
-4. El resto del Sprint 2 según el tablero real de Trello (ver sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29 — todas en Backlog.
-5. **Antes de tocar US-11/US-12/US-28**, el usuario tiene carpetas descargadas de Drive (branding/colores, comunicaciones/plantillas de correo, gráficos de Dani) que subirá al repo en una carpeta `design-reference/` separada de `backend/`/`frontend/` cuando lleguemos a esas tarjetas — no asumir que ya están ahí sin confirmar.
-6. Sigue el mismo flujo de trabajo documentado en la sección 14: generar prompt → Claude Code ejecuta → **commit inmediato tras deploy exitoso** (lección nueva, ver sección 13 nota 27) → probar en real antes de marcar cualquier checkbox → actualizar este documento.
-7. **Lección de US-18 (ver sección 13, nota 28):** cuando una función de migración de schema busca columnas por TEXTO en la fila 1, verificar primero con el usuario (captura de pantalla del Sheet real) si el texto coincide exactamente — un espacio en blanco invisible o una tilde puede hacer fallar la comparación sin lanzar ningún error visible. Preferir migrar por POSICIÓN de columna (la misma que el resto del código ya usa) en vez de por texto, siempre que sea posible.
+2. **US-19, US-18, y la modificación cliente_nutricion/cliente_pilates ya están Done** — ver sección 3 para el diseño final implementado y validado de las tres.
+3. **HOY (17 jul) es el primer demo con la dueña del producto.** Si estás retomando después del demo, revisa si hay notas nuevas de feedback que el usuario no haya documentado aún aquí — pregunta antes de asumir que no pasó nada.
+4. **Pendiente de fondo, deliberadamente pospuesto para después del demo (ver sección 13, nota 30):** las columnas `fecha` (Nutrición) y `fecha_clase` (Pilates) tienen el mismo problema de coerción de tipos que tenía `fecha_nacimiento` en "Clientes" (se guardan como objeto Date real de Sheets, editable con selector de calendario, en vez de texto plano). A diferencia de `fecha_nacimiento`, este caso NO tiene evidencia de estar rompiendo nada — el código de negocio ya usa `normalizeSheetDateCell()` en varios puntos, diseñado justamente para tolerar esta coerción. Se decidió NO tocarlo antes del demo por el riesgo de romper lógica ya validada (ventanas de 48h/24h, conflict-check, cupos de pilates) bajo presión de tiempo. Evaluar con calma cuándo retomarlo.
+5. **Otro pendiente de fondo, también sin tocar (ver sección 13, nota 30):** `findClientByEmail()` lee `fecha_nacimiento` con `normalizeSheetDateCell(..., "yyyy-MM-dd")`, que internamente usa `TIME_ZONE` (Costa Rica) en vez de UTC — mismo patrón de bug que se corrigió en la escritura, pero en el lado de LECTURA. No se tocó porque, tras las reparaciones de hoy, todas las celdas de "Clientes" quedaron en texto plano — el bug de lectura solo se activaría si en el futuro algo vuelve a escribir un `Date` real ahí sin forzar texto (regresión). Bajo riesgo mientras no haya regresión, pero anotado para revisar.
+6. El resto del Sprint 2 según el tablero real de Trello (ver sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29 — todas en Backlog.
+7. **Antes de tocar US-11/US-12/US-28**, el usuario tiene carpetas descargadas de Drive (branding/colores, comunicaciones/plantillas de correo, gráficos de Dani) que subirá al repo en una carpeta `design-reference/` separada de `backend/`/`frontend/` cuando lleguemos a esas tarjetas — no asumir que ya están ahí sin confirmar.
+8. Sigue el mismo flujo de trabajo documentado en la sección 14: generar prompt → Claude Code ejecuta → **commit inmediato tras deploy exitoso** (nota 27) → probar en real antes de marcar cualquier checkbox → actualizar este documento.
+9. **Lecciones reforzadas hoy (ver sección 13, notas 28-30):** (a) migraciones de schema por POSICIÓN de columna, nunca por texto de encabezado; (b) cualquier función que reconstruya una fecha desde un objeto `Date` de Sheets debe decidir conscientemente si usa `TIME_ZONE` (para fecha/hora de eventos reales, que sí dependen de dónde está Dani) o `UTC` (para fechas sin componente horario real, como fecha de nacimiento) — mezclarlas produce un corrimiento de ±1 día silencioso; (c) cuando una migración toca datos reales (no solo estructura), verificar el resultado línea por línea contra los valores originales antes de dar por buena la reparación, no solo confirmar que "no truena".
 
 ---
 
@@ -150,11 +152,7 @@ El campo único "Cédula" se reemplazó por dos campos:
 
 **Schema:** en Nutrición, Pilates y Clientes, la columna `cedula` se renombró a `tipo_id` y se insertó una columna nueva `numero_id` justo después (ver sección 8).
 
-**Validado en testing real (15 jul):** confirmado que un cliente seleccionando en español guarda el mismo valor interno que uno seleccionando en inglés (ej. "Licencia de conducir" y "Driver's License" ambos guardan `licencia`); probado en los 4 tipos de cita; cliente existente precarga correctamente el dropdown con su tipo guardado.
-
-**Deploy:** v18 (15 jul), mismo `deploymentId` de siempre.
-
-**Nota técnica sobre la migración (ver sección 13, nota 28):** la primera versión de la función de migración buscaba la columna `cedula` por texto exacto en la fila 1, y falló silenciosamente en Nutrición/Pilates por un espacio en blanco invisible en el encabezado real ("cedula " con espacio, confirmado en el log de ejecución). Se corrigió migrando por POSICIÓN de columna en vez de texto — ver la función `migrateCedulaToTipoNumeroId()` en el stack técnico (sección 10).
+**Deploy:** confirmado funcionando desde v18.
 
 ### Flujo del formulario en 3 pasos ✅ REORDENADO Y VALIDADO (US-19, 15 jul)
 Nuevo orden implementado: **Calendario → Correo → Datos**.
@@ -162,17 +160,23 @@ Nuevo orden implementado: **Calendario → Correo → Datos**.
 2. **Paso 2 — Correo:** cliente ingresa su correo, sistema busca en "Clientes" (`findClientByEmail`).
 3. **Paso 3 — Datos:** si el correo existe, formulario precargado (todos los campos editables excepto correo) + resumen FIJO del horario elegido en el Paso 1 (no editable ahí — para cambiar de horario hay que reiniciar el flujo); si es cliente nuevo, formulario vacío. Al hacer clic en Enviar, se ejecuta el lock/conflict-check real (`bookTimeslot`) — igual que antes, solo cambió el paso donde vive (ahora es el último paso en vez del Paso 3 viejo).
 
-**Manejo de slot ocupado a mitad de flujo:** si el slot se ocupa mientras el cliente llena correo/datos, al confirmar falla con error claro y el cliente es devuelto al **Paso 1** con el calendario refrescado — el correo y los datos ya ingresados quedan **preservados** (no se pierden, no hay que reescribirlos). Validado en testing real quitándole el slot a un cliente nuevo desde otra pestaña a mitad de flujo — confirmado que los datos persisten y no se duplica el registro.
+**Manejo de slot ocupado a mitad de flujo:** si el slot se ocupa mientras el cliente llena correo/datos, al confirmar falla con error claro y el cliente es devuelto al **Paso 1** con el calendario refrescado — el correo y los datos ya ingresados quedan **preservados**.
 
-**Aplica a los 4 tipos de cita:** Inicial, Seguimiento, Medición y Pilates — probado end-to-end en los 4, incluyendo cliente nuevo y cliente existente.
+**Aplica a los 4 tipos de cita:** Inicial, Seguimiento, Medición y Pilates.
 
-**Hallazgo real de Code durante la implementación:** los selectores de idioma/zona horaria vivían solo en el header del paso "correo" (antes el primero). Al mover el calendario al Paso 1, si no se movían también los selectores, un cliente de EEUU habría elegido horario antes de poder fijar su zona horaria — se corrigió moviéndolos al nuevo Paso 1, requerido por RNF-5, no opcional.
+### Servicios del cliente en pestaña "Clientes" ✅ IMPLEMENTADO Y VALIDADO (modificación sin número de US, 17 jul)
+Dos columnas nuevas en "Clientes" (posiciones K y L): `cliente_nutricion` y `cliente_pilates`, checkbox real de Google Sheets (booleano TRUE/FALSE), para identificar a qué servicio(s) pertenece cada cliente. Un cliente puede pertenecer a ambos.
 
-### Modificación pendiente — Servicios del cliente en pestaña "Clientes" ⏳ ACORDADA, NO IMPLEMENTADA
-Se identificó que la pestaña "Clientes" no distingue a qué servicio(s) pertenece cada cliente (puede ir solo a nutrición, solo a pilates, o a ambos). Diseño acordado:
-- Dos columnas nuevas en "Clientes": `cliente_nutricion` y `cliente_pilates`, tipo **checkbox real de Google Sheets** (booleano TRUE/FALSE), no texto libre "Sí"/"No" — evita inconsistencias de escritura y permite filtrar directamente en el Sheet.
-- **Lógica de escritura:** al hacer `upsertClient` durante un agendamiento, se marca `TRUE` en la columna correspondiente al tipo de cita agendada (nutrición para `initial`/`followup`/`measurement`, pilates para `pilates`). **Nunca se pone en `FALSE`** si ya estaba en `TRUE` por una cita anterior de otro tipo — es un OR acumulativo, no un reemplazo. Así un cliente que agenda primero nutrición y después pilates termina con ambas columnas en `TRUE`, sin que se pisen entre sí.
-- Se decidió implementar esto como una **modificación aparte, sin número de US de Trello**, aprovechando que ya se estaba tocando el schema de "Clientes" en US-18. Pendiente de generar el prompt.
+**Lógica de escritura — OR acumulativo:** al hacer `upsertClient` durante un agendamiento, se marca `TRUE` solo la columna correspondiente al tipo de cita agendada (nutrición para initial/followup/measurement, pilates para pilates). La columna del otro servicio **nunca se pone en FALSE** si ya estaba en TRUE — no se toca. Así un cliente que agenda primero nutrición y después pilates termina con ambas columnas en TRUE.
+
+**Validado en testing real (17 jul, con cliente nuevo desde cero, no reutilizando datos viejos):** cliente nuevo agenda nutrición → aparece en la fila correcta, `cliente_nutricion` TRUE; mismo cliente agenda pilates después → `cliente_pilates` también TRUE, `cliente_nutricion` se conserva TRUE.
+
+**Deploy:** v20 (17 jul), mismo `deploymentId` de siempre.
+
+#### Tres bugs reales encontrados y corregidos durante esta modificación (ver sección 13, notas 28-30 para el detalle técnico completo):
+1. **Migración por texto falló silenciosamente** (mismo patrón que ya había pasado en US-18) — `addServicioColumnsToClientes()` usaba `getMaxRows()` (≈1000 filas por defecto de un Sheet nuevo) en vez de `getLastRow()` para acotar `insertCheckboxes()`, sembrando `FALSE` en ~1000 filas y rompiendo `appendRow()` para clientes nuevos (los insertaba en la fila ~1001, invisibles). Corregido: `upsertClient()` ya no usa `appendRow()`/`getLastRow()` ciego — busca explícitamente la primera fila con columna A (correo) vacía.
+2. **Corrupción de datos por el bug anterior** — 2 clientes nuevos de prueba quedaron "perdidos" cerca de la fila 1000. Reparado con `cleanupCorruptedClientesSheet()` (función de un solo uso, ejecutada y validada manualmente).
+3. **Corrimiento de fecha de ±1 día** — al reconstruir `fecha_nacimiento` desde un objeto Date real (durante la limpieza del punto 2), se usó `TIME_ZONE` (Costa Rica, UTC-6) en vez de `UTC`, corriendo todas las fechas de nacimiento un día hacia atrás. Reparado con `correctOffByOneDayBirthdates()` (función de un solo uso, protegida contra doble ejecución con marca en Script Properties, ejecutada y validada línea por línea contra los valores originales).
 
 ### Zona horaria ✅ CONFIRMADO
 - El sistema debe manejar múltiples zonas horarias, incluyendo Estados Unidos
@@ -262,7 +266,7 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 
 ## 7. FLUJOS COMPLETOS
 
-### Flujo principal — Agendar cita de nutrición (orden reordenado en US-19, campos de ID actualizados en US-18)
+### Flujo principal — Agendar cita de nutrición
 ```
 1. Ali o Dani comparte link ?type=initial/followup/measurement por WhatsApp
 2. Cliente accede → Paso 1: ve Calendario (con selector idioma/zona horaria ahí),
@@ -270,7 +274,8 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 3. Paso 2: cliente ingresa su correo → sistema busca en pestaña "Clientes"
 4. Paso 3: formulario precargado o vacío según exista el correo (incluye 
    dropdown de tipo_id + campo numero_id), con resumen fijo del horario 
-   elegido en Paso 1 → upsert en "Clientes" al enviar
+   elegido en Paso 1 → upsert en "Clientes" al enviar (marca cliente_nutricion=TRUE,
+   conserva cliente_pilates si ya estaba TRUE)
 5. Apps Script re-verifica ventana 48hrs + LockService (protege contra colisiones
    entre tipos de cita) justo antes de confirmar
 6. Si el slot ya no está disponible: error claro + regreso automático al Paso 1
@@ -284,13 +289,14 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 13. Cita se realiza → Dani marca show/no-show en Sheet
 ```
 
-### Flujo pilates — Inscripción a clase grupal (orden reordenado en US-19, campos de ID actualizados en US-18)
+### Flujo pilates — Inscripción a clase grupal
 ```
 1. Ali o Dani comparte link ?type=pilates
 2. Cliente accede → Paso 1: ve disponibilidad de sábados con cupos, selecciona
 3. Paso 2: correo → busca en "Clientes" (compartida con nutrición)
 4. Paso 3: formulario precargado o vacío (incluye dropdown de tipo_id + 
-   numero_id) → upsert, resumen fijo del horario elegido
+   numero_id) → upsert (marca cliente_pilates=TRUE, conserva 
+   cliente_nutricion si ya estaba TRUE), resumen fijo del horario elegido
 5. Si hay cupo: verifica en Cupos_Pilates (LockService) al confirmar
 6. Escribe fila en Pilates PRIMERO (flush()), incrementa contador
 7. Si es la primera inscripción del slot: crea evento en calendario dedicado con Meet, guarda event_id/meet_link
@@ -332,7 +338,7 @@ Apps Script corre en la nube bajo la cuenta que hizo el deploy — ni Dani ni la
 - **ID:** 16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw
 - **URL:** https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit
 
-### Pestaña "Nutrición" (schema actualizado tras US-18, verificado 15 jul)
+### Pestaña "Nutrición" (schema tras US-18, verificado 15 jul)
 ```
 token | nombre | apellido | correo | telefono | tipo_id | numero_id | fecha_nacimiento |
 tipo_cita | fecha | hora | zona_horaria_cliente | modalidad | idioma |
@@ -341,9 +347,9 @@ cancelaciones_tardias (legacy, sin usar) | requiere_pago (legacy, sin usar) | ev
 ```
 **Estados posibles:** `Agendada` → `Reagendada` → `Cancelada`, y también `Error_Calendar`.
 
-> ⚠️ **Nota operativa (resuelta parcialmente en US-18):** los encabezados de fila 1 de Nutrición/Pilates habían quedado con inconsistencias de texto invisible (espacios en blanco) respecto al string interno que usa el código — esto causó que la primera versión de la migración de US-18 fallara silenciosamente (ver nota técnica #28, sección 13). La migración final NO depende de texto, usa posición de columna fija. Si se necesita otra migración de esquema en el futuro, preferir el mismo enfoque por posición.
+> ⚠️ **Pendiente de fondo (ver sección 13, nota 30):** las columnas `fecha` (aquí) y `fecha_clase` (Pilates) tienen el mismo problema de coerción de tipos que tenía `fecha_nacimiento` — se guardan como objeto Date real, no texto plano. Deliberadamente NO se tocó el 17 jul (día del primer demo) por el riesgo de tocar lógica ya validada. El código de negocio ya tolera esto vía `normalizeSheetDateCell()`, así que no hay evidencia de bug funcional activo — es deuda técnica, no una urgencia confirmada.
 
-### Pestaña "Pilates" (schema actualizado tras US-18, verificado 15 jul)
+### Pestaña "Pilates" (schema tras US-18, verificado 15 jul)
 ```
 token | nombre | apellido | correo | telefono | tipo_id | numero_id | fecha_nacimiento |
 fecha_clase | hora_clase | zona_horaria_cliente | idioma |
@@ -355,13 +361,20 @@ estado | fecha_inscripcion | recordatorio_enviado | show_no_show
 fecha_clase | hora_clase | inscritos | max_participantes | event_id | meet_link
 ```
 
-### Pestaña "Clientes" — correo es la clave única (fuente de verdad del tracker de cancelaciones) (schema actualizado tras US-18, verificado 15 jul)
+### Pestaña "Clientes" — correo es la clave única (schema final tras la modificación del 17 jul)
 ```
-correo | nombre | apellido | telefono | tipo_id | numero_id | fecha_nacimiento | idioma | cancelaciones_tardias | requiere_pago
+correo | nombre | apellido | telefono | tipo_id | numero_id | fecha_nacimiento | idioma | 
+cancelaciones_tardias | requiere_pago | cliente_nutricion | cliente_pilates
 ```
-Las columnas `cancelaciones_tardias`/`requiere_pago` de esta pestaña (agregadas en US-06 vía `addCancelacionesColumnsToClientes()`) son la **única fuente de verdad** para la regla de "2 tardías consecutivas → debe pagar". Las columnas del mismo nombre en Nutrición/Pilates son legacy y no se usan para la lógica de negocio.
+Posiciones: A=correo, B=nombre, C=apellido, D=telefono, E=tipo_id, F=numero_id, G=fecha_nacimiento, H=idioma, I=cancelaciones_tardias, J=requiere_pago, K=cliente_nutricion, L=cliente_pilates.
 
-> ⏳ **Pendiente (modificación acordada, sin número de US):** agregar columnas `cliente_nutricion`/`cliente_pilates` (checkbox booleano) a esta pestaña — ver sección 3 para el diseño acordado.
+Las columnas `cancelaciones_tardias`/`requiere_pago` de esta pestaña son la **única fuente de verdad** para la regla de "2 tardías consecutivas → debe pagar". Las columnas del mismo nombre en Nutrición/Pilates son legacy y no se usan para la lógica de negocio.
+
+`cliente_nutricion`/`cliente_pilates` (K, L) — checkbox real, lógica OR-acumulativa (ver sección 3). **Validado y funcionando en v20.**
+
+`fecha_nacimiento` (G) — **✅ confirmado como texto plano en las 12 filas de testing tras la reparación del 17 jul.** `upsertClient()` fuerza `setNumberFormat("@")` ANTES de escribir (no después — ver nota técnica #29) en ambos paths (insertar/actualizar), usando `UTC` (no `TIME_ZONE`) al reconstruir desde cualquier valor Date que llegue.
+
+> ⚠️ **Pendiente de fondo (ver sección 13, nota 30):** `findClientByEmail()` sigue leyendo `fecha_nacimiento` con `normalizeSheetDateCell(..., "yyyy-MM-dd")`, que usa `TIME_ZONE` internamente en vez de UTC — mismo patrón de bug pero en el lado de LECTURA, no escritura. Bajo riesgo mientras todas las celdas sean texto plano (ya lo son tras la reparación), pero quedaría expuesto si algo en el futuro vuelve a escribir un Date real ahí sin forzar texto.
 
 ### Valores válidos de `tipo_id` (fijos, ver sección 3 para tabla de traducción)
 ```
@@ -388,7 +401,8 @@ Estos son los ÚNICOS 4 valores internos aceptados — el backend valida contra 
 | RF-1.8 | Ventana máxima de agendamiento: 56 días (8 semanas) | ✅ |
 | RF-1.9 | Horarios en zona horaria del cliente. Evento creado en hora CR. | ✅ US-08 |
 | RF-1.10 | Selector de idioma ES/EN desde primera pantalla | ✅ (ahora en Paso 1 tras US-19) |
-| RF-1.15 (nuevo) | Campo de ID flexible (tipo + número), valor interno consistente sin importar idioma | ✅ **Done — US-18, 15 jul** |
+| RF-1.15 | Campo de ID flexible (tipo + número), valor interno consistente sin importar idioma | ✅ US-18 |
+| RF-1.16 (nuevo) | Identificar a qué servicio(s) pertenece cada cliente en "Clientes" (cliente_nutricion/cliente_pilates, OR-acumulativo) | ✅ **Done — 17 jul** |
 
 ### RF-2 — Correos y Automatizaciones (SPRINT 2 — TODO PENDIENTE)
 | ID | Requerimiento | Estado |
@@ -399,7 +413,7 @@ Estos son los ÚNICOS 4 valores internos aceptados — el backend valida contra 
 | RF-2.4 | Recordatorio 48 hrs antes. Solo si estado='Agendada' o 'Reagendada'. | ⏳ Pendiente Sprint 2 |
 | RF-2.5 | Notificación a Dani y Ali si cancelación/reagendamiento fuera de ventana | ⏳ Pendiente Sprint 2 (stub ya cableado, ver RF-2.3) |
 | RF-2.6 (nuevo) | Frontend para que el cliente reagende/cancele desde el link único del correo (hoy solo existe el backend) | ⏳ Pendiente Sprint 2 |
-| RF-2.7 | Reordenar las 3 pantallas del portal: Calendario → Correo → Datos | ✅ **Done — US-19, 15 jul** |
+| RF-2.7 | Reordenar las 3 pantallas del portal: Calendario → Correo → Datos | ✅ Done — US-19 |
 
 ---
 
@@ -421,7 +435,7 @@ Estos son los ÚNICOS 4 valores internos aceptados — el backend valida contra 
 
 ### Variables en `backend/src/app.ts`
 ```typescript
-TIME_ZONE = "America/Costa_Rica"
+TIME_ZONE = "America/Costa_Rica"       // Para fecha/hora de CITAS (eventos reales, dependen de Dani)
 WORKDAYS = [1,2,3,4,5,6]              // ⚠️ genérico, no refleja horario real de Dani — Sprint 3
 WORKHOURS = { start: 7, end: 20 }     // ⚠️ genérico — Sprint 3
 DAYS_IN_ADVANCE = 56                   // 8 semanas
@@ -431,9 +445,14 @@ MAX_PILATES_PARTICIPANTS = 5
 PILATES_CALENDAR_ID                   // Script Property, no constante — calendario dedicado de pilates (US-10)
 TIPO_ID_VALUES = ["cedula", "pasaporte", "licencia", "otro"]  // ✅ US-18, valores internos fijos
 CEDULA_COLUMN_BY_SHEET = { "Nutrición": 6, "Pilates": 6, "Clientes": 5 }  // ✅ US-18, usado por la migración
+CLIENTES_NUTRICION_COL = 11           // ✅ 17 jul, posición K
+CLIENTES_PILATES_COL = 12             // ✅ 17 jul, posición L
+CLIENTES_FECHA_NACIMIENTO_COL = 7     // ✅ 17 jul, posición G — usada para forzar texto plano antes de escribir
 ```
 
-### Firma actual de funciones en backend (al cierre de US-18, 15 jul)
+> ⚠️ **Regla de zona horaria para fechas (ver nota técnica #30):** `fecha_nacimiento` (sin componente horario real) SIEMPRE usa `UTC` al reconstruirse desde un objeto Date. `fecha`/`hora` de citas reales (que sí dependen de dónde vive Dani) usan `TIME_ZONE`. Mezclar los dos produce un corrimiento de ±1 día silencioso — ya pasó una vez (ver nota 29), no repetir el error en `fecha`/`fecha_clase` cuando se aborde ese pendiente.
+
+### Firma actual de funciones en backend (al cierre del 17 jul)
 ```typescript
 getDurationForType(type: string): number
 fetchAvailability(type: string): { timeslots: string[], durationMinutes: number }
@@ -447,43 +466,65 @@ findBookingByToken(token: string): { sheet, row, data }
 // Lanza TOKEN_NO_ENCONTRADO si no existe. Busca en Nutrición y Pilates.
 
 rescheduleBooking(token, newTimeslot, clientTimezone): string
-// Bloquea con VENTANA_REAGENDAMIENTO_VENCIDA si faltan <24hrs para la cita ACTUAL.
-// Si no hay event_id (cita vieja pre-US-06): actualiza el Sheet igual, sin error, solo loguea.
-// Si hay event_id: mueve el evento real (patch nutrición / sale-y-entra pilates grupal).
-
 cancelBooking(token: string): { lateCancellation: boolean }
-// SIEMPRE permite cancelar. Si <24hrs: lateCancellation=true, incrementa contador del cliente.
-// Nunca borra la fila. Elimina el evento real de Calendar (o solo el invitado, en pilates grupal).
 
 incrementClientLateCancellation(correo) / resetClientLateCancellationCounter(correo)
-// Tocan las columnas cancelaciones_tardias/requiere_pago en pestaña "Clientes" (fuente de verdad).
-// ⚠️ El failsafe de appendRow para correos sin fila existente debe tener exactamente 10 
-// elementos (schema actual de Clientes) — bug real encontrado y corregido en US-18 
-// (tenía 9, desalineaba columnas en ese caso límite). Ver nota técnica #28.
+// ⚠️ El failsafe de appendRow para correos sin fila existente debe tener exactamente 12 
+// elementos (schema actual de Clientes tras agregar cliente_nutricion/cliente_pilates) — 
+// ya verificado y correcto al cierre del 17 jul.
 getClientPaymentStatus(correo): { cancelaciones_tardias, requiere_pago }
 notifyLateCancellation(...) // STUB con TODO — implementar de verdad en Sprint 2
 
+upsertClient(data: ClientRecord, type: string): void
+// ✅ Corregida 17 jul: ya NO usa appendRow()/getLastRow() para decidir dónde insertar 
+// un cliente nuevo — busca explícitamente la primera fila con columna A (correo) vacía, 
+// iterando sobre los valores reales de esa columna. Aplica setNumberFormat("@") a 
+// fecha_nacimiento ANTES de escribir (no después, ver nota #29), usando UTC si tiene 
+// que reconstruir desde un Date. Aplica la lógica OR-acumulativa a cliente_nutricion/
+// cliente_pilates según el "type" recibido — nunca pone en FALSE la columna del 
+// servicio contrario si ya estaba en TRUE.
+
+findClientByEmail(correo: string): ClientRecord | null
+// ⚠️ Lee fecha_nacimiento con normalizeSheetDateCell(..., "yyyy-MM-dd"), que usa 
+// TIME_ZONE internamente (no UTC) — pendiente de fondo, ver nota técnica #30.
+
 migrateCedulaToTipoNumeroId(): void
-// ✅ US-18, ejecutada manualmente 15 jul. Migra por POSICIÓN de columna (CEDULA_COLUMN_BY_SHEET),
-// NO por texto — ver nota técnica #28 sobre por qué la primera versión (por texto) falló.
-// Idempotente por pestaña individual (evalúa cada una por separado, no todo-o-nada).
+// ✅ US-18. Migra por POSICIÓN de columna (CEDULA_COLUMN_BY_SHEET), NO por texto.
+
+addServicioColumnsToClientes(): void
+// ✅ 17 jul, corregida. Usa getLastRow() (no getMaxRows()) para acotar insertCheckboxes() 
+// solo a filas con datos reales. Idempotente por posición.
+
+cleanupCorruptedClientesSheet(): void
+// ✅ Función de un solo uso, ejecutada y validada el 17 jul. Recuperó 3 filas perdidas 
+// (test9, test10, test11) que appendRow() había insertado cerca de la fila 1000 por el 
+// bug de addServicioColumnsToClientes(). Reconstruye fecha_nacimiento con UTC (no 
+// TIME_ZONE) si la celda movida era un Date real.
+
+correctOffByOneDayBirthdates(): void
+// ✅ Función de un solo uso, ejecutada y validada el 17 jul contra los 11 valores 
+// originales conocidos — coincidencia exacta. Protegida contra doble ejecución vía 
+// Script Property "BIRTHDATE_OFFBYONE_FIX_APPLIED_2026_07_17".
+
+fixFechaNacimientoFormatInClientes(): void
+// ✅ Función de un solo uso, ejecutada y validada el 17 jul. Reconvierte cualquier 
+// celda de fecha_nacimiento que siga siendo Date real a texto plano YYYY-MM-DD (con 
+// UTC, no TIME_ZONE — corregido en el camino, ver nota #29), aplicando 
+// setNumberFormat("@"). Idempotente (ignora celdas que ya son texto).
+
 addCancelacionesColumnsToClientes(): void  // ✅ ejecutada manualmente 13 jul
 addEventIdColumnToNutricion(): void        // ✅ ejecutada manualmente 13 jul
 addEventIdColumnToCuposPilates(): void     // ✅ ejecutada manualmente 13 jul
 setupPilatesTestCalendar(): void           // ✅ ejecutada manualmente 13 jul, idempotente
 initializeSheets(): void                    // ✅ ejecutada, NO volver a correr
 addClientesSheet(): void                    // ✅ ejecutada manualmente 12 jul
-findClientByEmail(correo: string): ClientRecord | null
-upsertClient(data: ClientRecord): void
 getSheet(sheetName: string): GoogleAppsScript.Spreadsheet.Sheet
 getPilatesCalendarId(): string
 ```
 
-> **Nota:** los wrappers temporales `manualTestCancelBooking`/`manualTestRescheduleBooking` que existieron brevemente para testing manual de US-06 (13-14 jul) ya fueron **removidos del código** el 14 de julio, tras validar la US por completo. Si se necesita un mecanismo similar en el futuro para probar funciones sin frontend, ver el patrón documentado en nota técnica #23 (sección 13) — no reinventar el enfoque, solo recrear wrappers análogos y volver a borrarlos al terminar.
+> **Nota frontend:** no hay componentes de paso separados en archivos individuales — `EmailStep`, `ContactForm` y `CalendarTimeslotPicker` son funciones dentro de `frontend/src/components/calendar-picker.tsx`, junto con el orquestador `CalendarPicker`. `useUpsertClient.tsx` ahora envía `type` como segundo argumento a `upsertClient`. `googlelib.ts` tiene un mock de modo demo que también se actualizó a la firma de dos argumentos.
 
-> **Nota frontend (US-19, 15 jul):** no hay componentes de paso separados en archivos individuales — `EmailStep`, `ContactForm` y `CalendarTimeslotPicker` son funciones dentro de `frontend/src/components/calendar-picker.tsx`, junto con el orquestador `CalendarPicker`. Tenerlo en cuenta al generar prompts que toquen el frontend: todo vive en ese único archivo.
-
-> **Nota test-harness (US-18, 15 jul):** `backend/test-harness/` (gas-mock.js y run-tests.js) también tenía referencias hardcodeadas a `cedula` (11 llamadas a `bookTimeslot` con el argumento suelto, más ~15 índices de columna) — todas actualizadas a tipoId/numeroId. Al modificar el schema de cualquier pestaña en el futuro, revisar también el harness, no solo `app.ts`.
+> **Nota test-harness:** `backend/test-harness/` (gas-mock.js y run-tests.js) — 37 aserciones, todas pasando al cierre del 17 jul. **Punto ciego conocido:** el mock no simula el comportamiento real de `insertCheckboxes()` ni de `getMaxRows()`/`appendRow()` sobre un Sheet con miles de filas — el bug #1 de la modificación de hoy no lo hubiera atrapado el harness, solo se encontró en testing real contra el Sheet real. Tenerlo presente: el harness cubre lógica de negocio pura, no comportamiento de la API real de Sheets en casos de borde de tamaño/formato.
 
 ---
 
@@ -498,31 +539,33 @@ getPilatesCalendarId(): string
 | US-03 | Links separados por tipo de cita via ?type= en URL | ✅ Done |
 | US-04 | Diseño e inicialización del schema de Sheets | ✅ Done |
 | US-05 | Función de escritura de nueva cita en Sheet (token UUID v4, atómica) | ✅ Done |
-| US-06 | Funciones de actualización de estado (reagendar/cancelar) | ✅ **Done** (14 jul) — 8/8 checkboxes validados en testing real: mecánica básica, ventana 24hrs, asimetría cancelar/reagendar, tracker por cliente, requiere_pago tras 2 tardías, Calendar consistente. Deploy v16. |
+| US-06 | Funciones de actualización de estado (reagendar/cancelar) | ✅ Done — Deploy v16. |
 | US-07 | Formulario extendido: idioma, modalidad, cédula, fecha de nacimiento | ✅ Done |
 | US-08 | Detección y ajuste de zona horaria del cliente | ✅ Done |
-| US-09 | Verificación de conflictos, lock y ventana mínima de 48 hrs | ✅ Done — incluyendo hallazgo real de falta de lock en conflict-check heredado |
-| US-10 | Creación de evento en Calendar y generación de Meet | ✅ Done — incluyendo 3 bugs reales encontrados y corregidos (orden Sheet/Calendar, evento duplicado pilates, flush() de SpreadsheetApp) |
+| US-09 | Verificación de conflictos, lock y ventana mínima de 48 hrs | ✅ Done |
+| US-10 | Creación de evento en Calendar y generación de Meet | ✅ Done |
 | US-17 | Separar nombre y apellido en campos independientes | ✅ Done |
 | US-27 | Correo como identificador único — pestaña "Clientes" + flujo de 3 pasos | ✅ Done |
 
-**Todas las tarjetas movidas a Done en Trello. Deploy activo: v16.**
+**Todas las tarjetas movidas a Done en Trello.**
 
 ### Sprint 2 (Jul 14 – Jul 20) — ESP: 30 — tablero real de Trello
 
 | US | Título | Puntos | Checklist | Estado |
 |----|--------|--------|-----------|--------|
-| US-19 | Cambiar orden de pantallas (Calendario→Correo→Datos) | 2 | 5/5 | ✅ **Done (15 jul)** — validado en testing real, 4 tipos de cita, cliente nuevo/existente, recuperación de slot ocupado. Deploy v17. |
-| US-18 | Campo de ID flexible: cédula, pasaporte o driver's license | 1 | 1/1 | ✅ **Done (15 jul)** — dropdown 4 opciones (ES/EN) con valor interno fijo, numero_id alfanumérico, validado en los 4 tipos de cita y con cliente existente. Deploy v18. |
-| (sin número) | Modificación extra: columnas cliente_nutricion/cliente_pilates en "Clientes" | — | 0/? | ⏳ **Siguiente** — acordada, ver sección 3, prompt pendiente de generar |
+| US-19 | Cambiar orden de pantallas (Calendario→Correo→Datos) | 2 | 5/5 | ✅ **Done (15 jul)** — Deploy v17. |
+| US-18 | Campo de ID flexible: cédula, pasaporte o driver's license | 1 | 1/1 | ✅ **Done (15 jul)** — Deploy v18. |
+| (sin número) | cliente_nutricion/cliente_pilates en "Clientes" | — | Validado | ✅ **Done (17 jul)** — Deploy v20. 3 bugs reales encontrados y corregidos (ver sección 3). |
 | US-16 | Fix: calendario no abre en el mes actual por defecto | 2 | 0/4 | ⏳ Backlog |
 | US-11 | Plantillas HTML bilingües (nutrición y pilates) | 3 | 1/7 | ⏳ Backlog — necesita carpeta "Comunicaciones" de Drive |
 | US-12 | Correo de confirmación inmediato al cliente | 3 | 1/8 | ⏳ Backlog — depende de US-11 |
 | US-13 | Notificación interna a Secretaria | 5 | 1/6 | ⏳ Backlog |
 | US-14 | Recordatorio automático 48 horas antes de la cita | 5 | 1/6 | ⏳ Backlog |
-| US-20 | Generación y validación de token único por cita | 2 | 1/8 | ⏳ Backlog — **revisar solapamiento**, el token UUID v4 ya se implementó en US-05/US-06; confirmar con Trello qué falta exactamente antes de generar el prompt |
+| US-20 | Generación y validación de token único por cita | 2 | 1/8 | ⏳ Backlog — revisar solapamiento con US-05/US-06 |
 | US-28 | Actualizar look & feel del portal según brandbook de Plant Powered | 4 | 0/7 | ⏳ Backlog — necesita carpeta de branding/colores de Drive |
-| US-29 | Bloquear registro de datos de menores de 13 años | 5 | 0/8 | ⏳ Backlog — requerimiento nuevo, discutir validación (¿cálculo de edad desde fecha de nacimiento?) antes de generar el prompt |
+| US-29 | Bloquear registro de datos de menores de 13 años | 5 | 0/8 | ⏳ Backlog — depende de fecha_nacimiento confiable (ya reparada en Clientes) |
+| (sin número) | Fix fecha/fecha_clase en Nutrición/Pilates (mismo patrón Date-vs-texto) | — | — | ⏳ **Pospuesto deliberadamente hasta después del demo** — ver sección 13, nota 30 |
+| (sin número) | Fix lectura findClientByEmail (TIME_ZONE vs UTC en fecha_nacimiento) | — | — | ⏳ Deuda técnica de bajo riesgo, ver sección 13, nota 30 |
 
 ### Sprint 3 (pendiente) — Producción + Pruebas
 **Epics:** Flujos independientes nutrición y pilates · Pruebas end-to-end · Paso a producción y capacitación
@@ -541,16 +584,16 @@ getPilatesCalendarId(): string
 | Credenciales | Guardadas en Drive: AutomáTica / Plant Powered Dani / Interno |
 | URL de testing activa | https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec |
 | Editor Apps Script | https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit |
-| Versión actual | **v18** |
+| Versión actual | **v20** |
 | Repo | https://github.com/juanartavia/plant-powered-dani |
 | Spreadsheet testing | https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit |
 | Calendario pilates (testing) | "Pilates - Testing" |
-| Harness de pruebas backend | `backend/test-harness/` (run-tests.js + gas-mock.js + README.md) — 37 aserciones, todas pasando (actualizado con tipoId/numeroId en US-18) |
+| Harness de pruebas backend | `backend/test-harness/` (run-tests.js + gas-mock.js + README.md) — 37 aserciones, todas pasando |
 
 ### ⚠️ Lección crítica de proceso — deploy vs. push (ver nota técnica #25)
-`clasp push` actualiza el código fuente del proyecto (lo que se ve en el editor), pero la URL pública `/exec` de un deployment queda **congelada** a la versión que tenía en el último `clasp deploy` sobre ese mismo `deploymentId`. Si se hace solo `push` sin `deploy`, cualquier prueba a través del link real seguirá corriendo código viejo, aunque el editor muestre el código nuevo y los wrappers manuales (que sí leen del HEAD) funcionen bien. **Siempre confirmar que se hizo `clasp deploy` antes de dar una prueba por válida usando el link público.**
+`clasp push` actualiza el código fuente del proyecto, pero la URL pública `/exec` de un deployment queda **congelada** a la versión del último `clasp deploy` sobre ese mismo `deploymentId`. **Siempre confirmar que se hizo `clasp deploy` antes de dar una prueba por válida usando el link público.**
 
-### Links de testing por tipo de cita (v18)
+### Links de testing por tipo de cita (v20)
 ```
 Consulta Inicial (60 min)
 https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec?type=initial
@@ -570,12 +613,12 @@ Clase de Pilates (60 min)
 |---------|-------|----------------------|
 | v8-v11 | ≤12 jul | Base + US-05 + US-08 + US-17 + US-27 |
 | v12 | 13 jul | US-09: ventana 48hrs + lock en conflict-check |
-| v13 | 13 jul | US-10 primera iteración: Sheet-antes-Calendar, evento único pilates, Meet real, calendario dedicado. Bug encontrado: "Fila de Cupos_Pilates no encontrada" en slots nuevos. |
-| v14 | 13 jul | Fix del bug de v13: `SpreadsheetApp.flush()` en 3 puntos. **US-10 Done.** |
-| v15 | 14 jul | US-06: reagendar/cancelar por token, tracker por cliente. Deploy hecho tras detectar que v14 seguía activo en la URL (gap de deploy, no bug de código — ver nota 25). |
-| v16 | 14 jul | Wrappers temporales de testing manual removidos del código tras validar US-06 por completo. **Sprint 1 100% cerrado.** |
-| v17 | 15 jul | **US-19 Done.** Reordenado el flujo del portal a Calendario→Correo→Datos. Selectores de idioma/zona horaria movidos al Paso 1. Validado en testing real: 4 tipos de cita, cliente nuevo, cliente existente, y recuperación de slot ocupado a mitad de flujo. |
-| v18 | 15 jul | **US-18 Done.** Campo de ID flexible: `cedula` → `tipo_id` + `numero_id` en Nutrición/Pilates/Clientes. Dropdown de 4 opciones traducidas (ES/EN) con valor interno fijo. Migración corregida de búsqueda por texto a búsqueda por posición tras fallo real (ver nota técnica #28). Validado en testing real: consistencia de valor guardado entre idiomas, los 4 tipos de cita, precarga de cliente existente. **Deploy activo.** |
+| v13-v14 | 13 jul | US-10: Sheet-antes-Calendar, evento único pilates, Meet real, calendario dedicado |
+| v15-v16 | 14 jul | US-06: reagendar/cancelar por token, tracker por cliente. **Sprint 1 100% cerrado.** |
+| v17 | 15 jul | **US-19 Done.** Reordenado el flujo del portal a Calendario→Correo→Datos. |
+| v18 | 15 jul | **US-18 Done.** Campo de ID flexible: tipo_id + numero_id. Migración corregida de texto a posición (nota #28). |
+| v19 | 17 jul | **cliente_nutricion/cliente_pilates**, primera versión — contenía el bug #1 de appendRow/getMaxRows (ver sección 3), detectado en testing real antes de considerarse Done. |
+| v20 | 17 jul | Fix completo de la modificación de v19: OR-acumulativo correcto, inserción de fila nueva sin appendRow/getLastRow ciego, fecha_nacimiento en texto plano + corrección de zona horaria UTC vs TIME_ZONE. **Validado en testing real con cliente nuevo desde cero (test12): ambos servicios, fecha exacta, fila correcta. Deploy activo.** |
 
 ---
 
@@ -584,32 +627,33 @@ Clase de Pilates (60 min)
 1. **Todo en cuenta de testing primero** — nunca tocar cuenta real de Dani hasta Sprint 3.
 2. **Pilates grupal es arquitectónicamente distinto** — usa contador en Cupos_Pilates, no slot individual.
 3. **Pilates solo sábados** — restricción pendiente de implementar en Sprint 3.
-4. **Función atómica (US-05, reforzada US-10):** si falla Sheets → no crear evento en Calendar. Si falla Calendar DESPUÉS de un Sheet exitoso → la fila NO se borra, queda `estado='Error_Calendar'` (decisión: borrar arriesga desincronizar índices y pierde auditoría).
-5. **Token UUID v4:** columna 1 del Sheet, es el único identificador válido para localizar una cita — nunca el correo (eso identifica al cliente, en la pestaña "Clientes").
+4. **Función atómica (US-05, reforzada US-10):** si falla Sheets → no crear evento en Calendar. Si falla Calendar DESPUÉS de un Sheet exitoso → la fila NO se borra, queda `estado='Error_Calendar'`.
+5. **Token UUID v4:** columna 1 del Sheet, es el único identificador válido para localizar una cita — nunca el correo.
 6. **Trigger 48hrs (Sprint 2):** solo disparar si estado = 'Agendada' o 'Reagendada'. Marcar recordatorio_enviado para evitar duplicados.
-7. **Cancelaciones tardías — fuente de verdad es "Clientes", no Nutrición/Pilates** (confirmado en US-06): las columnas `cancelaciones_tardias`/`requiere_pago` de Nutrición/Pilates son legacy, sin usar; el tracker real vive por correo en la pestaña "Clientes", cruzando tipos de cita.
-8. **Correos pilates** salen desde cuenta de la instructora — o Reply-To, decisión pendiente Sprint 2 (sección 6).
+7. **Cancelaciones tardías — fuente de verdad es "Clientes", no Nutrición/Pilates.**
+8. **Correos pilates** salen desde cuenta de la instructora — o Reply-To, decisión pendiente Sprint 2.
 9. **Idioma del cliente** guardado en Sheet → determina idioma de todos los correos automáticos (Sprint 2).
 10. **Cédula** ya NO es el identificador único (reemplazada por correo desde US-27) — y desde US-18 tampoco es un campo único: se dividió en `tipo_id` + `numero_id`, con `tipo_id` restringido a 4 valores internos fijos.
 11. **initializeSheets()** — UNA SOLA VEZ, ya ejecutada. NO volver a correr.
-12. **Permisos en appsscript.json** — incluye spreadsheets, drive, calendar. Agregar scope si se suman integraciones nuevas (ej. Gmail para Sprint 2).
-13. **Pilates: eventos duplicados — RESUELTO en US-10.** Un solo evento por slot con múltiples invitados vía `addGuest`/`patch`.
-14. **`WORKDAYS`/`WORKHOURS` genéricos (pendiente Sprint 3)** — no reflejan el horario real de Dani (martes-sábado, 7am-7pm entre semana, 7am-2pm sábados, cerrado domingo-lunes, no último sábado del mes, sin virtuales los sábados).
-15. **Criterio validado varias veces: auditar y adaptar código heredado de Someday, no asumir que ya cumple las reglas del cliente** — funcionó en US-09 (lock faltante) y US-10 (eventos duplicados, Meet nunca implementado de verdad). Aplicar el mismo criterio a cualquier código heredado restante.
-16. **Coerción de tipos en Google Sheets** — un string de fecha/hora puede autodetectarse y guardarse como objeto `Date`, rompiendo comparaciones `===`. Mitigación: `normalizeSheetDateCell()` + `setNumberFormat("@")`. Ya aplicado consistentemente en US-05/US-06/US-10.
-17. **Acceso desde móvil — pendiente investigar.** Reporte inicial: el link de testing no cargó desde un teléfono. No bloquea el trabajo actual, pero debe resolverse antes de Sprint 3 / producción (RNF-3, RF-1.4) — la mayoría de clientes reales van a abrir el link desde el celular (compartido por WhatsApp).
-18. **El lock de conflict-check protege el Calendar real, no el "tipo" de cita** (US-09) — `initial`/`followup`/`measurement` comparten Calendar; validado con colisión cruzada entre tipos distintos.
-19. **`SpreadsheetApp` cachea escrituras — requiere `flush()` explícito antes de releer en la misma ejecución** (lección de US-10, reforzada en US-06). Cualquier código que escriba y luego relea el mismo Sheet dentro de la MISMA ejecución necesita `SpreadsheetApp.flush()` entre medio — no asumir que una escritura es visible de inmediato a una lectura posterior en el mismo run. Ya aplicado en `appendBookingToSheet`, `bookPilatesCalendarEvent`, el catch de `bookTimeslot`, y en `cancelBooking`/`rescheduleBooking`.
-20. **Calendar de pilates nunca estuvo realmente separado del de nutrición hasta US-10** — resuelto con `PILATES_CALENDAR_ID` dedicado, separado de `CALENDARS` (que sigue siendo específico del conflict-check de Freebusy de nutrición).
-21. **Asimetría intencional cancelar/reagendar** (US-06) — ver tabla completa en sección 3. Cancelar siempre se permite (solo marca tardía); reagendar se bloquea duro con <24hrs. Confirmado con el equipo en reunión del 14 jul, sin cambios solicitados.
-22. **Ventana de 24hrs para reagendar se evalúa contra la cita ACTUAL, no la nueva** — al reagendar, primero se valida si la cita que se quiere mover ya está a menos de 24hrs (se bloquea si sí); si se permite avanzar, el NUEVO horario se valida por separado con las reglas normales de `bookTimeslot` (ventana 48hrs mínima, lock, cupos).
-23. **Patrón para testing manual sin frontend (US-06)** — cuando una función de backend no tiene todavía un punto de entrada en frontend, se pueden crear wrappers temporales en `app.ts` (ej. `manualTestX()`) con un valor hardcodeado (token, etc.), ejecutarlos desde el dropdown del editor de Apps Script, revisar el Registro de ejecución + Sheet + Calendar real, y **borrarlos del código antes de dar la US por Done** (o documentarlos explícitamente si se decide conservarlos). Alternativa más robusta pero con más setup: `clasp run <función> --params '[...]'`, que requiere habilitar la Apps Script API y desplegar como "API executable" — evaluar si vale la pena en Sprint 3 si se repite mucho la necesidad de probar funciones sin UI.
-24. **rescheduleBooking y cancelBooking deben comportarse igual ante citas sin `event_id` (pre-migración)** — ambas deben actualizar el Sheet igual y solo loguear un aviso, sin lanzar un error duro que bloquee toda la operación. Se encontró y corrigió una inconsistencia real en US-06 donde `cancelBooking` ya era tolerante pero `rescheduleBooking` lanzaba `EVENTO_CALENDAR_NO_ENCONTRADO` y bloqueaba todo — ya unificado.
-25. **Gap de deploy causó un falso positivo de bug (lección de proceso, 14 jul)** — al pedir explícitamente "solo push, sin deploy" en una iteración anterior, quedó pendiente un `clasp deploy`. Cuando se probó vía el link público, el código corrido era el de la versión desplegada anterior (v14), no el más reciente en el editor — pareciendo un bug real (`bookNutricionCalendarEvent` "no guardaba event_id") que en realidad no existía: el código en el HEAD del proyecto ya era correcto (confirmado con una prueba de harness dedicada, Test 10, 37/37 pasando). **Regla reforzada:** antes de dar cualquier resultado de prueba por "bug confirmado", verificar primero con `clasp deployments` que la URL usada para probar corresponde a la versión de código que se cree estar probando.
-26. **Wrappers temporales de US-06 removidos (14 jul)** — `manualTestCancelBooking`/`manualTestRescheduleBooking` cumplieron su propósito (validar reagendar/cancelar en testing real sin frontend) y fueron eliminados del código tras confirmar los 8 checkboxes de la US. Si Sprint 2 necesita un mecanismo similar antes de que el frontend de reagendar/cancelar exista (RF-2.6), recrear wrappers análogos siguiendo el patrón de la nota 23, y volver a borrarlos al finalizar esa US.
-27. **Trabajo funcionando en producción sin `git commit` — ocurrió dos veces antes de detectarse (lección de proceso, 15 jul).** El trabajo de US-10 (13 jul) y US-06 (14 jul) quedó desplegado y funcionando en producción vía `clasp push`/`clasp deploy`, pero sin comitear a git, hasta que se detectó al iniciar US-19 (~1000 líneas sin comitear en `backend/src/app.ts`). Se verificó el diff antes de comitear (no se asumió a ciegas) y coincidía con el trabajo documentado — no era código inesperado, solo faltaba el commit. **Regla reforzada:** hacer `git commit` inmediatamente después de cada `clasp deploy` exitoso, no esperar al cierre del sprint (ver paso 6.5 en sección 14).
-28. **Migración de schema por texto falló silenciosamente por un espacio en blanco invisible (lección de proceso, 15 jul, US-18).** La primera versión de `migrateCedulaToTipoNumeroId()` buscaba la columna `cedula` con `headers.indexOf("cedula")` (comparación exacta de texto) en las 3 pestañas. Funcionó en "Clientes" (header escrito 100% por código, nunca tocado a mano) pero falló silenciosamente en "Nutrición" y "Pilates" — el log solo decía "no se encontró la columna, revisar manualmente", sin lanzar ningún error. Al inspeccionar el Sheet real con capturas de pantalla, se confirmó que el header real era `"cedula "` (con un espacio en blanco al final, invisible a simple vista) — consistente con la advertencia ya documentada en sección 8 sobre encabezados de esas dos pestañas editados manualmente en algún punto de Sprint 1. **Regla reforzada:** cuando una migración de schema busca columnas por texto en la fila 1, verificar primero con captura de pantalla del Sheet real si aplica, y preferir migrar por POSICIÓN de columna (usando la misma constante que el resto del código ya usa para leer/escribir esa columna) en vez de por comparación de texto — la posición es la fuente de verdad real, el texto del encabezado puede tener inconsistencias invisibles. La versión final usa `CEDULA_COLUMN_BY_SHEET` (posición fija por pestaña) y quedó validada en las 3 pestañas.
-29. **Bug real en failsafe de `incrementClientLateCancellation` encontrado por el test-harness tras el cambio de schema de US-18** — el `appendRow` defensivo (para el caso hipotético de un correo sin fila en "Clientes" todavía) tenía un elemento de menos que el nuevo schema de 10 columnas, lo que habría desalineado `cancelaciones_tardias`/`requiere_pago` en ese caso límite. Se detectó porque 4 de las 37 aserciones del harness fallaron tras el cambio de schema — el harness cumplió su propósito de atrapar el bug antes de llegar a producción. Corregido (ahora 10 elementos), 37/37 pasando de nuevo.
+12. **Permisos en appsscript.json** — incluye spreadsheets, drive, calendar. Agregar scope si se suman integraciones nuevas.
+13. **Pilates: eventos duplicados — RESUELTO en US-10.**
+14. **`WORKDAYS`/`WORKHOURS` genéricos (pendiente Sprint 3).**
+15. **Criterio validado varias veces: auditar y adaptar código heredado, no asumir que ya cumple las reglas del cliente.**
+16. **Coerción de tipos en Google Sheets** — un string de fecha/hora puede autodetectarse como objeto `Date`, rompiendo comparaciones `===`. Mitigación general: `normalizeSheetDateCell()` + `setNumberFormat("@")`. Este es el patrón raíz detrás de las notas #28-30.
+17. **Acceso desde móvil — pendiente investigar.**
+18. **El lock de conflict-check protege el Calendar real, no el "tipo" de cita** (US-09).
+19. **`SpreadsheetApp` cachea escrituras — requiere `flush()` explícito antes de releer en la misma ejecución.**
+20. **Calendar de pilates nunca estuvo realmente separado hasta US-10.**
+21. **Asimetría intencional cancelar/reagendar** (US-06) — ver tabla completa en sección 3.
+22. **Ventana de 24hrs para reagendar se evalúa contra la cita ACTUAL, no la nueva.**
+23. **Patrón para testing manual sin frontend (US-06)** — wrappers temporales, borrar al finalizar la US.
+24. **rescheduleBooking y cancelBooking deben comportarse igual ante citas sin `event_id`.**
+25. **Gap de deploy causó un falso positivo de bug (14 jul).** Regla reforzada: verificar `clasp deployments` antes de dar un resultado de prueba por "bug confirmado".
+26. **Wrappers temporales de US-06 removidos (14 jul).**
+27. **Trabajo funcionando en producción sin `git commit` — ocurrió dos veces antes de detectarse.** Regla reforzada: `git commit` inmediatamente después de cada `clasp deploy` exitoso — no esperar a validar en real primero, no esperar al cierre del sprint (ver paso 6.5 en sección 14).
+28. **Migración de schema por texto falló silenciosamente por un espacio en blanco invisible (US-18, 15 jul).** `headers.indexOf("cedula")` falló en Nutrición/Pilates por un espacio invisible en el header real. Regla reforzada: migrar por POSICIÓN de columna, no por texto.
+29. **Corrimiento de fecha ±1 día por mezclar TIME_ZONE con UTC al reconstruir fechas sin componente horario (17 jul).** Al reparar `fecha_nacimiento` desde un objeto Date, usar `TIME_ZONE` (Costa Rica, UTC-6) corrió todas las fechas un día hacia atrás, porque medianoche UTC cae en el día anterior en hora de Costa Rica. **Regla reforzada:** cualquier fecha SIN componente horario real (fecha de nacimiento) debe reconstruirse siempre en `UTC`. Cualquier fecha/hora que SÍ representa un evento real (cita, clase) debe seguir usando `TIME_ZONE` porque depende genuinamente de dónde vive Dani. Mezclar los dos produce un bug silencioso — no lanza error, solo corre el valor. Reparado con una función de un solo uso, protegida contra doble ejecución con marca en Script Properties, y validada línea por línea contra los 11 valores originales conocidos antes de darla por buena — no basta con confirmar que "no truena".
+30. **`insertCheckboxes()` sobre `getMaxRows()` en vez de `getLastRow()` corrompió silenciosamente el Sheet real (17 jul).** `Range.insertCheckboxes()` fuerza `FALSE` en toda celda del rango sin valor booleano previo. Al aplicarlo sobre `getMaxRows()` (≈1000 filas por defecto en un Sheet nuevo, no el número real de filas con datos), se sembró contenido en ~1000 filas — lo que rompió `appendRow()` para inserciones posteriores (`appendRow` escribe después de la última fila con CUALQUIER contenido, así que empezó a insertar clientes nuevos cerca de la fila 1000, invisibles en el rango normal de trabajo). El bug NO afectaba clientes existentes (ese path busca la fila por contenido real de columna A, no por `getLastRow()`), lo que hizo que pareciera "funciona a veces" cuando en realidad el patrón era 100% consistente (nuevo=roto, existente=ok) — llevó una ronda extra de testing aclarar esto. **Regla reforzada:** cualquier operación de rango masivo sobre una pestaña (`insertCheckboxes`, formato, validación de datos) debe acotarse explícitamente a `getLastRow()`/`getLastColumn()` reales, nunca a los límites por defecto del Sheet (`getMaxRows()`/`getMaxColumns()`). **Punto ciego confirmado del test-harness:** el mock no simula ninguno de estos comportamientos de la API real de Sheets sobre tamaño/rango — este tipo de bug solo se encuentra en testing real contra el Sheet real, nunca en el harness. **Pendientes de fondo derivados, deliberadamente pospuestos el 17 jul (día del primer demo) por riesgo de tocar lógica ya validada bajo presión de tiempo:** (a) mismo problema de Date-vs-texto en `fecha` (Nutrición) y `fecha_clase` (Pilates) — sin evidencia de bug funcional activo, ya que ese código usa `normalizeSheetDateCell()`; (b) `findClientByEmail()` lee `fecha_nacimiento` con `TIME_ZONE` en vez de UTC (mismo patrón de la nota #29, pero en lectura) — bajo riesgo mientras no haya una regresión que vuelva a escribir un Date real sin forzar texto.
 
 ---
 
@@ -639,8 +683,7 @@ El desarrollo se divide entre dos herramientas de Claude:
 5. Este chat analiza, detecta problemas o inconsistencias, genera siguiente prompt si hace falta
 6. clasp push (para revisar en el editor) → si aplica, pasos manuales en el editor (migraciones) → clasp deploy
 6.5. Inmediatamente después de un clasp deploy exitoso: git add . && git commit (no esperar
-     al final del sprint — ya pasó dos veces que trabajo funcionando en producción quedó
-     sin comitear varios días, ver nota técnica 27)
+     a validar en real primero, no esperar al final del sprint — ver nota técnica 27)
 7. Probar en el navegador real contra el deploy — NO se marca nada como completado solo porque el código se escribió
 8. Solo si la prueba real confirma que funciona → marcar checkbox(es) en Trello
 9. Cuando todos los checkboxes de la tarjeta estén marcados → mover la tarjeta a Done
@@ -648,11 +691,12 @@ El desarrollo se divide entre dos herramientas de Claude:
 ```
 
 ### ⚠️ Cuándo ir al editor de Apps Script manualmente
-- **Ejecutar funciones de inicialización/migración** (initializeSheets, addClientesSheet, setupPilatesTestCalendar, addEventIdColumnToNutricion, addEventIdColumnToCuposPilates, addCancelacionesColumnsToClientes, migrateCedulaToTipoNumeroId) — dropdown de funciones → Ejecutar. Son de UNA SOLA VEZ salvo que sean explícitamente idempotentes.
+- **Ejecutar funciones de inicialización/migración/reparación** — dropdown de funciones → Ejecutar. Son de UNA SOLA VEZ salvo que sean explícitamente idempotentes.
 - **Autorizar permisos nuevos** — Revisar permisos → Avanzado → Ir a (no seguro) → Permitir.
 - **Ver logs de ejecución** — Registro de ejecución, para debuggear.
 - **El editor solo muestra código ya subido con `clasp push`** — si algo no aparece en el dropdown, recargar la página del editor primero.
-- **Al correr una migración de schema, revisar el log con cuidado línea por línea** — un mensaje de "no se hizo ningún cambio" o "no se encontró" puede ocultar un bug real de comparación (ver nota técnica #28). No asumir que "se completó la ejecución" sin errores significa que hizo lo esperado en las 3 pestañas.
+- **Al correr una migración de schema, revisar el log con cuidado línea por línea** — un mensaje de "no se hizo ningún cambio" o "no se encontró" puede ocultar un bug real de comparación (nota #28).
+- **Al correr una función de REPARACIÓN de datos (no solo estructura), comparar el resultado línea por línea contra los valores originales conocidos, no solo confirmar que la ejecución "no truena"** (lección de la nota #29 — la primera reparación de fecha_nacimiento corrió sin errores pero dejó todos los valores mal por un día).
 
 **URL del editor:** https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit
 
@@ -662,9 +706,12 @@ El desarrollo se divide entre dos herramientas de Claude:
 - Los comandos en Windows PowerShell van uno por uno (sin &&)
 - Nunca tocar la cuenta real de Dani hasta Sprint 3
 - Si hay que agregar permisos nuevos → agregar scope en dist/appsscript.json Y appsscript.json (raíz)
-- **Antes de aceptar un resultado de prueba como bug confirmado, verificar que se probó contra la versión de deploy correcta** (ver nota 25)
-- **Comitear a git inmediatamente después de cada deploy exitoso** (ver nota 27, paso 6.5 arriba)
-- **Migraciones de schema por posición, no por texto, cuando sea posible** (ver nota 28)
+- **Antes de aceptar un resultado de prueba como bug confirmado, verificar que se probó contra la versión de deploy correcta** (nota 25)
+- **Comitear a git inmediatamente después de cada deploy exitoso, sin esperar a validar en real** (nota 27)
+- **Migraciones de schema por posición, no por texto, cuando sea posible** (nota 28)
+- **Fechas sin componente horario real (fecha_nacimiento) siempre en UTC; fechas/horas de eventos reales siempre en TIME_ZONE — nunca mezclar** (nota 29)
+- **Cualquier operación de rango masivo sobre una pestaña debe acotarse a getLastRow()/getLastColumn(), nunca a los límites por defecto del Sheet** (nota 30)
+- **Bajo presión de tiempo (ej. día de demo), preferir posponer cambios a lógica ya validada en vez de arriesgar una regresión de último momento** — criterio aplicado el 17 jul con el pendiente de fecha/fecha_clase
 
 ---
 
@@ -683,21 +730,13 @@ Backlog → In Progress → Done
 
 ### Recordatorio permanente (regla de proceso)
 - Cada vez que se acuerde una US nueva o un cambio de alcance en el chat, **antes de generar el prompt para Claude Code**: (1) mover la tarjeta a **In Progress**, y (2) al recibir confirmación de que algo del checklist quedó validado en testing, marcar ese checkbox específico en Trello — no asumir que se marcó solo porque el código se escribió.
-- **Ningún checkbox ni tarjeta se marca como completado/Done solo porque Claude Code terminó de escribir el código.** El orden correcto:
-  1. Claude Code hace el cambio
-  2. `clasp push` → (pasos manuales si aplica) → `clasp deploy` (documentar en CLAUDE.md sección 12)
-  3. Probar en el navegador contra el deploy real
-  4. Solo si la prueba confirma que funciona → marcar el checkbox correspondiente en Trello
-  5. Cuando todos los checkboxes estén marcados → mover la tarjeta a **Done**
+- **Ningún checkbox ni tarjeta se marca como completado/Done solo porque Claude Code terminó de escribir el código.**
 
 ### El Trello no es una fuente rígida — se ajusta a la realidad del desarrollo
-Las tarjetas, descripciones y checklists de Trello reflejan la mejor comprensión del momento en que se crearon, pero **no son inmutables**. Es normal descubrir ambigüedades, reinterpretar redacciones confusas, o agregar/quitar ítems del checklist sobre la marcha (como pasó en US-09 con la ventana de 48hrs, y en US-10 con los 3 ítems nuevos del fix de pilates). Cuando esto pase:
-1. Discutirlo primero en el chat para alinear el entendimiento.
-2. Si aplica, ajustar el checklist o la descripción de la tarjeta en Trello para que coincida con la realidad.
-3. Documentar el cambio de interpretación en el CLAUDE.md, para que quede registro de por qué se interpretó así.
+Las tarjetas, descripciones y checklists de Trello reflejan la mejor comprensión del momento en que se crearon, pero **no son inmutables**.
 
 ### Modificaciones sin número de US
-No todo cambio necesita pasar por una tarjeta formal de Trello — si surge una mejora pequeña y bien acotada en medio de otra tarea (como cliente_nutricion/cliente_pilates, surgida mientras se trabajaba en US-18), se puede acordar en el chat, documentar en el CLAUDE.md (sección 3 y el changelog de sección 17), y ejecutarla directamente sin crear una tarjeta nueva — siempre que se documente igual de bien que una US formal.
+No todo cambio necesita pasar por una tarjeta formal de Trello — si surge una mejora pequeña y bien acotada en medio de otra tarea, se puede acordar en el chat, documentar en el CLAUDE.md, y ejecutarla directamente sin crear una tarjeta nueva — siempre que se documente igual de bien que una US formal.
 
 ---
 
@@ -726,9 +765,9 @@ git push
 - El `.claspignore` está renombrado a `.claspignore.bak` — no revertir
 - El `rootDir` en `.clasp.json` apunta a `dist/` — no cambiar
 - Siempre `clasp push` antes de `clasp deploy`
-- **Usar siempre el mismo `--deploymentId`** para mantener la misma URL de testing en vez de crear deployments nuevos sueltos — el deploymentId actual es el que corresponde a la URL documentada en sección 12: `AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ`
+- **Usar siempre el mismo `--deploymentId`** — el actual es `AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ`
 - Si clasp push pide confirmación del manifest → usar `clasp push --force`
-- **Comitear a git inmediatamente después del deploy** — no dejarlo pendiente (ver nota 27)
+- **Comitear a git inmediatamente después del deploy** — no dejarlo pendiente (nota 27)
 
 ---
 
@@ -737,15 +776,14 @@ git push
 | Fecha | Cambio |
 |-------|--------|
 | 07-08 jul 2026 | Duración medición 15min, selector idioma, campo cédula, US-04 (3 pestañas iniciales) |
-| 09 jul 2026 | US-05 Done. US-08 Done. Bug fix pilates (bloqueo con 1 inscripción). Hallazgo: eventos duplicados pilates (pendiente US-10). |
-| 10 jul 2026 | Reunión: acordado US-17 (nombre/apellido) y US-27 (correo como identificador, 3 pasos). |
-| 12 jul 2026 | US-17 Done. US-27 Done, validada en testing real (4 tipos de cita). Hallazgo pendiente: acceso desde móvil. |
-| 13 jul 2026 | US-09 Done (ventana 48hrs + lock, bug real corregido). Regla de Trello flexible agregada. US-10 Done (Sheet-antes-Calendar, evento único pilates, Meet real, calendario dedicado, bug de flush() encontrado y corregido — deploy v14). Dirección física confirmada, pendiente mostrarla en Sprint 2. |
-| 14 jul 2026 | **US-06 Done.** Mecánica de reagendar/cancelar por token, ventana 24hrs con asimetría intencional (confirmada con el equipo), tracker de tardías por cliente (no por cita), requiere_pago tras 2 consecutivas. Bug real encontrado y corregido: inconsistencia entre cancelBooking/rescheduleBooking ante citas sin event_id. Falso positivo de bug diagnosticado como gap de deploy (nota 25) — lección de proceso reforzada. Validado en testing real: reagendar dentro/fuera de ventana, cancelar dentro/fuera de ventana, 2 tardías consecutivas → requiere_pago=true confirmado en Sheet real, evento de Calendar movido/eliminado confirmado en Calendar real. Wrappers temporales de testing removidos tras validar. Deploy v16. **Sprint 1 100% completo — las 12 US de Sprint 1 en Done.** |
-| 14 jul 2026 | Reunión de equipo: confirmada la asimetría cancelar/reagendar sin cambios. Decisión nueva: reordenar el flujo del portal a Calendario → Correo → Datos (pendiente de implementar en Sprint 2, ver sección 3). |
-| 15 jul 2026 | **US-19 Done.** Flujo reordenado Calendario→Correo→Datos. Selectores de idioma/zona horaria movidos al Paso 1 (hallazgo de Code: necesario para que el cliente pueda fijar su zona horaria antes de ver horarios). Corregido bug latente: modalidad no se precargaba al rebotar al Paso 1. Validado en testing real: 4 tipos de cita, cliente existente, y recuperación de slot ocupado a mitad de flujo (probado por el usuario en vivo, quitándole el slot a un cliente nuevo desde otra pestaña). Deploy v17. Detectado y resuelto: ~1000 líneas de US-10/US-06 llevaban desde el 13-14 jul funcionando en producción sin `git commit` — verificado el diff antes de comitear (nota 27), no era código inesperado. Agregado paso 6.5 al flujo de trabajo: commit inmediato tras cada deploy exitoso. Tablero real de Trello del Sprint 2 incorporado a la sección 11 (US-16, 18, 19, 11, 12, 13, 14, 20, 28, 29 — 30 puntos totales). |
-| 15 jul 2026 | **US-18 Done.** Campo de ID flexible: `cedula` → `tipo_id` (dropdown, 4 valores internos fijos: cedula/pasaporte/licencia/otro, traducidos en pantalla ES/EN) + `numero_id` (texto alfanumérico) en Nutrición, Pilates y Clientes. Datos de prueba viejos borrados manualmente por el usuario antes de la migración (no se escribió lógica de migración de datos, solo de estructura). Bug real encontrado y corregido: la primera versión de `migrateCedulaToTipoNumeroId()` buscaba la columna por texto exacto y falló silenciosamente en Nutrición/Pilates por un espacio en blanco invisible en el encabezado real — diagnosticado con capturas de pantalla del Sheet real, corregido migrando por posición de columna fija en vez de texto (nota técnica #28). Segundo bug real encontrado por el test-harness: el failsafe de `incrementClientLateCancellation` tenía un elemento de menos tras el cambio de schema de "Clientes" a 10 columnas (nota técnica #29) — detectado porque 4/37 aserciones fallaron, corregido, 37/37 de nuevo. Validado en testing real: mismo valor interno guardado sin importar idioma (ES/EN) del cliente, los 4 tipos de cita, precarga correcta en cliente existente. Deploy v18. Acordada modificación extra sin número de US: columnas `cliente_nutricion`/`cliente_pilates` (checkbox booleano, lógica OR acumulativa) en "Clientes", para el siguiente paso. |
+| 09 jul 2026 | US-05 Done. US-08 Done. Bug fix pilates (bloqueo con 1 inscripción). |
+| 10 jul 2026 | Reunión: acordado US-17 y US-27. |
+| 12 jul 2026 | US-17 Done. US-27 Done. Hallazgo pendiente: acceso desde móvil. |
+| 13 jul 2026 | US-09 Done. US-10 Done. Dirección física confirmada. |
+| 14 jul 2026 | **US-06 Done. Sprint 1 100% completo.** Reunión: asimetría cancelar/reagendar confirmada, decisión de reordenar flujo (Sprint 2). |
+| 15 jul 2026 | **US-19 Done** (reorden Calendario→Correo→Datos, deploy v17). **US-18 Done** (ID flexible tipo_id+numero_id, deploy v18) — bug real de migración por texto encontrado y corregido (nota #28). Acordada modificación cliente_nutricion/cliente_pilates para el siguiente paso. |
+| 17 jul 2026 | **Modificación cliente_nutricion/cliente_pilates completada y validada (deploy v20).** Tres bugs reales encontrados y corregidos en el proceso: (1) `insertCheckboxes()` sobre `getMaxRows()` en vez de `getLastRow()` corrompió el Sheet, rompiendo la inserción de clientes nuevos vía `appendRow()` — corregido con búsqueda explícita de fila vacía por columna A (nota #30); (2) datos corrompidos (3 clientes de prueba "perdidos" cerca de la fila 1000) reparados con `cleanupCorruptedClientesSheet()`; (3) corrimiento de fecha ±1 día al mezclar `TIME_ZONE` con `UTC` al reconstruir `fecha_nacimiento` desde un objeto Date — reparado con `correctOffByOneDayBirthdates()`, validado línea por línea contra los 11 valores originales (nota #29). Validado en testing real con cliente nuevo desde cero (test12): ambos servicios marcados correctamente, fecha exacta, fila en la posición correcta. **Primer demo con la dueña del producto programado para hoy.** Decisión tomada bajo presión de tiempo: se pospuso deliberadamente el fix del mismo problema Date-vs-texto en `fecha`/`fecha_clase` de Nutrición/Pilates para después del demo, por el riesgo de tocar lógica de negocio ya validada (ventanas de tiempo, conflict-check, cupos) sin margen para probar con calma. Documentado como pendiente de fondo (nota #30). |
 
 ---
 
-*Última actualización: 15 julio 2026 — **US-18 Done**, campo de ID flexible (tipo_id + numero_id) validado en testing real (consistencia entre idiomas, 4 tipos de cita, cliente existente). Deploy activo: v18. Siguiente paso: modificación extra acordada (columnas cliente_nutricion/cliente_pilates en "Clientes", sin número de US — ver sección 3). Resto del Sprint 2 pendiente según tablero real de Trello (sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29. Pendientes de fondo para Sprint 3: acceso desde móvil (nota 17), horario real de Dani (nota 14), checklist de acceso de producción (sección 6).*
+*Última actualización: 17 julio 2026 — **Modificación cliente_nutricion/cliente_pilates Done**, validada en testing real con cliente nuevo desde cero. Deploy activo: v20. **Primer demo con la dueña del producto hoy.** Pendientes de fondo, deliberadamente pospuestos para después del demo: fix de fecha/fecha_clase en Nutrición/Pilates (mismo patrón Date-vs-texto, sin evidencia de bug funcional activo) y fix de lectura en findClientByEmail (TIME_ZONE vs UTC, bajo riesgo). Resto del Sprint 2 pendiente según tablero real de Trello (sección 11): US-16, US-11, US-12, US-13, US-14, US-20, US-28, US-29. Pendientes de fondo para Sprint 3: acceso desde móvil (nota 17), horario real de Dani (nota 14), checklist de acceso de producción (sección 6).*
