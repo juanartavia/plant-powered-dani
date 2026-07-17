@@ -308,6 +308,14 @@ const CLIENTES_REQUIERE_PAGO_COL = 10;
 const CLIENTES_NUTRICION_COL = 11;
 const CLIENTES_PILATES_COL = 12;
 
+// Columna (1-based) de "fecha_nacimiento" en "Clientes" — Sheets autodetecta el string
+// "yyyy-MM-dd" escrito por upsertClient y lo autoconvierte a un objeto Date real (mismo
+// fenómeno documentado en la nota técnica #16 para fecha_clase/hora_clase de
+// Cupos_Pilates). Se guarda esta posición aparte para poder forzar setNumberFormat("@")
+// después de escribir, y para que fixFechaNacimientoFormatInClientes()/
+// cleanupCorruptedClientesSheet() la usen sin repetir el número mágico.
+const CLIENTES_FECHA_NACIMIENTO_COL = 7;
+
 // Agrega las columnas "cancelaciones_tardias" y "requiere_pago" (US-06) a la pestaña
 // "Clientes" YA existente (creada por addClientesSheet en US-27), sin volver a ejecutar
 // initializeSheets() ni addClientesSheet() (nota 11 del CLAUDE.md). No-op seguro si ya
@@ -347,13 +355,299 @@ function addServicioColumnsToClientes(): void {
   sheet.getRange(1, CLIENTES_NUTRICION_COL).setValue("cliente_nutricion").setFontWeight("bold");
   sheet.getRange(1, CLIENTES_PILATES_COL).setValue("cliente_pilates").setFontWeight("bold");
 
-  // Checkbox real (no texto "TRUE"/"FALSE") en toda la columna de datos, no solo el
-  // encabezado.
-  const numDataRows = Math.max(sheet.getMaxRows() - 1, 1);
-  sheet.getRange(2, CLIENTES_NUTRICION_COL, numDataRows, 1).insertCheckboxes();
-  sheet.getRange(2, CLIENTES_PILATES_COL, numDataRows, 1).insertCheckboxes();
+  // Checkbox real (no texto "TRUE"/"FALSE") — SOLO en las filas con datos reales
+  // (sheet.getLastRow(), no sheet.getMaxRows()). Bug real encontrado en testing (ver
+  // CLAUDE.md): usar getMaxRows() aquí formateaba ~1000 filas vacías con un FALSE
+  // explícito en estas columnas, lo que inflaba el "último dato" de la hoja y rompía
+  // appendRow() en upsertClient (las filas nuevas se escribían fuera del área visible).
+  // Si getLastRow() es 1 (solo encabezado, sin clientes todavía), no hay nada que
+  // formatear aquí — upsertClient aplica el checkbox fila por fila al insertar.
+  const lastRow = sheet.getLastRow();
+  if (lastRow >= 2) {
+    const numDataRows = lastRow - 1;
+    sheet.getRange(2, CLIENTES_NUTRICION_COL, numDataRows, 1).insertCheckboxes();
+    sheet.getRange(2, CLIENTES_PILATES_COL, numDataRows, 1).insertCheckboxes();
+  }
 
   Logger.log('Columnas "cliente_nutricion" y "cliente_pilates" (checkbox) agregadas a Clientes.');
+}
+
+// FUNCIÓN DE UN SOLO USO — limpieza de datos corrompidos por el bug real documentado en
+// CLAUDE.md: la primera versión de addServicioColumnsToClientes() formateó checkboxes en
+// ~1000 filas de "Clientes" (sheet.getMaxRows() en vez de getLastRow()), lo que dejó un
+// valor FALSE "fantasma" en columnas K/L muy por debajo de los datos reales. Con eso, la
+// primera versión de upsertClient() (basada en appendRow()/getLastRow()) escribió clientes
+// nuevos posteriores muy por debajo del área visible, en vez de justo después de los datos
+// reales — filas "perdidas" tipo test9/test10.
+//
+// Esta función:
+//   1. Escanea TODA la columna A de "Clientes" hasta sheet.getMaxRows() real.
+//   2. Encuentra el bloque de datos reales y CONTIGUOS desde la fila 2 (sin ningún hueco
+//      de columna A vacía) — todo lo que tenga correo no vacío MÁS ABAJO de ese bloque se
+//      considera una fila "perdida".
+//   3. Loguea cada fila perdida (número de fila, correo, todos sus valores) ANTES de
+//      tocar nada, para que se pueda confirmar visualmente contra el Sheet real.
+//   4. Mueve cada fila perdida a la siguiente fila libre contigua tras el bloque de datos
+//      reales (incluye copiar los checkboxes de cliente_nutricion/cliente_pilates).
+//   5. Borra contenido, formato y validación de datos (los checkboxes fantasma) de TODAS
+//      las filas sobrantes por debajo del nuevo último dato real, para que getLastRow()
+//      vuelva a reflejar la realidad.
+//   6. Loguea un resumen final: cuántas filas se recuperaron y el rango que se borró.
+//
+// NO se ejecuta automáticamente en ningún flujo — correr manualmente UNA SOLA VEZ desde el
+// editor de Apps Script, revisar el log línea por línea, y confirmar visualmente en el
+// Sheet real antes de dar la limpieza por completa.
+function cleanupCorruptedClientesSheet(): void {
+  const sheet = getSheet("Clientes");
+  const maxRows = sheet.getMaxRows();
+  const lastCol = Math.max(sheet.getLastColumn(), CLIENTES_PILATES_COL);
+  const numRowsToScan = Math.max(maxRows - 1, 1);
+  const allValues = sheet.getRange(2, 1, numRowsToScan, lastCol).getValues();
+
+  // Paso 1: tamaño del bloque de datos reales y contiguos, empezando en la fila 2.
+  let contiguousEnd = 0; // cantidad de filas contiguas con columna A no vacía
+  while (
+    contiguousEnd < allValues.length &&
+    String(allValues[contiguousEnd][0]).trim() !== ""
+  ) {
+    contiguousEnd++;
+  }
+
+  // Paso 2: cualquier fila con correo no vacío MÁS ABAJO del bloque contiguo es "perdida".
+  const lostRows: { rowNumber: number; values: unknown[] }[] = [];
+  for (let i = contiguousEnd; i < allValues.length; i++) {
+    const correo = String(allValues[i][0]).trim();
+    if (correo !== "") {
+      lostRows.push({ rowNumber: i + 2, values: allValues[i] });
+    }
+  }
+
+  if (lostRows.length === 0) {
+    Logger.log(
+      `cleanupCorruptedClientesSheet: no se encontraron filas "perdidas" más allá de la ` +
+      `fila ${contiguousEnd + 1} (último dato real contiguo). No se hizo ningún cambio.`
+    );
+    return;
+  }
+
+  Logger.log(`cleanupCorruptedClientesSheet: ${lostRows.length} fila(s) "perdida(s)" encontrada(s):`);
+  lostRows.forEach((lost) => {
+    Logger.log(`  Fila ${lost.rowNumber}: ${JSON.stringify(lost.values)}`);
+  });
+
+  // Paso 3: mover cada fila perdida a la siguiente fila libre contigua tras los datos
+  // reales (fila 1-based = contiguousEnd + 2).
+  let nextFreeRow = contiguousEnd + 2;
+  const movedSummary: string[] = [];
+  lostRows.forEach((lost) => {
+    // fecha_nacimiento: si la celda original quedó guardada como objeto Date real (bug
+    // documentado, nota técnica #16), se reconstruye el string yyyy-MM-dd a partir de los
+    // componentes REALES del objeto Date — nunca desde un string ya reinterpretado, que
+    // puede estar corrido un día (caso real: test11). A propósito se usa "UTC", NUNCA
+    // TIME_ZONE ("America/Costa_Rica"): una fecha de nacimiento no tiene componente de
+    // hora real, se guarda como medianoche UTC — formatearla en hora de Costa Rica
+    // (UTC-6) corre el día hacia atrás (bug real encontrado en testing: 2023-02-07 se
+    // reconstruía como 2023-02-06). TIME_ZONE sigue siendo correcto para fecha/hora de
+    // CITAS (sí dependen de dónde está Dani) — este caso es distinto a propósito.
+    const fechaNacimientoRaw = lost.values[CLIENTES_FECHA_NACIMIENTO_COL - 1];
+    const fechaNacimientoNormalizada =
+      fechaNacimientoRaw instanceof Date
+        ? Utilities.formatDate(fechaNacimientoRaw, "UTC", "yyyy-MM-dd")
+        : fechaNacimientoRaw;
+    lost.values[CLIENTES_FECHA_NACIMIENTO_COL - 1] = fechaNacimientoNormalizada;
+
+    // setNumberFormat("@") ANTES de setValues(), no después — mismo criterio que en
+    // upsertClient: forzar texto plano después de escribir no revierte el tipo Date que
+    // Sheets ya asignó al valor en el momento del write.
+    sheet.getRange(nextFreeRow, CLIENTES_FECHA_NACIMIENTO_COL).setNumberFormat("@");
+    sheet.getRange(nextFreeRow, 1, 1, lastCol).setValues([lost.values]);
+    // insertCheckboxes() antes de reescribir el valor: si la celda destino nunca tuvo
+    // formato de checkbox, setValues() por sí solo no lo aplica.
+    sheet.getRange(nextFreeRow, CLIENTES_NUTRICION_COL, 1, 2).insertCheckboxes();
+    sheet.getRange(nextFreeRow, CLIENTES_NUTRICION_COL, 1, 2).setValues([[
+      lost.values[CLIENTES_NUTRICION_COL - 1],
+      lost.values[CLIENTES_PILATES_COL - 1],
+    ]]);
+    movedSummary.push(
+      `Fila ${lost.rowNumber} -> Fila ${nextFreeRow} (correo: ${lost.values[0]}, ` +
+      `fecha_nacimiento: ${fechaNacimientoNormalizada})`
+    );
+    nextFreeRow++;
+  });
+
+  // Paso 4: borrar contenido + formato + validación de datos (checkboxes fantasma) de todo
+  // lo que sobra por debajo del nuevo último dato real — incluye tanto las posiciones
+  // originales de las filas perdidas (ya copiadas arriba) como cualquier fila vacía con
+  // checkbox residual.
+  const newLastDataRow = nextFreeRow - 1;
+  const firstExcessRow = newLastDataRow + 1;
+  if (firstExcessRow <= maxRows) {
+    const excessRange = sheet.getRange(firstExcessRow, 1, maxRows - firstExcessRow + 1, lastCol);
+    excessRange.clearContent();
+    excessRange.clearFormat();
+    excessRange.clearDataValidations();
+  }
+
+  Logger.log("cleanupCorruptedClientesSheet: --- Resumen ---");
+  Logger.log(`Filas recuperadas (movidas hacia arriba): ${lostRows.length}`);
+  movedSummary.forEach((line) => Logger.log(`  ${line}`));
+  Logger.log(`Nuevo último dato real: fila ${newLastDataRow}.`);
+  Logger.log(`Filas borradas (contenido + formato + checkboxes fantasma): ${firstExcessRow} a ${maxRows}.`);
+  Logger.log("Revisar visualmente el Sheet real antes de continuar.");
+}
+
+// FUNCIÓN DE UN SOLO USO — bulk-fix de fecha_nacimiento en "Clientes" (acotado a esta
+// pestaña a propósito; fecha/fecha_clase de Nutrición/Pilates quedan pendientes aparte,
+// fuera de este alcance). Corrige las filas YA existentes que quedaron con la celda de
+// fecha_nacimiento guardada como objeto Date real de Sheets (en vez de texto plano) — el
+// mismo fenómeno que upsertClient()/cleanupCorruptedClientesSheet() ya previenen para
+// escrituras nuevas, pero que no arregla retroactivamente filas escritas antes del fix.
+//
+// Para cada fila con datos: si la celda de fecha_nacimiento es actualmente un objeto Date,
+// reconstruye el string yyyy-MM-dd a partir de los componentes REALES del objeto Date
+// (Utilities.formatDate en TIME_ZONE, nunca reinterpretando un string ya mostrado en
+// pantalla — mismo criterio que cleanupCorruptedClientesSheet), fuerza
+// setNumberFormat("@") ANTES de reescribir el valor, y loguea la fila corregida
+// (antes/después). Si la celda ya es texto plano, no la toca — idempotente.
+//
+// NO se ejecuta automáticamente — correr manualmente UNA SOLA VEZ desde el editor de Apps
+// Script y confirmar en el Sheet real que fecha_nacimiento ya no abre el selector de
+// calendario al hacer doble clic.
+function fixFechaNacimientoFormatInClientes(): void {
+  const sheet = getSheet("Clientes");
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log("fixFechaNacimientoFormatInClientes: no hay filas de datos en Clientes. No se hizo ningún cambio.");
+    return;
+  }
+
+  const numDataRows = lastRow - 1;
+  const correoValues = sheet.getRange(2, 1, numDataRows, 1).getValues();
+  const fechaNacimientoValues = sheet
+    .getRange(2, CLIENTES_FECHA_NACIMIENTO_COL, numDataRows, 1)
+    .getValues();
+
+  let fixedCount = 0;
+  for (let i = 0; i < numDataRows; i++) {
+    const rowNumber = i + 2;
+    const correo = String(correoValues[i][0]).trim();
+    if (correo === "") continue; // fila vacía dentro del rango — no debería pasar, se ignora
+
+    const rawValue = fechaNacimientoValues[i][0];
+    if (!(rawValue instanceof Date)) continue; // ya es texto plano, idempotente
+
+    const before = rawValue.toString();
+    // "UTC", NUNCA TIME_ZONE — ver nota en cleanupCorruptedClientesSheet: una fecha de
+    // nacimiento se guarda como medianoche UTC y no tiene componente de hora real;
+    // formatearla en America/Costa_Rica (UTC-6) corre el día hacia atrás.
+    const fixedValue = Utilities.formatDate(rawValue, "UTC", "yyyy-MM-dd");
+
+    const cell = sheet.getRange(rowNumber, CLIENTES_FECHA_NACIMIENTO_COL);
+    cell.setNumberFormat("@"); // ANTES de escribir, mismo criterio que en el resto del fix
+    cell.setValue(fixedValue);
+
+    Logger.log(
+      `fixFechaNacimientoFormatInClientes: fila ${rowNumber} (correo: ${correo}) — ` +
+      `antes: "${before}" -> después: "${fixedValue}"`
+    );
+    fixedCount++;
+  }
+
+  Logger.log(`fixFechaNacimientoFormatInClientes: ${fixedCount} fila(s) corregida(s) de ${numDataRows} escaneada(s).`);
+}
+
+// Marca en Script Properties para que correctOffByOneDayBirthdates() nunca vuelva a
+// sumar un día por accidente si se ejecuta dos veces — ver la función más abajo.
+const BIRTHDATE_OFFBYONE_FIX_FLAG = "BIRTHDATE_OFFBYONE_FIX_APPLIED_2026_07_17";
+
+// FUNCIÓN DE UN SOLO USO — repara el daño causado por la primera versión de
+// fixFechaNacimientoFormatInClientes() (bug real, mismo día): esa primera versión
+// reconstruía fecha_nacimiento con Utilities.formatDate(rawValue, TIME_ZONE, "yyyy-MM-dd")
+// en vez de "UTC". Como el objeto Date se guardaba como medianoche UTC, formatearlo en
+// America/Costa_Rica (UTC-6) corrió el día hacia atrás en las 11 filas que esa función
+// corrigió hoy (ej. test1: 2023-02-07 real -> se guardó como texto "2023-02-06",
+// equivocado por exactamente 1 día).
+//
+// Esta función suma exactamente 1 día (en UTC puro, con Date.UTC — sin pasar por ninguna
+// zona horaria de negocio) a CADA celda de fecha_nacimiento en "Clientes" que esté en
+// formato texto YYYY-MM-DD. Loguea fila/correo/antes/después de cada corrección.
+//
+// SEGURA CONTRA DOBLE EJECUCIÓN: guarda una marca en Script Properties
+// (BIRTHDATE_OFFBYONE_FIX_FLAG) al terminar. Si se vuelve a correr, se detiene de
+// inmediato sin tocar ninguna celda y lo deja bien claro en el log — evita sumar un
+// segundo día por accidente si alguien la ejecuta dos veces sin querer.
+//
+// NO se ejecuta automáticamente — correr manualmente UNA SOLA VEZ desde el editor de Apps
+// Script y confirmar visualmente en el Sheet real que las fechas vuelven a coincidir
+// EXACTAMENTE con los valores originales conocidos (ej. test1=2023-02-07,
+// test4=2026-07-17, test6=2026-07-23).
+function correctOffByOneDayBirthdates(): void {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  if (scriptProperties.getProperty(BIRTHDATE_OFFBYONE_FIX_FLAG) === "true") {
+    Logger.log(
+      "correctOffByOneDayBirthdates: YA SE EJECUTÓ ANTES (marca guardada en Script " +
+      "Properties) — es una función de UN SOLO USO. No se hizo ningún cambio. Si de " +
+      "verdad hace falta correrla otra vez, borrar manualmente la Script Property " +
+      `"${BIRTHDATE_OFFBYONE_FIX_FLAG}" primero, y SOLO después de confirmar visualmente ` +
+      "en el Sheet real que las fechas siguen corridas un día — de lo contrario se sumaría " +
+      "un segundo día por error."
+    );
+    return;
+  }
+
+  const sheet = getSheet("Clientes");
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log("correctOffByOneDayBirthdates: no hay filas de datos en Clientes. No se hizo ningún cambio.");
+    return;
+  }
+
+  const numDataRows = lastRow - 1;
+  const correoValues = sheet.getRange(2, 1, numDataRows, 1).getValues();
+  const fechaNacimientoValues = sheet
+    .getRange(2, CLIENTES_FECHA_NACIMIENTO_COL, numDataRows, 1)
+    .getValues();
+
+  const isoDatePattern = /^\d{4}-\d{2}-\d{2}$/;
+  let fixedCount = 0;
+
+  for (let i = 0; i < numDataRows; i++) {
+    const rowNumber = i + 2;
+    const correo = String(correoValues[i][0]).trim();
+    if (correo === "") continue;
+
+    const before = String(fechaNacimientoValues[i][0]).trim();
+    if (!isoDatePattern.test(before)) {
+      Logger.log(
+        `correctOffByOneDayBirthdates: fila ${rowNumber} (correo: ${correo}) — valor ` +
+        `"${before}" no tiene formato YYYY-MM-DD (¿objeto Date sin convertir todavía?), se ignora.`
+      );
+      continue;
+    }
+
+    const [year, month, day] = before.split("-").map(Number);
+    // Suma exactamente 1 día en UTC puro (Date.UTC + 24hrs en ms) — sin pasar por
+    // TIME_ZONE ni por ninguna zona horaria de negocio, mismo criterio que la causa raíz.
+    const corrected = new Date(Date.UTC(year, month - 1, day) + 24 * 60 * 60 * 1000);
+    const after = Utilities.formatDate(corrected, "UTC", "yyyy-MM-dd");
+
+    const cell = sheet.getRange(rowNumber, CLIENTES_FECHA_NACIMIENTO_COL);
+    cell.setNumberFormat("@");
+    cell.setValue(after);
+
+    Logger.log(
+      `correctOffByOneDayBirthdates: fila ${rowNumber} (correo: ${correo}) — ` +
+      `antes: "${before}" -> después: "${after}"`
+    );
+    fixedCount++;
+  }
+
+  scriptProperties.setProperty(BIRTHDATE_OFFBYONE_FIX_FLAG, "true");
+  Logger.log(
+    `correctOffByOneDayBirthdates: ${fixedCount} fila(s) corregida(s) de ${numDataRows} ` +
+    `escaneada(s). Marca de un-solo-uso guardada en Script Properties — no se volverá a ` +
+    `ejecutar salvo que se borre manualmente la propiedad "${BIRTHDATE_OFFBYONE_FIX_FLAG}".`
+  );
 }
 
 // Posición (1-based) de la columna "cedula" en cada pestaña, según el schema QUE EL SHEET
@@ -740,14 +1034,28 @@ function upsertClient(data: ClientRecord, type: string): void {
   lock.waitLock(10000);
   try {
     const sheet = getSheet("Clientes");
-    const values = sheet.getDataRange().getValues();
+
+    // Lee SOLO la columna A (correo), fila por fila, hasta el límite físico de la hoja —
+    // a propósito NO usa getDataRange()/getLastRow() para decidir dónde insertar (bug real
+    // encontrado en testing, ver CLAUDE.md): si otra columna tiene contenido "fantasma" en
+    // filas muy por debajo de los datos reales (p. ej. checkboxes formateados de más),
+    // getLastRow() queda inflado y appendRow() escribe la fila nueva fuera del área
+    // visible. Aquí se busca explícitamente la fila del cliente existente O, si no existe,
+    // la primera fila con columna A vacía — ese es el único criterio de "dónde insertar".
+    const maxRows = sheet.getMaxRows();
+    const correoColumn = sheet.getRange(2, 1, Math.max(maxRows - 1, 1), 1).getValues();
     const target = data.correo.trim().toLowerCase();
 
     let rowNumber = -1; // fila 1-based en el sheet (-1 = no existe todavía)
-    for (let i = 1; i < values.length; i++) {
-      if (String(values[i][0]).trim().toLowerCase() === target) {
-        rowNumber = i + 1;
+    let firstEmptyRow = -1;
+    for (let i = 0; i < correoColumn.length; i++) {
+      const cellValue = String(correoColumn[i][0]).trim();
+      if (cellValue.toLowerCase() === target) {
+        rowNumber = i + 2; // +2: fila 1 es encabezado, i es 0-based desde la fila 2
         break;
+      }
+      if (cellValue === "" && firstEmptyRow === -1) {
+        firstEmptyRow = i + 2;
       }
     }
 
@@ -763,13 +1071,22 @@ function upsertClient(data: ClientRecord, type: string): void {
     ];
 
     if (rowNumber > 0) {
+      // Formato de texto plano en fecha_nacimiento ANTES de escribir — no después: Sheets
+      // autodetecta el string "yyyy-MM-dd" y lo convierte a un objeto Date real EN el
+      // momento del setValues(); llamar setNumberFormat("@") después de escribir solo
+      // cambiaría el formato de PANTALLA, no el tipo de valor ya guardado (mismo criterio
+      // que ensureCuposPilatesPlainTextFormat, que también formatea antes de escribir).
+      sheet.getRange(rowNumber, CLIENTES_FECHA_NACIMIENTO_COL).setNumberFormat("@");
       sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
     } else {
-      sheet.appendRow(row);
-      rowNumber = sheet.getLastRow();
-      // appendRow solo escribe hasta la última columna del array (8) — las celdas nuevas
-      // en cliente_nutricion/cliente_pilates quedan sin formato de checkbox hasta que se
-      // insertan aquí explícitamente para esta fila.
+      // Fallback defensivo (maxRows + 1) solo por si, en teoría, las ~maxRows-1 filas
+      // escaneadas estuvieran TODAS ocupadas con un correo — no debería pasar en la
+      // práctica, pero evita perder la escritura en ese caso límite.
+      rowNumber = firstEmptyRow > 0 ? firstEmptyRow : maxRows + 1;
+      sheet.getRange(rowNumber, CLIENTES_FECHA_NACIMIENTO_COL).setNumberFormat("@");
+      sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+      // Checkbox real aplicado SOLO a esta fila específica, no a un rango grande — ver
+      // el mismo bug documentado arriba en addServicioColumnsToClientes().
       sheet.getRange(rowNumber, CLIENTES_NUTRICION_COL, 1, 2).insertCheckboxes();
     }
 
