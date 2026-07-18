@@ -10,7 +10,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { OkDialog } from "@/components/ui/ok-dialog";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { cn } from "@/lib/utils";
 import { useBookGoogleTimeslot } from "@/hooks/useBookGoogleTimeslot";
 import { useFindClientByEmail } from "@/hooks/useFindClientByEmail";
 import { useGoogleTimeslots } from "@/hooks/useGoogleTimeslots";
@@ -539,6 +545,44 @@ export function CalendarPicker() {
   );
 }
 
+// Bandera de España (idioma, no un país específico del negocio — inglés sigue
+// representado por Estados Unidos). SVG inline en vez de emoji Unicode: Windows no
+// renderiza los emoji de bandera regional-indicator como imagen, solo como el código de
+// país en texto plano ("ES"/"US") — un SVG se ve igual en cualquier sistema operativo.
+function FlagES({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 3 2" className={className} aria-hidden="true">
+      <rect width="3" height="2" fill="#AA151B" />
+      <rect width="3" height="1" y="0.5" fill="#F1BF00" />
+    </svg>
+  );
+}
+
+function FlagUS({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 19 10" className={className} aria-hidden="true">
+      <rect width="19" height="10" fill="#fff" />
+      {[0, 2, 4, 6, 8].map((y) => (
+        <rect key={y} y={y} width="19" height="1" fill="#B22234" />
+      ))}
+      <rect width="7.6" height="5.4" fill="#3C3B6E" />
+    </svg>
+  );
+}
+
+const LANGUAGE_OPTIONS: {
+  value: UiLanguage;
+  label: string;
+  Flag: (props: { className?: string }) => JSX.Element;
+}[] = [
+  { value: "es", label: "ES", Flag: FlagES },
+  { value: "en", label: "EN", Flag: FlagUS },
+];
+
+// Nota: los <option> nativos de un <select> HTML solo pueden mostrar texto plano en
+// todos los navegadores relevantes — no aceptan SVG ni markup dentro. Por eso el
+// selector de idioma se implementa como un combobox (Popover + botones), mismo patrón
+// que TimezoneDropdown (timezone-dropdown.tsx), en vez de un <select>/<option>.
 function LanguageDropdown({
   value,
   onChange,
@@ -546,16 +590,46 @@ function LanguageDropdown({
   value: UiLanguage;
   onChange: (value: UiLanguage) => void;
 }) {
+  const [open, setOpen] = useState(false);
+  const current =
+    LANGUAGE_OPTIONS.find((option) => option.value === value) ??
+    LANGUAGE_OPTIONS[0];
+
   return (
-    <select
-      aria-label="Language / Idioma"
-      value={value}
-      onChange={(e) => onChange(e.target.value as UiLanguage)}
-      className={selectClassName + " w-[90px]"}
-    >
-      <option value="es">🇨🇷 ES</option>
-      <option value="en">🇺🇸 EN</option>
-    </select>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          aria-label="Language / Idioma"
+          className="w-[92px] justify-start gap-1.5 px-2"
+        >
+          <current.Flag className="h-3.5 w-5 shrink-0 rounded-sm" />
+          {current.label}
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-[110px] p-1">
+        {LANGUAGE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            onClick={() => {
+              onChange(option.value);
+              setOpen(false);
+            }}
+            className={cn(
+              "flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm hover:bg-accent hover:text-accent-foreground",
+              option.value === value && "bg-accent text-accent-foreground"
+            )}
+          >
+            <option.Flag className="h-3.5 w-5 shrink-0 rounded-sm" />
+            {option.label}
+          </button>
+        ))}
+      </PopoverContent>
+    </Popover>
   );
 }
 
