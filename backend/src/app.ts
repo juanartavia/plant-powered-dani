@@ -1437,7 +1437,7 @@ function bookNutricionCalendarEvent(
   birthdate: string,
   language: string,
   modalidad: string
-): void {
+): { meetLink: string } {
   const calendarId = CALENDARS[0];
   const wantsMeet = modalidad === "virtual";
   const description = `Name: ${nombre} ${apellido}\nEmail: ${email}\nPhone: ${phone}\nID: ${tipoId} ${numeroId}\nDate of birth: ${birthdate}\nLanguage: ${language}\nAppointment type: ${type}\nModality: ${modalidad}`;
@@ -1474,6 +1474,9 @@ function bookNutricionCalendarEvent(
     );
 
     updateNutricionCalendarInfo(token, eventId, wantsMeet ? meetLink : "");
+    // Devuelve el meetLink al llamador (bookTimeslot) para el correo de confirmación
+    // (US-12) — evita releer el Sheet solo para recuperar un valor que ya tenemos en mano.
+    return { meetLink: wantsMeet ? meetLink : "" };
   } catch (e) {
     const error = e as Error;
     // SLOT_NO_DISPONIBLE debe llegar al frontend con su propio código, sin quedar
@@ -1504,7 +1507,7 @@ function bookPilatesCalendarEvent(
   numeroId: string,
   birthdate: string,
   language: string
-): void {
+): { meetLink: string } {
   // Calendario dedicado de la instructora (US-10, ver getPilatesCalendarId más arriba) — antes
   // este helper usaba CALENDARS[0], que es el/los calendario(s) de Dani; la auditoría confirmó
   // que esa separación nunca existió realmente pese a estar descrita en CLAUDE.md.
@@ -1525,12 +1528,14 @@ function bookPilatesCalendarEvent(
 
     let rowNumber = -1;
     let eventId = "";
+    let existingMeetLink = "";
     for (let i = 1; i < cuposData.length; i++) {
       const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
       const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
       if (rowFecha === fecha && rowHora === hora) {
         rowNumber = i + 1;
         eventId = String(cuposData[i][CUPOS_PILATES_EVENT_ID_COL - 1] || "");
+        existingMeetLink = String(cuposData[i][CUPOS_PILATES_MEET_LINK_COL - 1] || "");
         break;
       }
     }
@@ -1550,6 +1555,9 @@ function bookPilatesCalendarEvent(
       // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
       // Google en el futuro, basta con cambiar este valor a 'all'.
       Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "none" });
+      // Devuelve el meetLink ya existente (el evento compartido no cambia de link al sumar
+      // un invitado más) para el correo de confirmación (US-12).
+      return { meetLink: existingMeetLink };
     } else {
       const created = createCalendarEventWithMeet(
         calendarId,
@@ -1570,6 +1578,7 @@ function bookPilatesCalendarEvent(
       // siempre y causando que cada inscripción cree su propio evento de Calendar duplicado
       // (justo el bug que este fix busca evitar).
       SpreadsheetApp.flush();
+      return { meetLink: created.meetLink };
     }
   } catch (e) {
     const error = e as Error;
@@ -1637,11 +1646,12 @@ function bookTimeslot(
     clientTimezone,
   });
 
+  let meetLinkForEmail = "";
   try {
     if (type === "pilates") {
-      bookPilatesCalendarEvent(startTime, endTime, nombre, apellido, email, phone, tipoId, numeroId, birthdate, language);
+      meetLinkForEmail = bookPilatesCalendarEvent(startTime, endTime, nombre, apellido, email, phone, tipoId, numeroId, birthdate, language).meetLink;
     } else {
-      bookNutricionCalendarEvent(type, token, startTime, endTime, nombre, apellido, email, phone, tipoId, numeroId, birthdate, language, modalidad);
+      meetLinkForEmail = bookNutricionCalendarEvent(type, token, startTime, endTime, nombre, apellido, email, phone, tipoId, numeroId, birthdate, language, modalidad).meetLink;
     }
   } catch (e) {
     // El Sheet ya quedó escrito exitosamente (token=token) pero el paso de Calendar falló
@@ -1661,6 +1671,32 @@ function bookTimeslot(
     // cambios pendientes hasta que termine la ejecución.
     SpreadsheetApp.flush();
     throw e;
+  }
+
+  // US-12 — Correo de confirmación inmediato. Extiende la atomicidad de la nota 4 del
+  // CLAUDE.md (Sheet→Calendar) un paso más: en este punto Sheet y Calendar YA se guardaron
+  // con éxito, así que el agendamiento en sí NUNCA debe revertirse ni fallar por un problema
+  // de envío de correo (cuota de Gmail, error transitorio, etc.) — try/catch propio, sin
+  // relanzar, solo con un log para revisión manual (no hay columna dedicada en el Sheet para
+  // esto todavía; agregar una es trabajo de schema fuera del alcance de esta tarjeta).
+  try {
+    const idioma: "es" | "en" = language === "en" ? "en" : "es";
+    const linkReagendar = `${ScriptApp.getService().getUrl()}?token=${token}`;
+    const fechaCita = Utilities.formatDate(startTime, TIME_ZONE, "yyyy-MM-dd");
+    const horaCita = Utilities.formatDate(startTime, TIME_ZONE, "HH:mm");
+    const { subject, htmlBody } = renderConfirmationEmail({
+      tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
+      idioma,
+      nombreApellido: `${nombre} ${apellido}`,
+      fecha: fechaCita,
+      hora: horaCita,
+      esVirtual: type === "pilates" ? true : modalidad === "virtual",
+      meetLink: meetLinkForEmail,
+      linkReagendar,
+    });
+    GmailApp.sendEmail(email, subject, "", { htmlBody });
+  } catch (e) {
+    Logger.log(`bookTimeslot: fallo al enviar correo de confirmación a ${email} (token ${token}): ${(e as Error).message}`);
   }
 
   return token;
@@ -2099,8 +2135,8 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
 
 // ============================================================================
 // US-11 — Renderizado del correo de confirmación (ES/EN, nutrición y pilates)
-// Alcance de esta tarjeta: SOLO renderizar y probar el HTML en aislado. El envío
-// automático al agendar es US-12; la conexión a bookTimeslot() NO se hace aquí.
+// US-12 conecta renderConfirmationEmail() a bookTimeslot() para el envío automático real
+// (ver el bloque try/catch al final de bookTimeslot, más arriba en este archivo).
 // ============================================================================
 
 // Dirección física del consultorio (sección 1 del CLAUDE.md) — constante, no cambia

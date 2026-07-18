@@ -272,7 +272,30 @@ function createMockContext() {
         setXFrameOptionsMode: function () { return this; },
         addMetaTag: function () { return this; },
       }),
+      // Mock de US-12: bookTimeslot llama a renderConfirmationEmail(), que usa
+      // createTemplateFromFile() para las 4 plantillas de correo (US-11). El harness no lee
+      // los .html reales de backend/templates/ — solo necesita aceptar cualquier propiedad
+      // asignada (template.xxx = ...) y devolver contenido no vacío en evaluate().getContent().
+      createTemplateFromFile: (filename) => {
+        const template = { __filename: filename };
+        template.evaluate = () => ({ getContent: () => `<html-mock file="${filename}"></html-mock>` });
+        return template;
+      },
       XFrameOptionsMode: { ALLOWALL: "ALLOWALL" },
+    },
+    // Mock de US-12: la URL real de deploy no existe en testing local — basta con una URL
+    // fija para que linkReagendar se construya sin lanzar error.
+    ScriptApp: {
+      getService: () => ({ getUrl: () => "https://mock-script-url.example/exec" }),
+    },
+    // Mock de US-12: registra los correos "enviados" en sandbox.__sentEmails para que los
+    // tests puedan verificar que bookTimeslot intentó mandar el correo de confirmación, sin
+    // depender de una cuenta de Gmail real.
+    GmailApp: {
+      sendEmail: (to, subject, body, options) => {
+        sandbox.__sentEmails = sandbox.__sentEmails || [];
+        sandbox.__sentEmails.push({ to, subject, body, options });
+      },
     },
   };
 

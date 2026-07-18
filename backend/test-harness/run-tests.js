@@ -433,5 +433,55 @@ function clientRecord(overrides) {
   assert(threw === "VENTANA_MINIMA_NO_CUMPLIDA", "lanza VENTANA_MINIMA_NO_CUMPLIDA con solo 13hrs de anticipación (nutrición sigue en 48hrs)");
 })();
 
+// ── Test 16: bookTimeslot envía correo de confirmación (US-12) ──────────────────────────
+(function test16() {
+  console.log("Test 16: bookTimeslot envía correo de confirmación al agendar (nutrición)");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Sofia", "Mora", "sofia-correo@test.com", "8888-4444", "cedula", "1-0000-4444",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const sent = sandbox.__sentEmails || [];
+  assert(sent.length === 1, "se envió exactamente 1 correo");
+  assert(sent[0].to === "sofia-correo@test.com", "el correo va dirigido al cliente que agendó");
+  assert(typeof sent[0].subject === "string" && sent[0].subject.length > 0, "el correo trae un subject no vacío");
+  assert(sent[0].options && sent[0].options.htmlBody && sent[0].options.htmlBody.length > 0, "el correo trae htmlBody no vacío");
+})();
+
+// ── Test 17: bookTimeslot envía correo de confirmación en pilates (idioma EN) ───────────
+(function test17() {
+  console.log("Test 17: bookTimeslot envía correo de confirmación al agendar (pilates, EN)");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "pilates", isoInHours(13), "Kelly", "Soto", "kelly-correo@test.com", "8888-5555", "cedula", "1-0000-5555",
+    "1990-01-01", "en", "virtual", "America/Costa_Rica"
+  );
+  const sent = sandbox.__sentEmails || [];
+  assert(sent.length === 1, "se envió exactamente 1 correo");
+  assert(sent[0].to === "kelly-correo@test.com", "el correo va dirigido al cliente que se inscribió");
+})();
+
+// ── Test 18: un fallo al enviar el correo NO revierte ni bloquea el agendamiento ────────
+(function test18() {
+  console.log("Test 18: fallo de GmailApp.sendEmail no revierte la reserva ya confirmada en Sheet/Calendar");
+  const { sandbox } = freshCtx();
+  sandbox.GmailApp.sendEmail = () => { throw new Error("Mock: Gmail caído"); };
+  let threw = null;
+  let token = null;
+  try {
+    token = sandbox.bookTimeslot(
+      "initial", isoInHours(72), "Luis", "Vargas", "luis-correo-falla@test.com", "8888-6666", "cedula", "1-0000-6666",
+      "1990-01-01", "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === null, "bookTimeslot NO relanza el error del envío de correo");
+  const sheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(sheet, token);
+  assert(row > 0, "la fila de Nutrición SÍ se guardó pese al fallo de correo");
+  assert(sheet.data[row - 1][15] === "Agendada", "el estado sigue 'Agendada' (no se revierte por el fallo de correo)");
+})();
+
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
 process.exit(failed > 0 ? 1 : 0);
