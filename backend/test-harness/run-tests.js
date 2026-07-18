@@ -288,5 +288,150 @@ function findTokenRow(sheet, token) {
   assert(!events[eventKey], "el evento real de Calendar se elimina al cancelar (event_id sí encontrado)");
 })();
 
+// Devuelve el string "yyyy-MM-dd" de "hoy" (CR) o de "hoy + offsetDays" (CR).
+function crDateStr(offsetDays) {
+  return formatDate(new Date(Date.now() + (offsetDays || 0) * 86400000), "America/Costa_Rica", "yyyy-MM-dd");
+}
+
+// Fecha de nacimiento de alguien que cumple exactamente `years` años en CR el día
+// "hoy + offsetDays" (mes/día de esa fecha, año = ese año - years).
+function birthdateTurningAgeOn(years, offsetDays) {
+  const [y, m, d] = crDateStr(offsetDays).split("-");
+  return `${Number(y) - years}-${m}-${d}`;
+}
+
+function clientRecord(overrides) {
+  return Object.assign(
+    {
+      correo: "menor@test.com",
+      nombre: "Menor",
+      apellido: "Test",
+      telefono: "8888-9999",
+      tipoId: "cedula",
+      numeroId: "1-0000-0000",
+      fecha_nacimiento: "1990-01-01",
+      idioma: "es",
+    },
+    overrides
+  );
+}
+
+// ── Test 11: upsertClient BLOQUEA a quien cumple 15 años MAÑANA (hoy tiene 14) ──────────
+(function test11() {
+  console.log("Test 11: upsertClient bloquea menor de 15 (cumple mañana) y no escribe nada");
+  const { sandbox } = freshCtx();
+  const clientesSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Clientes");
+  const rowsBefore = clientesSheet.data.length;
+
+  const birthdate = birthdateTurningAgeOn(15, 1); // cumple 15 mañana -> hoy tiene 14
+  let threw = null;
+  try {
+    sandbox.upsertClient(clientRecord({ correo: "manana15@test.com", fecha_nacimiento: birthdate }), "initial");
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "EDAD_MINIMA_NO_CUMPLIDA", "lanza EDAD_MINIMA_NO_CUMPLIDA");
+  assert(clientesSheet.data.length === rowsBefore, "NO se agregó ninguna fila a Clientes");
+})();
+
+// ── Test 12: upsertClient PERMITE a quien cumple 15 años HOY ────────────────────────────
+(function test12() {
+  console.log("Test 12: upsertClient permite a quien cumple 15 años exactamente hoy");
+  const { sandbox } = freshCtx();
+  const clientesSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Clientes");
+  const rowsBefore = clientesSheet.data.length;
+
+  const birthdate = birthdateTurningAgeOn(15, 0); // cumple 15 hoy
+  let threw = null;
+  try {
+    sandbox.upsertClient(clientRecord({ correo: "hoy15@test.com", fecha_nacimiento: birthdate }), "initial");
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === null, "no lanza ningún error");
+  assert(clientesSheet.data.length === rowsBefore + 1, "SÍ se agregó la fila a Clientes");
+})();
+
+// ── Test 13: bookTimeslot bloquea la misma edad límite (defensa en profundidad) ─────────
+(function test13() {
+  console.log("Test 13: bookTimeslot bloquea menor de 15 (defensa en profundidad) sin escribir en Nutrición");
+  const { sandbox } = freshCtx();
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const rowsBefore = nutSheet.data.length;
+
+  const birthdate = birthdateTurningAgeOn(15, 1); // cumple 15 mañana -> hoy tiene 14
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "initial", isoInHours(72), "Menor", "DeEdad", "menoredad@test.com", "8888-1234", "cedula", "1-0000-1111",
+      birthdate, "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "EDAD_MINIMA_NO_CUMPLIDA", "lanza EDAD_MINIMA_NO_CUMPLIDA");
+  assert(nutSheet.data.length === rowsBefore, "NO se agregó ninguna fila a Nutrición");
+})();
+
+// ── Test 13b: mismo bloqueo de edad, pero para type="pilates" — no toca Pilates ni el
+// contador de cupos en Cupos_Pilates (rama de negocio completamente distinta a Nutrición,
+// ver appendBookingToSheet: pilates incrementa "inscritos" en Cupos_Pilates ANTES de
+// escribir en Pilates — ambos deben quedar intactos si assertMinimumAge bloquea antes de
+// llegar a appendBookingToSheet).
+(function test13b() {
+  console.log("Test 13b: bookTimeslot bloquea menor de 15 en pilates, sin escribir en Pilates ni tocar Cupos_Pilates");
+  const { sandbox } = freshCtx();
+  const pilSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Pilates");
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  const pilRowsBefore = pilSheet.data.length;
+  const cuposRowsBefore = cuposSheet.data.length;
+
+  const birthdate = birthdateTurningAgeOn(15, 1); // cumple 15 mañana -> hoy tiene 14
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "pilates", isoInHours(72), "Menor", "Pilates", "menoredadpilates@test.com", "8888-1235", "cedula", "1-0000-1112",
+      birthdate, "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "EDAD_MINIMA_NO_CUMPLIDA", "lanza EDAD_MINIMA_NO_CUMPLIDA");
+  assert(pilSheet.data.length === pilRowsBefore, "NO se agregó ninguna fila a Pilates");
+  assert(cuposSheet.data.length === cuposRowsBefore, "NO se creó ninguna fila nueva en Cupos_Pilates");
+})();
+
+// ── Test 14: pilates se puede reservar con 12hrs de anticipación (no 48) ────────────────
+(function test14() {
+  console.log("Test 14: pilates permite reservar con solo 12hrs de anticipación");
+  const { sandbox } = freshCtx();
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "pilates", isoInHours(13), "Kelly", "Soto", "kelly-pilates@test.com", "8888-2222", "cedula", "1-0000-2222",
+      "1990-01-01", "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === null, "no lanza VENTANA_MINIMA_NO_CUMPLIDA con 13hrs de anticipación (> PILATES_MIN_BOOKING_HOURS=12)");
+})();
+
+// ── Test 15: nutrición SIGUE bloqueada con 12hrs de anticipación (sigue exigiendo 48) ───
+(function test15() {
+  console.log("Test 15: nutrición sigue exigiendo 48hrs, sin cambios (12hrs no alcanza)");
+  const { sandbox } = freshCtx();
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "initial", isoInHours(13), "Kelly", "Soto", "kelly-nutricion@test.com", "8888-3333", "cedula", "1-0000-3333",
+      "1990-01-01", "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "VENTANA_MINIMA_NO_CUMPLIDA", "lanza VENTANA_MINIMA_NO_CUMPLIDA con solo 13hrs de anticipación (nutrición sigue en 48hrs)");
+})();
+
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
 process.exit(failed > 0 ? 1 : 0);

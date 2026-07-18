@@ -79,6 +79,18 @@ class MockRange {
   setNumberFormat() {
     return this;
   }
+  insertCheckboxes() {
+    return this;
+  }
+  clearContent() {
+    return this;
+  }
+  clearFormat() {
+    return this;
+  }
+  clearDataValidations() {
+    return this;
+  }
 }
 
 class MockSheet {

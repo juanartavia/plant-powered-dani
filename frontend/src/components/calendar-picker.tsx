@@ -73,11 +73,13 @@ const STRINGS = {
     nextMonth: "Mes siguiente",
     errors: {
       ventanaMinima:
-        "Este horario ya no cumple con el mínimo de 48 horas de anticipación. Por favor elige otro horario disponible.",
+        "Este horario ya no cumple con el mínimo de anticipación requerido. Por favor elige otro horario disponible.",
       slotNoDisponible:
         "Este horario acaba de ser reservado por otra persona. Por favor elige otro horario disponible.",
       claseLlena:
         "Esta clase de pilates ya está llena. Por favor elige otro horario disponible.",
+      edadMinima:
+        "Debes tener al menos 15 años cumplidos para agendar una cita.",
     },
     form: {
       nombre: "Nombre",
@@ -124,11 +126,13 @@ const STRINGS = {
     nextMonth: "Next month",
     errors: {
       ventanaMinima:
-        "This time slot no longer meets the 48-hour minimum booking window. Please choose another available time.",
+        "This time slot no longer meets the minimum booking window required. Please choose another available time.",
       slotNoDisponible:
         "This time slot was just booked by someone else. Please choose another available time.",
       claseLlena:
         "This pilates class is now full. Please choose another available time.",
+      edadMinima:
+        "You must be at least 15 years old to book an appointment.",
     },
     form: {
       nombre: "First name",
@@ -169,15 +173,27 @@ function getStaleBookingErrorCode(
   return BOOKING_ERROR_CODES.find((code) => error.message.includes(code)) ?? null;
 }
 
-function getBookingErrorMessage(
+// Códigos de error conocidos (de bookTimeslot Y upsertClient) mapeados a un mensaje
+// bilingüe claro, en vez del mensaje crudo que llega envuelto desde el failure handler de
+// google.script.run. EDAD_MINIMA_NO_CUMPLIDA (US-29) puede llegar desde cualquiera de los
+// dos — upsertClient la lanza primero en el flujo real, bookTimeslot la repite como
+// defensa en profundidad.
+const KNOWN_ERROR_MESSAGES = {
+  VENTANA_MINIMA_NO_CUMPLIDA: "ventanaMinima",
+  SLOT_NO_DISPONIBLE: "slotNoDisponible",
+  CLASE_LLENA: "claseLlena",
+  EDAD_MINIMA_NO_CUMPLIDA: "edadMinima",
+} as const;
+
+function getErrorMessage(
   error: Error | null,
   t: (typeof STRINGS)[UiLanguage]
 ): string {
-  const code = getStaleBookingErrorCode(error);
-  if (code === "VENTANA_MINIMA_NO_CUMPLIDA") return t.errors.ventanaMinima;
-  if (code === "SLOT_NO_DISPONIBLE") return t.errors.slotNoDisponible;
-  if (code === "CLASE_LLENA") return t.errors.claseLlena;
-  return error?.message ?? "Unknown error 2";
+  if (!error) return "";
+  const code = (Object.keys(KNOWN_ERROR_MESSAGES) as Array<keyof typeof KNOWN_ERROR_MESSAGES>).find(
+    (c) => error.message.includes(c)
+  );
+  return code ? t.errors[KNOWN_ERROR_MESSAGES[code]] : error.message;
 }
 
 // Clase CSS reutilizable para selectores nativos que coincide con el estilo de Input de Shadcn.
@@ -279,7 +295,9 @@ export function CalendarPicker() {
       tipoId:           (formData.get("tipoId")?.toString()          || "") as ClientRecord["tipoId"],
       numeroId:         formData.get("numeroId")?.toString()         || "",
       fecha_nacimiento: formData.get("birthdate")?.toString()        || "",
-      idioma:           formData.get("language")?.toString()         || "",
+      // Idioma viene SOLO del selector global (Paso 1, uiLanguage) — el <select> duplicado
+      // que vivía dentro de ContactForm (Paso 3) se eliminó a pedido de Dani (demo 17 jul).
+      idioma:           uiLanguage,
     };
     const modalidad = formData.get("modalidad")?.toString() || "";
     // Se guardan de inmediato (no solo tras el éxito) para que, si bookTimeslot falla
@@ -364,7 +382,7 @@ export function CalendarPicker() {
       />
       <OkDialog
         open={bookingStatus === "error"}
-        description={getBookingErrorMessage(bookingError, t)}
+        description={getErrorMessage(bookingError, t)}
         confirm={handleBookingErrorDismiss}
       />
       <OkDialog
@@ -374,7 +392,7 @@ export function CalendarPicker() {
       />
       <OkDialog
         open={upsertStatus === "error"}
-        description={upsertError?.message ?? "Unknown error 4"}
+        description={getErrorMessage(upsertError, t)}
         confirm={resetUpsertClient}
       />
 
@@ -468,7 +486,6 @@ export function CalendarPicker() {
               handleSubmit={handleClientFormSubmit}
               type={appointmentType}
               uiLanguage={uiLanguage}
-              onLanguageChange={setUiLanguage}
               clientEmail={clientEmail}
               defaultValues={confirmedClient ?? existingClient}
               defaultModalidad={confirmedModalidad}
@@ -536,8 +553,8 @@ function LanguageDropdown({
       onChange={(e) => onChange(e.target.value as UiLanguage)}
       className={selectClassName + " w-[90px]"}
     >
-      <option value="es">ES</option>
-      <option value="en">EN</option>
+      <option value="es">🇨🇷 ES</option>
+      <option value="en">🇺🇸 EN</option>
     </select>
   );
 }
@@ -662,11 +679,40 @@ function CalendarTimeslotPicker({
   );
 }
 
+// Edad mínima para agendar (US-29, pedido de Dani en el demo del 17 jul) — misma regla
+// que MIN_AGE_YEARS en el backend (backend/src/app.ts), duplicada aquí a propósito porque
+// el frontend no puede importar el backend de Apps Script. La barrera REAL vive en el
+// backend (upsertClient/bookTimeslot) — esto es solo UX para no dejar que el cliente
+// llegue a enviar el formulario con una fecha inválida.
+const MIN_AGE_YEARS = 15;
+const CR_TIME_ZONE = "America/Costa_Rica";
+
+// Fecha máxima seleccionable en el input de fecha de nacimiento: "hoy menos MIN_AGE_YEARS
+// años", calculada en zona horaria de Costa Rica. SOLO aritmética de año/mes/día como
+// strings/números — sin restar años sobre un objeto Date (mismo criterio que calculateAge
+// en el backend, ver nota técnica #29 del CLAUDE.md sobre corrimientos de fecha).
+function getMaxBirthdate(): string {
+  const todayCR = formatInTimeZone(new Date(), CR_TIME_ZONE, "yyyy-MM-dd");
+  const [year, month, day] = todayCR.split("-");
+  return `${Number(year) - MIN_AGE_YEARS}-${month}-${day}`;
+}
+
+// Misma aritmética pura que calculateAge en el backend — sin objetos Date, para evitar
+// exactamente el tipo de corrimiento de ±1 día ya encontrado en este proyecto (nota #29).
+function calculateAgeYears(birthdateStr: string, todayStr: string): number {
+  const [birthYear, birthMonth, birthDay] = birthdateStr.split("-").map(Number);
+  const [todayYear, todayMonth, todayDay] = todayStr.split("-").map(Number);
+  let age = todayYear - birthYear;
+  if (todayMonth < birthMonth || (todayMonth === birthMonth && todayDay < birthDay)) {
+    age--;
+  }
+  return age;
+}
+
 function ContactForm({
   handleSubmit,
   type,
   uiLanguage,
-  onLanguageChange,
   clientEmail,
   defaultValues,
   defaultModalidad,
@@ -674,7 +720,6 @@ function ContactForm({
   handleSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   type: string;
   uiLanguage: UiLanguage;
-  onLanguageChange: (value: UiLanguage) => void;
   clientEmail: string;
   defaultValues: ClientRecord | null;
   defaultModalidad: string;
@@ -685,11 +730,38 @@ function ContactForm({
   const autoModalidad =
     type === "measurement" ? "presencial" : type === "pilates" ? "virtual" : "";
   const t = STRINGS[uiLanguage].form;
+  const tErrors = STRINGS[uiLanguage].errors;
+  const maxBirthdate = useMemo(() => getMaxBirthdate(), []);
+  const [ageError, setAgeError] = useState<string | null>(null);
+
+  const validateBirthdate = (value: string) => {
+    if (!value) {
+      setAgeError(null);
+      return true;
+    }
+    const todayCR = formatInTimeZone(new Date(), CR_TIME_ZONE, "yyyy-MM-dd");
+    if (calculateAgeYears(value, todayCR) < MIN_AGE_YEARS) {
+      setAgeError(tErrors.edadMinima);
+      return false;
+    }
+    setAgeError(null);
+    return true;
+  };
+
+  const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    const birthdateValue =
+      new FormData(e.currentTarget).get("birthdate")?.toString() || "";
+    if (!validateBirthdate(birthdateValue)) {
+      e.preventDefault();
+      return;
+    }
+    handleSubmit(e);
+  };
 
   return (
     <form
       id="client-form"
-      onSubmit={handleSubmit}
+      onSubmit={onSubmit}
       className="text-left space-y-4"
     >
       <div className="space-y-2">
@@ -758,22 +830,15 @@ function ContactForm({
           name="birthdate"
           type="date"
           required
+          max={maxBirthdate}
           defaultValue={defaultValues?.fecha_nacimiento ?? ""}
+          onBlur={(e) => validateBirthdate(e.target.value)}
+          onChange={(e) => validateBirthdate(e.target.value)}
+          aria-invalid={ageError ? true : undefined}
         />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="language">{t.language}</Label>
-        <select
-          id="language"
-          name="language"
-          required
-          value={uiLanguage}
-          onChange={(e) => onLanguageChange(e.target.value as UiLanguage)}
-          className={selectClassName}
-        >
-          <option value="es">Español</option>
-          <option value="en">English</option>
-        </select>
+        {ageError && (
+          <p className="text-sm text-destructive">{ageError}</p>
+        )}
       </div>
       {showModalidad ? (
         <div className="space-y-2">

@@ -101,6 +101,14 @@ const PILATES_START_HOUR = 10;
 // que aplica a la política de cancelación/reagendamiento — ambas coexisten.
 const MIN_BOOKING_HOURS = 48;
 
+// Ventana mínima de anticipación específica de pilates (demo 17 jul, pedido de Dani):
+// a diferencia de MIN_BOOKING_HOURS (48hrs, nutrición), pilates se puede reservar con
+// solo 12 horas de anticipación. Mismo patrón que PILATES_DAY_OF_WEEK/PILATES_START_HOUR
+// arriba — restricción específica de type === "pilates", nunca reemplaza la constante
+// global de nutrición. Aplicada en fetchAvailability(), bookTimeslot() y rescheduleBooking()
+// (validación del NUEVO horario).
+const PILATES_MIN_BOOKING_HOURS = 12;
+
 // Ventana mínima de anticipación para reagendar/cancelar una cita YA existente sin
 // penalización: si faltan menos de CANCELLATION_HOURS horas para la cita ACTUAL, la
 // acción se bloquea (o se permite con penalización, según el flujo) y cuenta como
@@ -193,8 +201,11 @@ function fetchAvailability(type: string): {
   // horas exactas desde este momento NO debe quedar disponible; solo slots que
   // empiecen estrictamente después de ese umbral. Se calcula desde la hora real
   // actual (no desde nearestTimeslot, que ya viene redondeada hacia abajo).
+  // Pilates usa su propia ventana, más corta (PILATES_MIN_BOOKING_HOURS, ver constante) —
+  // nutrición sigue en MIN_BOOKING_HOURS sin cambios.
+  const minBookingHours = type === "pilates" ? PILATES_MIN_BOOKING_HOURS : MIN_BOOKING_HOURS;
   const minBookingTime = new Date(
-    new Date().getTime() + MIN_BOOKING_HOURS * 60 * 60 * 1000
+    new Date().getTime() + minBookingHours * 60 * 60 * 1000
   );
 
   const end = new Date(
@@ -887,6 +898,37 @@ function assertValidTipoId(tipoId: string): void {
   }
 }
 
+// Edad mínima para registrarse/agendar (US-29, pedido de Dani en el demo del 17 jul).
+const MIN_AGE_YEARS = 15;
+
+// Calcula la edad en años cumplidos a partir de dos strings "yyyy-MM-dd" — a propósito
+// SOLO aritmética de año/mes/día como números, sin construir ningún objeto Date ni pasar
+// por ninguna zona horaria (ver nota técnica #29 del CLAUDE.md: mezclar objetos Date con
+// zonas horarias de negocio en fechas sin componente de hora real es la causa raíz de los
+// corrimientos de ±1 día ya encontrados en este proyecto). Regla de borde exacta: alguien
+// que cumple MIN_AGE_YEARS años exactamente HOY ya cumple (mes y día iguales no restan un
+// año); alguien que los cumple mañana todavía no (día futuro sí resta un año).
+function calculateAge(birthdateStr: string, todayStr: string): number {
+  const [birthYear, birthMonth, birthDay] = birthdateStr.split("-").map(Number);
+  const [todayYear, todayMonth, todayDay] = todayStr.split("-").map(Number);
+  let age = todayYear - birthYear;
+  if (todayMonth < birthMonth || (todayMonth === birthMonth && todayDay < birthDay)) {
+    age--;
+  }
+  return age;
+}
+
+// Barrera real contra menores de MIN_AGE_YEARS años (US-29) — nunca confiar solo en el
+// frontend. "Hoy" siempre se calcula en TIME_ZONE (hora del negocio), igual que el resto
+// de fechas/horas de citas reales; fecha_nacimiento en sí se compara como texto plano
+// yyyy-MM-dd, sin reinterpretarla como objeto Date (ver calculateAge).
+function assertMinimumAge(birthdateStr: string): void {
+  const todayStr = Utilities.formatDate(new Date(), TIME_ZONE, "yyyy-MM-dd");
+  if (calculateAge(birthdateStr, todayStr) < MIN_AGE_YEARS) {
+    throw new Error("EDAD_MINIMA_NO_CUMPLIDA");
+  }
+}
+
 interface ClientRecord {
   correo: string;
   nombre: string;
@@ -1039,6 +1081,12 @@ function notifyLateCancellation(correo: string, token: string, accion: "cancelac
 // corresponde al tipo de cita actual NUNCA se toca, para no pisar un TRUE que ya tuviera
 // por una cita anterior de otro tipo.
 function upsertClient(data: ClientRecord, type: string): void {
+  // Barrera de edad mínima (US-29) — PRIMERO, antes de cualquier lectura/escritura del
+  // Sheet. Crítico: el flujo real (CalendarPicker.handleClientFormSubmit) llama primero a
+  // upsertClient() y DESPUÉS a bookTimeslot(); si esta validación solo viviera en
+  // bookTimeslot(), un menor de MIN_AGE_YEARS quedaría guardado en "Clientes" aunque la
+  // cita se rechazara después.
+  assertMinimumAge(data.fecha_nacimiento);
   assertValidTipoId(data.tipoId);
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -1535,6 +1583,9 @@ function bookTimeslot(
   modalidad: string,
   clientTimezone: string
 ): string {
+  // Defensa en profundidad (US-29): upsertClient() ya valida la edad antes de llegar
+  // aquí en el flujo real, pero bookTimeslot() nunca debe confiar solo en eso.
+  assertMinimumAge(birthdate);
   assertValidTipoId(tipoId);
   // La duración del evento depende del tipo de cita, igual que en fetchAvailability.
   const duration = getDurationForType(type);
@@ -1545,12 +1596,14 @@ function bookTimeslot(
   const endTime = new Date(startTime.getTime());
   endTime.setUTCMinutes(startTime.getUTCMinutes() + duration);
 
-  // Re-chequeo de la ventana mínima de 48hrs justo antes de reservar (US-09): el filtro
-  // en fetchAvailability evita que el cliente VEA el slot, pero si dejó la pestaña
-  // abierta y confirma después de que el slot cruzó el umbral, hay que rechazarlo aquí
-  // también — el cliente no puede confiar solo en el estado cargado en el navegador.
+  // Re-chequeo de la ventana mínima justo antes de reservar (US-09): el filtro en
+  // fetchAvailability evita que el cliente VEA el slot, pero si dejó la pestaña abierta
+  // y confirma después de que el slot cruzó el umbral, hay que rechazarlo aquí también —
+  // el cliente no puede confiar solo en el estado cargado en el navegador. Pilates usa su
+  // propia ventana más corta (PILATES_MIN_BOOKING_HOURS), igual que en fetchAvailability.
+  const minBookingHours = type === "pilates" ? PILATES_MIN_BOOKING_HOURS : MIN_BOOKING_HOURS;
   const minBookingTime = new Date(
-    new Date().getTime() + MIN_BOOKING_HOURS * 60 * 60 * 1000
+    new Date().getTime() + minBookingHours * 60 * 60 * 1000
   );
   if (startTime.getTime() <= minBookingTime.getTime()) {
     throw new Error("VENTANA_MINIMA_NO_CUMPLIDA");
@@ -1935,7 +1988,9 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   }
 
   // Mismo re-chequeo de ventana mínima que bookTimeslot (US-09) — aplica al horario NUEVO.
-  const minBookingTime = new Date(new Date().getTime() + MIN_BOOKING_HOURS * 60 * 60 * 1000);
+  // Pilates usa PILATES_MIN_BOOKING_HOURS, igual que en fetchAvailability/bookTimeslot.
+  const minBookingHours = booking.type === "pilates" ? PILATES_MIN_BOOKING_HOURS : MIN_BOOKING_HOURS;
+  const minBookingTime = new Date(new Date().getTime() + minBookingHours * 60 * 60 * 1000);
   if (newStart.getTime() <= minBookingTime.getTime()) {
     throw new Error("VENTANA_MINIMA_NO_CUMPLIDA");
   }
