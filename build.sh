@@ -20,6 +20,7 @@ echo "Frontend built successfully!"
 mkdir -p dist
 rm -rf dist/*
 cp backend/dist/* dist/
+cp backend/templates/*.html dist/
 cp frontend/dist/* dist/
 
 echo "Build complete!"

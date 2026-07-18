@@ -2071,3 +2071,186 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   resetClientLateCancellationCounter(booking.correo);
   return token;
 }
+
+// ============================================================================
+// US-11 — Renderizado del correo de confirmación (ES/EN, nutrición y pilates)
+// Alcance de esta tarjeta: SOLO renderizar y probar el HTML en aislado. El envío
+// automático al agendar es US-12; la conexión a bookTimeslot() NO se hace aquí.
+// ============================================================================
+
+// Dirección física del consultorio (sección 1 del CLAUDE.md) — constante, no cambia
+// por cita. Si el consultorio cambia algún día, solo hay que actualizar estas 3.
+const CONSULTORIO_DIRECCION =
+  "Santa Ana Town Center<br>Work Space Republic – Segundo piso<br>Consultorio #33";
+const CONSULTORIO_MAPS_LINK = "https://maps.google.com/?q=Santa+Ana+Town+Center+Work+Space+Republic";
+const CONSULTORIO_WAZE_LINK = "https://waze.com/ul?q=Santa%20Ana%20Town%20Center%20Work%20Space%20Republic";
+
+// Títulos de confirmación por tipo de cita e idioma (solo aplica a nutrición — pilates
+// tiene el título fijo, horneado en su propia plantilla HTML, ver comentario del archivo).
+// "initial" ES/"nutricion" ES/EN ya estaban confirmados desde el comentario de Trello del
+// 13 jul; el resto es borrador pendiente de aprobación de Gabriela (ver reporte final).
+const TITULOS_CONFIRMACION: Record<string, Record<string, string>> = {
+  es: {
+    initial: "¡Tu cita inicial está confirmada!", // confirmado (comentario Trello, 13 jul)
+    followup: "¡Tu cita de seguimiento está confirmada!", // BORRADOR — pendiente aprobación Gabi
+    measurement: "¡Tu cita de medición está confirmada!", // BORRADOR — pendiente aprobación Gabi
+  },
+  en: {
+    initial: "Your initial appointment is confirmed!", // BORRADOR — pendiente aprobación Gabi
+    followup: "Your follow-up appointment is confirmed!", // BORRADOR — pendiente aprobación Gabi
+    measurement: "Your measurement appointment is confirmed!", // BORRADOR — pendiente aprobación Gabi
+  },
+};
+
+const MODALIDAD_DISPLAY: Record<string, Record<string, string>> = {
+  es: { virtual: "VIRTUAL", presencial: "PRESENCIAL" },
+  en: { virtual: "VIRTUAL", presencial: "IN PERSON" },
+};
+
+// Subject lines del correo de confirmación. Nutrición ES/EN ya confirmados; pilates es
+// BORRADOR — sigue el mismo patrón que el título fijo ya aprobado dentro de la propia
+// plantilla de pilates ("¡Tu clase de pilates está confirmada!"), sin nombrar a la
+// instructora porque su nombre no es una variable disponible en este flujo.
+const SUBJECTS_CONFIRMACION: Record<string, Record<string, string>> = {
+  nutricion: {
+    es: "Tu cita de nutrición con Dani está confirmada", // confirmado
+    en: "Your nutrition appointment with Dani is confirmed", // confirmado
+  },
+  pilates: {
+    es: "Tu clase de pilates está confirmada", // BORRADOR — pendiente aprobación Gabi
+    en: "Your pilates class is confirmed", // BORRADOR — pendiente aprobación Gabi
+  },
+};
+
+const TEMPLATE_FILE_BY_TIPO_IDIOMA: Record<string, Record<string, string>> = {
+  nutricion: {
+    es: "correo_confirmacion_nutricion_es",
+    en: "correo_confirmacion_nutricion_en",
+  },
+  pilates: {
+    es: "correo_confirmacion_pilates_es",
+    en: "correo_confirmacion_pilates_en",
+  },
+};
+
+const DIAS_SEMANA_ES = ["", "LUNES", "MARTES", "MIÉRCOLES", "JUEVES", "VIERNES", "SÁBADO", "DOMINGO"];
+const MESES_ES = ["", "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JULIO", "AGOSTO", "SEPTIEMBRE", "OCTUBRE", "NOVIEMBRE", "DICIEMBRE"];
+const DIAS_SEMANA_EN = ["", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+const MESES_EN = ["", "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
+
+// fecha/hora aquí son de una CITA REAL (no fecha_nacimiento), así que se formatean en
+// TIME_ZONE, nunca en UTC — misma regla que el resto del proyecto (nota técnica #29).
+// Los nombres de día/mes se arman a mano a partir de números (patrones "u"/"d"/"M" de
+// Utilities.formatDate, que son numéricos y no dependen del locale del proyecto de Script),
+// en vez de usar los nombres de mes/día que da formatDate, que SÍ dependen del locale del
+// proyecto (un solo locale de Script no puede servir ES y EN a la vez de forma confiable).
+function formatFechaDisplay(fecha: string, idioma: "es" | "en"): string {
+  const date = Utilities.parseDate(fecha, TIME_ZONE, "yyyy-MM-dd");
+  const diaSemana = Number(Utilities.formatDate(date, TIME_ZONE, "u")); // 1=lunes...7=domingo
+  const dia = Utilities.formatDate(date, TIME_ZONE, "d");
+  const mes = Number(Utilities.formatDate(date, TIME_ZONE, "M")); // 1-12
+  const anio = Utilities.formatDate(date, TIME_ZONE, "yyyy");
+
+  if (idioma === "en") {
+    return `${DIAS_SEMANA_EN[diaSemana]}, ${MESES_EN[mes]} ${dia}, ${anio}`;
+  }
+  return `${DIAS_SEMANA_ES[diaSemana]} ${dia} DE ${MESES_ES[mes]} DEL ${anio}`;
+}
+
+function formatHoraDisplay(hora: string): string {
+  return hora;
+}
+
+function renderConfirmationEmail(params: {
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  idioma: "es" | "en";
+  nombreApellido: string;
+  fecha: string; // yyyy-MM-dd, hora del negocio (TIME_ZONE)
+  hora: string; // HH:mm, hora del negocio (TIME_ZONE)
+  esVirtual: boolean; // pilates siempre true; solo importa para nutrición
+  meetLink?: string;
+  linkReagendar: string;
+}): { subject: string; htmlBody: string } {
+  const isPilates = params.tipoCita === "pilates";
+  const servicio = isPilates ? "pilates" : "nutricion";
+  const templateFile = TEMPLATE_FILE_BY_TIPO_IDIOMA[servicio][params.idioma];
+  const template = HtmlService.createTemplateFromFile(templateFile);
+
+  template.nombre_apellido = params.nombreApellido;
+  template.fechaDisplay = formatFechaDisplay(params.fecha, params.idioma);
+  template.horaDisplay = formatHoraDisplay(params.hora);
+  template.linkReagendar = params.linkReagendar;
+  template.meetLink = params.meetLink || "";
+
+  if (!isPilates) {
+    template.tituloConfirmacion = TITULOS_CONFIRMACION[params.idioma][params.tipoCita];
+    template.modalidadDisplay = MODALIDAD_DISPLAY[params.idioma][params.esVirtual ? "virtual" : "presencial"];
+    template.esVirtual = params.esVirtual;
+    template.direccion = CONSULTORIO_DIRECCION;
+    template.mapsLink = CONSULTORIO_MAPS_LINK;
+    template.wazeLink = CONSULTORIO_WAZE_LINK;
+  }
+
+  const subject = isPilates
+    ? SUBJECTS_CONFIRMACION.pilates[params.idioma]
+    : SUBJECTS_CONFIRMACION.nutricion[params.idioma];
+
+  return { subject, htmlBody: template.evaluate().getContent() };
+}
+
+// Función de testing manual (US-11, checklist ítems 1/2/5) — genera las 4 combinaciones
+// (nutrición ES/EN x virtual/presencial, pilates ES/EN) y las envía por GmailApp a la
+// cuenta de testing para inspección visual real. Correr manualmente desde el editor de
+// Apps Script; no forma parte de ningún flujo automático (eso es US-12).
+function testSendConfirmationEmails(): void {
+  const destinatario = Session.getActiveUser().getEmail();
+  const linkReagendarFake = "https://script.google.com/macros/s/FAKE_DEPLOYMENT_ID/exec?token=test-token-1234";
+
+  const casos: Array<Parameters<typeof renderConfirmationEmail>[0]> = [
+    {
+      tipoCita: "initial",
+      idioma: "es",
+      nombreApellido: "María Fernández",
+      fecha: "2026-07-20",
+      hora: "13:30",
+      esVirtual: false,
+      linkReagendar: linkReagendarFake,
+    },
+    {
+      tipoCita: "followup",
+      idioma: "en",
+      nombreApellido: "Jane Smith",
+      fecha: "2026-07-21",
+      hora: "09:00",
+      esVirtual: true,
+      meetLink: "https://meet.google.com/fake-link-test",
+      linkReagendar: linkReagendarFake,
+    },
+    {
+      tipoCita: "pilates",
+      idioma: "es",
+      nombreApellido: "Ana Rodríguez",
+      fecha: "2026-07-25",
+      hora: "10:00",
+      esVirtual: true,
+      meetLink: "https://meet.google.com/fake-link-pilates",
+      linkReagendar: linkReagendarFake,
+    },
+    {
+      tipoCita: "pilates",
+      idioma: "en",
+      nombreApellido: "John Doe",
+      fecha: "2026-07-25",
+      hora: "10:00",
+      esVirtual: true,
+      meetLink: "https://meet.google.com/fake-link-pilates-en",
+      linkReagendar: linkReagendarFake,
+    },
+  ];
+
+  casos.forEach((caso) => {
+    const { subject, htmlBody } = renderConfirmationEmail(caso);
+    GmailApp.sendEmail(destinatario, `[TEST US-11] ${subject}`, "", { htmlBody });
+    Logger.log(`Enviado: ${caso.tipoCita}/${caso.idioma}/esVirtual=${caso.esVirtual}`);
+  });
+}
