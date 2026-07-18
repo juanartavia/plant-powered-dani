@@ -483,5 +483,37 @@ function clientRecord(overrides) {
   assert(sheet.data[row - 1][15] === "Agendada", "el estado sigue 'Agendada' (no se revierte por el fallo de correo)");
 })();
 
+// ── Test 19: correo al cliente en su propia zona (Costa Rica) → idéntico a antes ────────
+(function test19() {
+  console.log("Test 19: fecha/hora del correo con clientTimezone=Costa Rica (sin cambio de comportamiento)");
+  const { sandbox } = freshCtx();
+  const instant = sandbox.parseSheetDateTime("2026-07-20", "13:30");
+  const fechaPorDefecto = sandbox.formatFechaDisplay(instant, "es"); // sin 3er arg → TIME_ZONE, igual que antes de este cambio
+  const horaPorDefecto = sandbox.formatHoraDisplay(instant); // sin 2do arg → TIME_ZONE
+  const fechaClienteCR = sandbox.formatFechaDisplay(instant, "es", "America/Costa_Rica");
+  const horaClienteCR = sandbox.formatHoraDisplay(instant, "America/Costa_Rica");
+  assert(fechaClienteCR === fechaPorDefecto, "fechaDisplay con clientTimezone=CR es idéntica al default (TIME_ZONE)");
+  assert(horaClienteCR === horaPorDefecto, "horaDisplay con clientTimezone=CR es idéntica al default (TIME_ZONE)");
+  assert(horaClienteCR === "13:30", "la hora se muestra sin corrimiento para un cliente en Costa Rica");
+})();
+
+// ── Test 20: correo al cliente en EEUU, cruzando la medianoche → cambia fecha Y hora ────
+(function test20() {
+  console.log("Test 20: fecha/hora del correo con clientTimezone=America/New_York, cruzando medianoche");
+  const { sandbox } = freshCtx();
+  // 23:00 del viernes 24 de julio 2026 en Costa Rica (UTC-6) = 01:00 del sábado 25 de julio
+  // en America/New_York (UTC-4 en julio, EDT) — cruce real de día calendario.
+  const instant = sandbox.parseSheetDateTime("2026-07-24", "23:00");
+  const fechaCR = sandbox.formatFechaDisplay(instant, "en", "America/Costa_Rica");
+  const horaCR = sandbox.formatHoraDisplay(instant, "America/Costa_Rica");
+  const fechaNY = sandbox.formatFechaDisplay(instant, "en", "America/New_York");
+  const horaNY = sandbox.formatHoraDisplay(instant, "America/New_York");
+  assert(horaCR === "23:00", "en Costa Rica (zona del negocio) la hora sigue siendo 23:00, sin cambios");
+  assert(fechaCR.includes("FRIDAY") && fechaCR.includes("24"), "en Costa Rica la fecha sigue siendo viernes 24 de julio");
+  assert(horaNY === "01:00", "para el cliente en America/New_York la hora local correcta es 01:00 (cruzó medianoche)");
+  assert(fechaNY.includes("SATURDAY") && fechaNY.includes("25"), "para el cliente en America/New_York la FECHA también avanza a sábado 25 (no solo la hora)");
+  assert(fechaNY !== fechaCR, "fechaDisplay del cliente es distinta a la de Costa Rica — el día de la semana sí cambia con el cruce de zona horaria");
+})();
+
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
 process.exit(failed > 0 ? 1 : 0);

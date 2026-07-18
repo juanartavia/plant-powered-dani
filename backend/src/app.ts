@@ -1693,6 +1693,7 @@ function bookTimeslot(
       esVirtual: type === "pilates" ? true : modalidad === "virtual",
       meetLink: meetLinkForEmail,
       linkReagendar,
+      clientTimezone,
     });
     GmailApp.sendEmail(email, subject, "", { htmlBody });
   } catch (e) {
@@ -2199,18 +2200,25 @@ const MESES_ES = ["", "ENERO", "FEBRERO", "MARZO", "ABRIL", "MAYO", "JUNIO", "JU
 const DIAS_SEMANA_EN = ["", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
 const MESES_EN = ["", "JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"];
 
-// fecha/hora aquí son de una CITA REAL (no fecha_nacimiento), así que se formatean en
-// TIME_ZONE, nunca en UTC — misma regla que el resto del proyecto (nota técnica #29).
+// El correo de confirmación debe mostrarle al CLIENTE la fecha/hora en SU zona horaria
+// (clientTimezone), no en TIME_ZONE — a diferencia del evento de Calendar (fuente de verdad
+// para Dani/Ali/instructora), que sigue siempre en TIME_ZONE sin cambios. Por eso estas dos
+// funciones reciben el INSTANTE real (Date, ya parseado desde fecha+hora del Sheet con
+// parseSheetDateTime, que sí entiende que esos strings están en TIME_ZONE — nunca
+// reconstruido a mano con `new Date(...)`, que asumiría la zona del servidor y produciría un
+// corrimiento incorrecto, mismo tipo de bug que la nota técnica #29 pero en la dirección
+// contraria) más la zona en la que hay que MOSTRARLO, en vez de recibir el string ya fijado
+// a TIME_ZONE. `zona` por defecto es TIME_ZONE para no cambiar el comportamiento de
+// testSendConfirmationEmails() (US-11), que no pasa clientTimezone.
 // Los nombres de día/mes se arman a mano a partir de números (patrones "u"/"d"/"M" de
 // Utilities.formatDate, que son numéricos y no dependen del locale del proyecto de Script),
 // en vez de usar los nombres de mes/día que da formatDate, que SÍ dependen del locale del
 // proyecto (un solo locale de Script no puede servir ES y EN a la vez de forma confiable).
-function formatFechaDisplay(fecha: string, idioma: "es" | "en"): string {
-  const date = Utilities.parseDate(fecha, TIME_ZONE, "yyyy-MM-dd");
-  const diaSemana = Number(Utilities.formatDate(date, TIME_ZONE, "u")); // 1=lunes...7=domingo
-  const dia = Utilities.formatDate(date, TIME_ZONE, "d");
-  const mes = Number(Utilities.formatDate(date, TIME_ZONE, "M")); // 1-12
-  const anio = Utilities.formatDate(date, TIME_ZONE, "yyyy");
+function formatFechaDisplay(instant: Date, idioma: "es" | "en", zona: string = TIME_ZONE): string {
+  const diaSemana = Number(Utilities.formatDate(instant, zona, "u")); // 1=lunes...7=domingo
+  const dia = Utilities.formatDate(instant, zona, "d");
+  const mes = Number(Utilities.formatDate(instant, zona, "M")); // 1-12
+  const anio = Utilities.formatDate(instant, zona, "yyyy");
 
   if (idioma === "en") {
     return `${DIAS_SEMANA_EN[diaSemana]}, ${MESES_EN[mes]} ${dia}, ${anio}`;
@@ -2218,28 +2226,39 @@ function formatFechaDisplay(fecha: string, idioma: "es" | "en"): string {
   return `${DIAS_SEMANA_ES[diaSemana]} ${dia} DE ${MESES_ES[mes]} DEL ${anio}`;
 }
 
-function formatHoraDisplay(hora: string): string {
-  return hora;
+function formatHoraDisplay(instant: Date, zona: string = TIME_ZONE): string {
+  return Utilities.formatDate(instant, zona, "HH:mm");
 }
 
 function renderConfirmationEmail(params: {
   tipoCita: "initial" | "followup" | "measurement" | "pilates";
   idioma: "es" | "en";
   nombreApellido: string;
-  fecha: string; // yyyy-MM-dd, hora del negocio (TIME_ZONE)
-  hora: string; // HH:mm, hora del negocio (TIME_ZONE)
+  fecha: string; // yyyy-MM-dd, hora del negocio (TIME_ZONE) — instante real de la cita
+  hora: string; // HH:mm, hora del negocio (TIME_ZONE) — instante real de la cita
   esVirtual: boolean; // pilates siempre true; solo importa para nutrición
   meetLink?: string;
   linkReagendar: string;
+  // Zona horaria en la que se le MUESTRA fecha/hora al cliente en el correo — no afecta el
+  // instante real de la cita (fecha/hora siguen siendo TIME_ZONE, la fuente de verdad del
+  // Sheet/Calendar), solo cómo se formatea para lectura. Default TIME_ZONE para no romper
+  // testSendConfirmationEmails() (US-11), que no la pasa.
+  clientTimezone?: string;
 }): { subject: string; htmlBody: string } {
   const isPilates = params.tipoCita === "pilates";
   const servicio = isPilates ? "pilates" : "nutricion";
   const templateFile = TEMPLATE_FILE_BY_TIPO_IDIOMA[servicio][params.idioma];
   const template = HtmlService.createTemplateFromFile(templateFile);
 
+  // fecha/hora vienen en TIME_ZONE (así se guardan en el Sheet) — parseSheetDateTime ya sabe
+  // interpretarlas como tal (Utilities.parseDate con TIME_ZONE explícito, nunca `new Date()`
+  // a mano) para reconstruir el instante real, y desde ahí formatFechaDisplay/formatHoraDisplay
+  // lo muestran en la zona del CLIENTE.
+  const apptInstant = parseSheetDateTime(params.fecha, params.hora);
+  const displayZone = params.clientTimezone || TIME_ZONE;
   template.nombre_apellido = params.nombreApellido;
-  template.fechaDisplay = formatFechaDisplay(params.fecha, params.idioma);
-  template.horaDisplay = formatHoraDisplay(params.hora);
+  template.fechaDisplay = formatFechaDisplay(apptInstant, params.idioma, displayZone);
+  template.horaDisplay = formatHoraDisplay(apptInstant, displayZone);
   template.linkReagendar = params.linkReagendar;
   template.meetLink = params.meetLink || "";
 

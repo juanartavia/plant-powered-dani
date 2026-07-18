@@ -5,34 +5,60 @@
 
 const TZ_OFFSET_HOURS = 6; // Costa Rica = UTC-6 todo el año (sin DST)
 
-function crLocalFromUtc(date) {
-  // Devuelve un Date cuyos campos getUTC* representan la hora local de Costa Rica.
-  return new Date(date.getTime() - TZ_OFFSET_HOURS * 3600000);
-}
-
 function pad(n, len) {
   len = len || 2;
   return String(n).padStart(len, "0");
 }
 
-function formatDate(date, _tz, pattern) {
-  const d = crLocalFromUtc(date);
-  const y = d.getUTCFullYear();
-  const mo = pad(d.getUTCMonth() + 1);
-  const da = pad(d.getUTCDate());
-  const h = pad(d.getUTCHours());
-  const mi = pad(d.getUTCMinutes());
-  const s = pad(d.getUTCSeconds());
+const WEEKDAY_ISO = { Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6, Sun: 7 };
+
+// Extrae los componentes de `date` (un instante real) tal como se ven en la zona horaria
+// `tz` — soporta cualquier IANA válido (America/Costa_Rica, UTC, America/New_York, etc.),
+// necesario desde que el correo de confirmación (US-12, zona horaria del cliente) empezó a
+// formatear el mismo instante en distintas zonas, no solo Costa Rica.
+function getZonedParts(date, tz) {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+    weekday: "short",
+  });
+  const map = {};
+  for (const part of dtf.formatToParts(date)) map[part.type] = part.value;
+  let hour = Number(map.hour);
+  if (hour === 24) hour = 0; // algunos motores ICU devuelven "24" para medianoche en hour12:false
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day),
+    hour,
+    minute: Number(map.minute),
+    second: Number(map.second),
+    weekday: WEEKDAY_ISO[map.weekday], // 1=lunes...7=domingo, mismo criterio que Utilities.formatDate(..., "u")
+  };
+}
+
+function formatDate(date, tz, pattern) {
+  const p = getZonedParts(date, tz || "America/Costa_Rica");
+  const y = p.year, mo = pad(p.month), da = pad(p.day), h = pad(p.hour), mi = pad(p.minute), s = pad(p.second);
   if (pattern === "yyyy-MM-dd") return `${y}-${mo}-${da}`;
   if (pattern === "HH:mm") return `${h}:${mi}`;
+  if (pattern === "yyyy") return String(y);
+  if (pattern === "M") return String(p.month);
+  if (pattern === "d") return String(p.day);
+  if (pattern === "u") return String(p.weekday);
   if (pattern === "@") return "@"; // no usado como pattern de fecha real
   // yyyy-MM-dd'T'HH:mm:ss / "yyyy-MM-dd HH:mm:ss" / cualquier otro con todos los campos
   return `${y}-${mo}-${da} ${h}:${mi}:${s}`;
 }
 
-function parseDate(str, _tz, _pattern) {
+function parseDate(str, tz, _pattern) {
   // Extrae los dígitos en orden (funciona para "yyyy-MM-dd HH:mm" y variantes similares,
-  // que son los únicos patrones que parseSheetDateTime usa en app.ts).
+  // que son los únicos patrones que parseSheetDateTime usa en app.ts). Solo se llama con
+  // TIME_ZONE (America/Costa_Rica, offset fijo UTC-6 sin DST) en todo el proyecto real — el
+  // parseo genérico de otra zona no hace falta hoy, pero se deja el parámetro documentado
+  // para no ocultar la limitación si algún día se usa con otra zona.
   const nums = (str.match(/\d+/g) || []).map(Number);
   const [y, mo, da, h = 0, mi = 0, s = 0] = nums;
   const utcMs = Date.UTC(y, mo - 1, da, h, mi, s) + TZ_OFFSET_HOURS * 3600000;
