@@ -1401,8 +1401,13 @@ function createCalendarEventWithMeet(
     };
   }
 
+  // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
+  // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
+  // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
+  // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
+  // Google en el futuro, basta con cambiar este valor a 'all'.
   const created = Calendar.Events!.insert(eventResource, calendarId, {
-    sendUpdates: "all",
+    sendUpdates: "none",
     conferenceDataVersion: wantsMeet ? 1 : 0,
   });
 
@@ -1539,7 +1544,12 @@ function bookPilatesCalendarEvent(
     if (eventId) {
       const existingEvent = Calendar.Events!.get(calendarId, eventId);
       const attendees = (existingEvent.attendees || []).concat([{ email }]);
-      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "all" });
+      // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
+      // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
+      // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
+      // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
+      // Google en el futuro, basta con cambiar este valor a 'all'.
+      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "none" });
     } else {
       const created = createCalendarEventWithMeet(
         calendarId,
@@ -1820,7 +1830,12 @@ function leavePilatesSlot(fecha: string, hora: string, email: string): void {
           const attendees = (existingEvent.attendees || []).filter(
             (a) => (a.email || "").trim().toLowerCase() !== email.trim().toLowerCase()
           );
-          Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "all" });
+          // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
+      // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
+      // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
+      // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
+      // Google en el futuro, basta con cambiar este valor a 'all'.
+      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "none" });
         } catch (e) {
           Logger.log(`leavePilatesSlot: error removiendo invitado del evento ${eventId}: ${(e as Error).message}`);
         }
@@ -1896,7 +1911,12 @@ function joinPilatesSlot(
     if (eventId) {
       const existingEvent = Calendar.Events!.get(calendarId, eventId);
       const attendees = (existingEvent.attendees || []).concat([{ email }]);
-      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "all" });
+      // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
+      // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
+      // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
+      // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
+      // Google en el futuro, basta con cambiar este valor a 'all'.
+      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "none" });
     } else {
       const created = createCalendarEventWithMeet(
         calendarId,
@@ -2036,6 +2056,11 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
       const sheet = getSheet("Nutrición");
       const eventId = String(sheet.getRange(booking.row, NUTRICION_EVENT_ID_COL).getValue() || "");
       if (eventId) {
+        // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
+        // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
+        // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
+        // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
+        // Google en el futuro, basta con cambiar este valor a 'all'.
         Calendar.Events!.patch(
           {
             start: { dateTime: newStart.toISOString(), timeZone: TIME_ZONE },
@@ -2043,7 +2068,7 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
           },
           CALENDARS[0],
           eventId,
-          { sendUpdates: "all" }
+          { sendUpdates: "none" }
         );
       } else {
         // Cita creada antes de US-06 (antes de correr addEventIdColumnToNutricion()): no hay

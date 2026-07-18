@@ -1,7 +1,7 @@
 # CLAUDE.md — Plant Powered by Dani
 ## Sistema de Agendamiento Automatizado
 > Documento vivo — actualizar conforme avanza el desarrollo
-> Última actualización: 17 julio 2026, noche — **US-11 (correo de confirmación) en progreso, render verificado, envío real pendiente de confirmar.** Deploy activo: v24.
+> Última actualización: 18 julio 2026 — **Invitación nativa de Google Calendar suprimida** (`sendUpdates: 'none'`) en creación/actualización de eventos — el cliente ya no debe recibir el correo nativo de Calendar, que exponía cédula/fecha de nacimiento en texto plano. US-11 (correo de confirmación) sigue en progreso, render verificado, envío real pendiente de confirmar. Deploy activo: v25.
 
 ---
 
@@ -654,7 +654,8 @@ Clase de Pilates (60 min)
 | v21 | 17 jul | **US-16 Done** (fix mes actual). Dark mode y footer eliminados. Pilates restringido a sábados 10am. Validado antes del demo con la dueña del producto (3pm). |
 | v22 | 17 jul (tras el demo) | **US-29 revisada** (edad mínima 15 años en vez de 13, con doble capa frontend+backend, sin escritura si se bloquea). Idioma eliminado del Paso 3 (solo Paso 1). Banderas de idioma agregadas (primera versión, emoji). Pilates: ventana mínima cambiada de 48hrs a 12hrs. 4 pedidos de Dani en el demo, todos implementados. |
 | v23 | 17 jul (noche) | **Fix de banderas:** reemplazadas de emoji Unicode (no se renderizaban en Windows) a SVG reales con dropdown personalizado. Corregido Costa Rica → España para el idioma español. Verificado visualmente con Playwright antes de deployar. |
-| v24 | 17 jul (noche) | **US-11 en progreso** (solo correo de confirmación): `renderConfirmationEmail()` + helpers de fecha/hora + 4 plantillas de Gabriela copiadas a `backend/templates/`. Scope `gmail.send` agregado al manifest. Render verificado localmente (visor con las 4 combinaciones); **envío real por GmailApp aún sin confirmar** — falta correr `testSendConfirmationEmails()` desde el editor. **Deploy activo.** |
+| v24 | 17 jul (noche) | **US-11 en progreso** (solo correo de confirmación): `renderConfirmationEmail()` + helpers de fecha/hora + 4 plantillas de Gabriela copiadas a `backend/templates/`. Scope `gmail.send` agregado al manifest. Render verificado localmente (visor con las 4 combinaciones); **envío real por GmailApp aún sin confirmar** — falta correr `testSendConfirmationEmails()` desde el editor. |
+| v25 | 18 jul | **Invitación nativa de Google Calendar suprimida** (ajuste puntual, sin número de US): `sendUpdates: "all"` → `"none"` en los 5 `Calendar.Events.insert()`/`.patch()` que crean o actualizan un evento con invitados (`createCalendarEventWithMeet`, alta/baja de invitado en pilates ×3, reprogramar nutrición). El cliente sigue como invitado del evento (no se le saca de `attendees`) — solo se suprime la notificación nativa, que exponía cédula/fecha de nacimiento en texto plano desde la descripción del evento. `Calendar.Events.remove()` (cancelar cita/eliminar evento de pilates) quedó **deliberadamente fuera de este cambio** — el pedido original solo hablaba de insert/patch; revisar si también debe pasar a `'none'` antes de production. Sin dependencia encontrada de Dani/Ali/instructora en la invitación nativa (ven el evento porque son dueños del calendario, no invitados; sus notificaciones internas son un TODO separado de RF-2.3/RF-2.5). 48/48 tests. **Deploy activo.** |
 
 ---
 
