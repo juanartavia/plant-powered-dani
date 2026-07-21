@@ -1679,18 +1679,20 @@ function bookTimeslot(
   // de envío de correo (cuota de Gmail, error transitorio, etc.) — try/catch propio, sin
   // relanzar, solo con un log para revisión manual (no hay columna dedicada en el Sheet para
   // esto todavía; agregar una es trabajo de schema fuera del alcance de esta tarjeta).
+  const fechaCita = Utilities.formatDate(startTime, TIME_ZONE, "yyyy-MM-dd");
+  const horaCita = Utilities.formatDate(startTime, TIME_ZONE, "HH:mm");
+  const esVirtualCita = type === "pilates" ? true : modalidad === "virtual";
+
   try {
     const idioma: "es" | "en" = language === "en" ? "en" : "es";
     const linkReagendar = `${ScriptApp.getService().getUrl()}?token=${token}`;
-    const fechaCita = Utilities.formatDate(startTime, TIME_ZONE, "yyyy-MM-dd");
-    const horaCita = Utilities.formatDate(startTime, TIME_ZONE, "HH:mm");
     const { subject, htmlBody } = renderConfirmationEmail({
       tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
       nombre,
       fecha: fechaCita,
       hora: horaCita,
-      esVirtual: type === "pilates" ? true : modalidad === "virtual",
+      esVirtual: esVirtualCita,
       meetLink: meetLinkForEmail,
       linkReagendar,
       clientTimezone,
@@ -1699,6 +1701,25 @@ function bookTimeslot(
   } catch (e) {
     Logger.log(`bookTimeslot: fallo al enviar correo de confirmación a ${email} (token ${token}): ${(e as Error).message}`);
   }
+
+  // US-13/US-30 — Notificación interna a Dani/Ali. Igual que el correo de confirmación de
+  // arriba: su propio manejo de error vive dentro de sendNotificacionInterna, así que un
+  // fallo aquí nunca revierte ni bloquea el agendamiento ya confirmado.
+  sendNotificacionInterna({
+    esPilates: type === "pilates",
+    tipoAccion: "agendada",
+    tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
+    nombreCompleto: `${nombre} ${apellido}`,
+    correo: email,
+    telefono: phone,
+    idiomaDisplay: language === "en" ? "English" : "Español",
+    fecha: fechaCita,
+    hora: horaCita,
+    modalidadDisplay: type === "pilates" ? undefined : MODALIDAD_DISPLAY.es[modalidad === "virtual" ? "virtual" : "presencial"],
+    esVirtual: esVirtualCita,
+    meetLink: meetLinkForEmail,
+    token,
+  });
 
   return token;
 }
@@ -2013,6 +2034,28 @@ function cancelBooking(token: string): { lateCancellation: boolean } {
     resetClientLateCancellationCounter(booking.correo);
   }
 
+  // US-13/US-30 — Notificación interna general de "cita cancelada". Siempre se envía, sin
+  // importar si fue tardía o no: notifyLateCancellation (arriba) es un aviso ADICIONAL y
+  // específico de tardanza (hoy sigue siendo un stub sin envío real, ver su propio
+  // comentario), no un reemplazo de esta notificación general — cuando notifyLateCancellation
+  // se implemente de verdad, Dani/Ali recibirían ambos correos para una cancelación tardía,
+  // cada uno con su propósito (uno informa la cancelación en sí, el otro alerta del patrón de
+  // tardanza para el flag de requiere_pago).
+  sendNotificacionInterna({
+    esPilates: booking.sheetName === "Pilates",
+    tipoAccion: "cancelada",
+    tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
+    nombreCompleto: `${booking.nombre} ${booking.apellido}`,
+    correo: booking.correo,
+    telefono: booking.telefono,
+    idiomaDisplay: booking.language === "en" ? "English" : "Español",
+    fecha: booking.fecha,
+    hora: booking.hora,
+    modalidadDisplay: booking.sheetName === "Pilates" ? undefined : MODALIDAD_DISPLAY.es[booking.modalidad === "virtual" ? "virtual" : "presencial"],
+    esVirtual: booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual",
+    token,
+  });
+
   return { lateCancellation };
 }
 
@@ -2131,6 +2174,30 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   }
 
   resetClientLateCancellationCounter(booking.correo);
+
+  // US-13/US-30 — Notificación interna de "cita reagendada", con la fecha/hora NUEVA (no la
+  // anterior). meetLink se relee del Sheet/Cupos_Pilates después de la actualización de
+  // arriba: el evento real no cambia de link al moverse de horario (Calendar.Events.patch
+  // conserva el mismo meet_link), solo cambia su fecha/hora.
+  const meetLinkForNotif = booking.sheetName === "Pilates"
+    ? findPilatesMeetLink(newFecha, newHora)
+    : String(getSheet("Nutrición").getRange(booking.row, NUTRICION_MEET_LINK_COL).getValue() || "");
+  sendNotificacionInterna({
+    esPilates: booking.sheetName === "Pilates",
+    tipoAccion: "reagendada",
+    tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
+    nombreCompleto: `${booking.nombre} ${booking.apellido}`,
+    correo: booking.correo,
+    telefono: booking.telefono,
+    idiomaDisplay: booking.language === "en" ? "English" : "Español",
+    fecha: newFecha,
+    hora: newHora,
+    modalidadDisplay: booking.sheetName === "Pilates" ? undefined : MODALIDAD_DISPLAY.es[booking.modalidad === "virtual" ? "virtual" : "presencial"],
+    esVirtual: booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual",
+    meetLink: meetLinkForNotif,
+    token,
+  });
+
   return token;
 }
 
@@ -2414,5 +2481,227 @@ function testSendConfirmationEmails(): void {
     const { subject, htmlBody } = renderConfirmationEmail(caso);
     GmailApp.sendEmail(destinatario, `[TEST US-11] ${subject}`, "", { htmlBody });
     Logger.log(`Enviado: ${caso.tipoCita}/${caso.idioma}/esVirtual=${caso.esVirtual}`);
+  });
+}
+
+// ============================================================================
+// US-13 / US-30 — Notificación interna a Dani/Ali: agendar, reagendar, cancelar
+// Un solo template (notificacion_interna_nueva_cita.html, entregado por Gabriela para el
+// caso "agendada") sirve para los 3 casos gracias a la extensión experimental de
+// `tipoAccion` agregada directamente en el HTML (ver comentario dentro del archivo).
+// ============================================================================
+
+// TODO: reemplazar por los correos reales de Dani y Ali antes de producción (Sprint 3).
+const NOTIFICACION_INTERNA_DESTINATARIOS = [
+  "plantpoweredani.testing@gmail.com", // Dani (placeholder)
+  "plantpoweredani.testing@gmail.com", // Ali / secretaria (placeholder)
+];
+
+// Solo nutrición necesita distinguir el tipo de cita en el correo interno (el título de
+// pilates ya lo dice). Un solo idioma (español) — a diferencia de renderConfirmationEmail,
+// este correo es interno y Dani/Ali son hispanohablantes, así que no hace falta la variable
+// `idioma` que sí tienen los correos de cliente.
+const TIPO_CITA_LABEL_INTERNO: Record<string, string> = {
+  initial: "Inicial",
+  followup: "Seguimiento",
+  measurement: "Solo medición",
+};
+
+// BORRADOR — pendiente aprobación Gabi/Dani, mismo criterio que SUBJECTS_CONFIRMACION.
+function buildNotificacionInternaSubject(
+  esPilates: boolean,
+  tipoAccion: "agendada" | "reagendada" | "cancelada",
+  nombreCompleto: string
+): string {
+  const sustantivo = esPilates ? "pilates" : "nutrición";
+  const verbo: Record<string, string> = { agendada: "Nueva", reagendada: "Reagendada", cancelada: "Cancelada" };
+  return `${verbo[tipoAccion]}: cita de ${sustantivo} — ${nombreCompleto}`;
+}
+
+// URL directa al spreadsheet de registro (variable `sheetLink` del template) — construida a
+// partir del mismo SPREADSHEET_ID que usa getSheet(), no una constante separada que se
+// pudiera desincronizar si algún día cambia el spreadsheet de producción.
+function getSpreadsheetUrl(): string {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("SPREADSHEET_ID no configurado. Ejecutar initializeSheets() primero.");
+  }
+  return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`;
+}
+
+// Busca el meet_link de un slot de pilates en Cupos_Pilates por fecha/hora — usado por la
+// notificación interna al reagendar, donde el evento ya existía y solo cambió de horario
+// (joinPilatesSlot no devuelve el link directamente en ese flujo).
+function findPilatesMeetLink(fecha: string, hora: string): string {
+  const cuposSheet = getSheet("Cupos_Pilates");
+  const cuposData = cuposSheet.getDataRange().getValues();
+  for (let i = 1; i < cuposData.length; i++) {
+    const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
+    const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
+    if (rowFecha === fecha && rowHora === hora) {
+      return String(cuposData[i][CUPOS_PILATES_MEET_LINK_COL - 1] || "");
+    }
+  }
+  return "";
+}
+
+function renderNotificacionInterna(params: {
+  esPilates: boolean;
+  tipoAccion: "agendada" | "reagendada" | "cancelada";
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  nombreCompleto: string;
+  correo: string;
+  telefono: string;
+  idiomaDisplay: string;
+  fecha: string; // yyyy-MM-dd, TIME_ZONE — instante real de la cita (NUEVA si reagendada)
+  hora: string; // HH:mm, TIME_ZONE
+  modalidadDisplay?: string; // solo nutrición
+  esVirtual?: boolean; // solo nutrición; pilates siempre true
+  meetLink?: string;
+  token: string;
+}): { subject: string; htmlBody: string } {
+  const template = HtmlService.createTemplateFromFile("notificacion_interna_nueva_cita");
+  // Este correo es interno (Dani/Ali) — SIEMPRE TIME_ZONE, nunca clientTimezone (nota #29 del
+  // CLAUDE.md), a diferencia del correo de confirmación del cliente (renderConfirmationEmail),
+  // que sí usa la zona del cliente para mostrarle su propia hora local.
+  const apptInstant = parseSheetDateTime(params.fecha, params.hora);
+
+  template.esPilates = params.esPilates;
+  template.tipoAccion = params.tipoAccion;
+  template.nombreCompleto = params.nombreCompleto;
+  template.correo = params.correo;
+  template.telefono = params.telefono;
+  template.idiomaDisplay = params.idiomaDisplay;
+  template.tipoCitaLabel = params.esPilates ? "" : (TIPO_CITA_LABEL_INTERNO[params.tipoCita] || "");
+  template.fechaDisplay = formatFechaDisplay(apptInstant, "es", TIME_ZONE);
+  template.horaDisplay = formatHoraDisplay(apptInstant, TIME_ZONE);
+  template.modalidadDisplay = params.modalidadDisplay || "";
+  template.esVirtual = !!params.esVirtual;
+  template.meetLink = params.meetLink || "";
+  template.token = params.token;
+  template.direccion = CONSULTORIO_DIRECCION;
+  template.mapsLink = CONSULTORIO_MAPS_LINK;
+  template.wazeLink = CONSULTORIO_WAZE_LINK;
+  template.sheetLink = getSpreadsheetUrl();
+
+  const subject = buildNotificacionInternaSubject(params.esPilates, params.tipoAccion, params.nombreCompleto);
+  return { subject, htmlBody: template.evaluate().getContent() };
+}
+
+// Envía la notificación interna a Dani/Ali. El try/catch vive AQUÍ (no en cada uno de los 3
+// puntos de llamada en bookTimeslot/rescheduleBooking/cancelBooking) para no triplicar el
+// mismo manejo de error — un fallo de este correo nunca debe revertir ni bloquear la acción
+// real de agendar/reagendar/cancelar, mismo criterio que el correo de confirmación al
+// cliente (US-12). Los destinatarios se unen en un solo `to` separado por comas en vez de
+// un GmailApp.sendEmail por destinatario, para no duplicar el envío mientras ambos
+// placeholders sigan apuntando al mismo correo de testing.
+function sendNotificacionInterna(params: Parameters<typeof renderNotificacionInterna>[0]): void {
+  try {
+    const { subject, htmlBody } = renderNotificacionInterna(params);
+    GmailApp.sendEmail(NOTIFICACION_INTERNA_DESTINATARIOS.join(","), subject, "", { htmlBody });
+  } catch (e) {
+    Logger.log(`sendNotificacionInterna: fallo al enviar notificación interna (token ${params.token}, tipoAccion ${params.tipoAccion}): ${(e as Error).message}`);
+  }
+}
+
+// Función de testing manual (US-13/US-30) — genera las 6 combinaciones (nutrición/pilates x
+// agendada/reagendada/cancelada) y las envía por GmailApp a la cuenta de testing para
+// inspección visual real del badge/título por tipoAccion. Correr manualmente desde el editor
+// de Apps Script; no forma parte de ningún flujo automático (eso ya está cableado en
+// bookTimeslot/rescheduleBooking/cancelBooking).
+function testSendNotificacionInterna(): void {
+  const destinatario = Session.getActiveUser().getEmail();
+
+  const casos: Array<Parameters<typeof renderNotificacionInterna>[0]> = [
+    {
+      esPilates: false,
+      tipoAccion: "agendada",
+      tipoCita: "initial",
+      nombreCompleto: "María Fernández",
+      correo: "maria@example.com",
+      telefono: "8888-8888",
+      idiomaDisplay: "Español",
+      fecha: "2026-07-25",
+      hora: "13:30",
+      modalidadDisplay: MODALIDAD_DISPLAY.es.virtual,
+      esVirtual: true,
+      meetLink: "https://meet.google.com/fake-link-test",
+      token: "test-token-1234",
+    },
+    {
+      esPilates: false,
+      tipoAccion: "reagendada",
+      tipoCita: "followup",
+      nombreCompleto: "Jane Doe",
+      correo: "jane@example.com",
+      telefono: "8777-7777",
+      idiomaDisplay: "English",
+      fecha: "2026-07-26",
+      hora: "09:00",
+      modalidadDisplay: MODALIDAD_DISPLAY.es.presencial,
+      esVirtual: false,
+      token: "test-token-5678",
+    },
+    {
+      esPilates: false,
+      tipoAccion: "cancelada",
+      tipoCita: "measurement",
+      nombreCompleto: "Carlos Ramírez",
+      correo: "carlos@example.com",
+      telefono: "8666-6666",
+      idiomaDisplay: "Español",
+      fecha: "2026-07-27",
+      hora: "11:00",
+      modalidadDisplay: MODALIDAD_DISPLAY.es.presencial,
+      esVirtual: false,
+      token: "test-token-9012",
+    },
+    {
+      esPilates: true,
+      tipoAccion: "agendada",
+      tipoCita: "pilates",
+      nombreCompleto: "Ana López",
+      correo: "ana@example.com",
+      telefono: "8555-5555",
+      idiomaDisplay: "Español",
+      fecha: "2026-07-25",
+      hora: "10:00",
+      esVirtual: true,
+      meetLink: "https://meet.google.com/fake-link-pilates",
+      token: "test-token-3456",
+    },
+    {
+      esPilates: true,
+      tipoAccion: "reagendada",
+      tipoCita: "pilates",
+      nombreCompleto: "John Smith",
+      correo: "john@example.com",
+      telefono: "8444-4444",
+      idiomaDisplay: "English",
+      fecha: "2026-08-01",
+      hora: "10:00",
+      esVirtual: true,
+      meetLink: "https://meet.google.com/fake-link-pilates-2",
+      token: "test-token-7890",
+    },
+    {
+      esPilates: true,
+      tipoAccion: "cancelada",
+      tipoCita: "pilates",
+      nombreCompleto: "Laura Jiménez",
+      correo: "laura@example.com",
+      telefono: "8333-3333",
+      idiomaDisplay: "Español",
+      fecha: "2026-07-25",
+      hora: "10:00",
+      esVirtual: true,
+      token: "test-token-1122",
+    },
+  ];
+
+  casos.forEach((caso) => {
+    const { subject, htmlBody } = renderNotificacionInterna(caso);
+    GmailApp.sendEmail(destinatario, `[TEST US-13/US-30] ${subject}`, "", { htmlBody });
+    Logger.log(`Enviado: esPilates=${caso.esPilates}/tipoAccion=${caso.tipoAccion}/tipo=${caso.tipoCita}`);
   });
 }

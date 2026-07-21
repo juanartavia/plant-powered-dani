@@ -442,10 +442,12 @@ function clientRecord(overrides) {
     "1990-01-01", "es", "presencial", "America/Costa_Rica"
   );
   const sent = sandbox.__sentEmails || [];
-  assert(sent.length === 1, "se envió exactamente 1 correo");
-  assert(sent[0].to === "sofia-correo@test.com", "el correo va dirigido al cliente que agendó");
+  assert(sent.length === 2, "se envían exactamente 2 correos (confirmación al cliente + notificación interna US-13/US-30)");
+  assert(sent[0].to === "sofia-correo@test.com", "el correo de confirmación va dirigido al cliente que agendó");
   assert(typeof sent[0].subject === "string" && sent[0].subject.length > 0, "el correo trae un subject no vacío");
   assert(sent[0].options && sent[0].options.htmlBody && sent[0].options.htmlBody.length > 0, "el correo trae htmlBody no vacío");
+  assert(sent[1].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna va a los destinatarios placeholder (Dani/Ali)");
+  assert(sent[1].subject.startsWith("Nueva:"), "el subject de la notificación interna usa el verbo 'Nueva' al agendar");
 })();
 
 // ── Test 17: bookTimeslot envía correo de confirmación en pilates (idioma EN) ───────────
@@ -457,8 +459,9 @@ function clientRecord(overrides) {
     "1990-01-01", "en", "virtual", "America/Costa_Rica"
   );
   const sent = sandbox.__sentEmails || [];
-  assert(sent.length === 1, "se envió exactamente 1 correo");
-  assert(sent[0].to === "kelly-correo@test.com", "el correo va dirigido al cliente que se inscribió");
+  assert(sent.length === 2, "se envían exactamente 2 correos (confirmación al cliente + notificación interna US-13/US-30)");
+  assert(sent[0].to === "kelly-correo@test.com", "el correo de confirmación va dirigido al cliente que se inscribió");
+  assert(sent[1].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna va a los destinatarios placeholder (Dani/Ali)");
 })();
 
 // ── Test 18: un fallo al enviar el correo NO revierte ni bloquea el agendamiento ────────
@@ -513,6 +516,107 @@ function clientRecord(overrides) {
   assert(horaNY === "01:00", "para el cliente en America/New_York la hora local correcta es 01:00 (cruzó medianoche)");
   assert(fechaNY.includes("SATURDAY") && fechaNY.includes("25"), "para el cliente en America/New_York la FECHA también avanza a sábado 25 (no solo la hora)");
   assert(fechaNY !== fechaCR, "fechaDisplay del cliente es distinta a la de Costa Rica — el día de la semana sí cambia con el cruce de zona horaria");
+})();
+
+// ── Test 21: cancelBooking envía notificación interna (US-13/US-30, tipoAccion=cancelada) ─
+(function test21() {
+  console.log("Test 21: cancelBooking envía notificación interna con tipoAccion=cancelada");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Fabricio", "Solano", "fabricio@test.com", "8888-7000", "cedula", "1-3333-0001",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  sandbox.__sentEmails = []; // limpia los correos del agendamiento para aislar los de cancelBooking
+  sandbox.cancelBooking(token);
+  const sent = sandbox.__sentEmails || [];
+  assert(sent.length === 1, "cancelBooking envía exactamente 1 correo (la notificación interna — el cliente no recibe correo de cancelación en esta tarjeta)");
+  assert(sent[0].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna de cancelación va a los destinatarios placeholder (Dani/Ali)");
+  assert(sent[0].subject.startsWith("Cancelada:"), "el subject usa el verbo 'Cancelada'");
+})();
+
+// ── Test 22: rescheduleBooking envía notificación interna (tipoAccion=reagendada) ──────────
+(function test22() {
+  console.log("Test 22: rescheduleBooking envía notificación interna con tipoAccion=reagendada");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "followup", isoInHours(72), "Gina", "Vega", "gina@test.com", "8888-7001", "cedula", "1-3333-0002",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  sandbox.__sentEmails = []; // limpia los correos del agendamiento para aislar los de rescheduleBooking
+  sandbox.rescheduleBooking(token, isoInHours(96), "America/Costa_Rica");
+  const sent = sandbox.__sentEmails || [];
+  assert(sent.length === 1, "rescheduleBooking envía exactamente 1 correo (la notificación interna)");
+  assert(sent[0].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna de reagendamiento va a los destinatarios placeholder (Dani/Ali)");
+  assert(sent[0].subject.startsWith("Reagendada:"), "el subject usa el verbo 'Reagendada'");
+})();
+
+// ── Test 23: pilates también dispara notificación interna al agendar/reagendar/cancelar ───
+(function test23() {
+  console.log("Test 23: notificación interna se dispara igual para pilates (los 3 casos)");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "pilates", isoInHours(200), "Hugo", "Solis", "hugo@test.com", "8888-7002", "cedula", "1-3333-0003",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const sentAgendar = sandbox.__sentEmails || [];
+  assert(sentAgendar.length === 2, "agendar pilates envía 2 correos (confirmación al cliente + notificación interna)");
+
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, isoInHours(400), "America/Costa_Rica");
+  const sentReagendar = sandbox.__sentEmails || [];
+  assert(sentReagendar.length === 1 && sentReagendar[0].subject.startsWith("Reagendada:"), "reagendar pilates dispara la notificación interna de reagendamiento");
+
+  sandbox.__sentEmails = [];
+  sandbox.cancelBooking(token);
+  const sentCancelar = sandbox.__sentEmails || [];
+  assert(sentCancelar.length === 1 && sentCancelar[0].subject.startsWith("Cancelada:"), "cancelar pilates dispara la notificación interna de cancelación");
+})();
+
+// ── Test 24: un fallo de GmailApp.sendEmail en la notificación interna no revierte ni ──────
+// bloquea cancelBooking/rescheduleBooking (mismo criterio que US-12, test 18) ──────────────
+(function test24() {
+  console.log("Test 24: fallo al enviar la notificación interna no revierte cancelar/reagendar");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Irene", "Castro", "irene@test.com", "8888-7003", "cedula", "1-3333-0004",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  sandbox.GmailApp.sendEmail = () => { throw new Error("Mock: Gmail caído"); };
+
+  let threwCancel = null;
+  try {
+    sandbox.cancelBooking(token);
+  } catch (e) {
+    threwCancel = e.message;
+  }
+  assert(threwCancel === null, "cancelBooking NO relanza el error del envío de la notificación interna");
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Cancelada", "la cita sí queda cancelada en el Sheet pese al fallo de correo");
+})();
+
+// ── Test 25: la notificación interna de un reagendamiento usa la fecha/hora NUEVA ──────────
+(function test25() {
+  console.log("Test 25: renderNotificacionInterna con tipoAccion=reagendada usa fecha/hora nuevas (via fechaDisplay/horaDisplay)");
+  const { sandbox } = freshCtx();
+  const nuevoInstante = sandbox.parseSheetDateTime("2026-08-10", "15:00");
+  const { htmlBody } = sandbox.renderNotificacionInterna({
+    esPilates: false,
+    tipoAccion: "reagendada",
+    tipoCita: "initial",
+    nombreCompleto: "Test Persona",
+    correo: "test@test.com",
+    telefono: "8888-0000",
+    idiomaDisplay: "Español",
+    fecha: "2026-08-10",
+    hora: "15:00",
+    modalidadDisplay: "VIRTUAL",
+    esVirtual: true,
+    meetLink: "https://meet.google.com/fake",
+    token: "tok-25",
+  });
+  assert(typeof htmlBody === "string" && htmlBody.length > 0, "renderNotificacionInterna produce htmlBody no vacío");
+  assert(sandbox.formatFechaDisplay(nuevoInstante, "es", "America/Costa_Rica").length > 0, "formatFechaDisplay (usado internamente, siempre en TIME_ZONE) funciona sobre la fecha nueva pasada");
 })();
 
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
