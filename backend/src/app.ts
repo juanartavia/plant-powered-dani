@@ -2230,6 +2230,14 @@ function formatHoraDisplay(instant: Date, zona: string = TIME_ZONE): string {
   return Utilities.formatDate(instant, zona, "HH:mm");
 }
 
+// ⚠️ REGRESIÓN CONOCIDA (2 veces: US-11 inicial y 21 jul): cuando Gabriela entrega una
+// versión NUEVA de una plantilla y se reemplaza el archivo completo, cualquier variable que
+// deba imprimirse SIN escapar HTML (como "direccion", que trae <br>) puede volver a quedar
+// como <?= var ?> (escapado) en vez de <?!= var ?> (sin escapar) si Gabriela no replica ese
+// detalle técnico en el HTML nuevo — no es su responsabilidad saberlo, es de quien integra
+// el archivo. SIEMPRE verificar esto al reemplazar cualquier plantilla que incluya
+// "direccion" (o cualquier otra variable con HTML intencional) antes de dar el reemplazo por
+// terminado.
 function renderConfirmationEmail(params: {
   tipoCita: "initial" | "followup" | "measurement" | "pilates";
   idioma: "es" | "en";
