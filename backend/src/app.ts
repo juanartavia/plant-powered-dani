@@ -2705,3 +2705,27 @@ function testSendNotificacionInterna(): void {
     Logger.log(`Enviado: esPilates=${caso.esPilates}/tipoAccion=${caso.tipoAccion}/tipo=${caso.tipoCita}`);
   });
 }
+
+// ============================================================================
+// TEMPORAL — solo para pruebas manuales de US-13/US-30 (reagendar/cancelar) desde el editor
+// de Apps Script, mientras no exista la página visual de reagendar/cancelar (RF-2.6).
+// Borrar estas dos funciones una vez que la prueba real esté hecha — mismo patrón ya usado
+// para las pruebas manuales de US-06 (nota técnica #23 del CLAUDE.md).
+// ============================================================================
+
+function testReagendarManual(): void {
+  const token = "PEGA_AQUI_EL_TOKEN"; // copiar de la columna "token" del Sheet (Nutrición o Pilates)
+  // Ajustar a un horario válido: al menos MIN_BOOKING_HOURS (nutrición) o
+  // PILATES_MIN_BOOKING_HOURS (pilates) en el futuro respecto a HOY, y la cita ACTUAL debe
+  // tener al menos CANCELLATION_HOURS (24hrs) de anticipación al momento de correr esto —
+  // si no, rescheduleBooking lanza VENTANA_REAGENDAMIENTO_VENCIDA.
+  const nuevoHorario = "2026-07-28T14:00:00-06:00";
+  const resultado = rescheduleBooking(token, nuevoHorario, "America/Costa_Rica");
+  Logger.log(resultado);
+}
+
+function testCancelarManual(): void {
+  const token = "PEGA_AQUI_EL_TOKEN"; // copiar de la columna "token" del Sheet (Nutrición o Pilates)
+  const resultado = cancelBooking(token);
+  Logger.log(resultado);
+}
