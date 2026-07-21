@@ -49,6 +49,12 @@ function formatDate(date, tz, pattern) {
   if (pattern === "d") return String(p.day);
   if (pattern === "u") return String(p.weekday);
   if (pattern === "@") return "@"; // no usado como pattern de fecha real
+  // Formato UTC básico de Google Calendar (buildAddToCalendarLink, 21 jul) — literales entre
+  // comillas simples ('T', 'Z'), igual que soporta Utilities.formatDate real. Blind spot
+  // encontrado al probar el link de "Agregar a mi calendario": sin este caso, el mock caía
+  // al formato genérico de abajo (con espacio y sin 'Z'), que es válido para logs pero NO es
+  // el formato que Google Calendar espera en el parámetro `dates`.
+  if (pattern === "yyyyMMdd'T'HHmmss'Z'") return `${y}${mo}${da}T${h}${mi}${s}Z`;
   // yyyy-MM-dd'T'HH:mm:ss / "yyyy-MM-dd HH:mm:ss" / cualquier otro con todos los campos
   return `${y}-${mo}-${da} ${h}:${mi}:${s}`;
 }

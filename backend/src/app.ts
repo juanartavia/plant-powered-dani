@@ -1687,7 +1687,7 @@ function bookTimeslot(
     const { subject, htmlBody } = renderConfirmationEmail({
       tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
-      nombreApellido: `${nombre} ${apellido}`,
+      nombre,
       fecha: fechaCita,
       hora: horaCita,
       esVirtual: type === "pilates" ? true : modalidad === "virtual",
@@ -2233,7 +2233,10 @@ function formatHoraDisplay(instant: Date, zona: string = TIME_ZONE): string {
 function renderConfirmationEmail(params: {
   tipoCita: "initial" | "followup" | "measurement" | "pilates";
   idioma: "es" | "en";
-  nombreApellido: string;
+  // Solo el PRIMER NOMBRE del cliente (columna "nombre" del Sheet, ya separada de
+  // "apellido" desde antes de US-11) — confirmado con Gabriela (21 jul): los 4 correos de
+  // confirmación deben saludar solo por el primer nombre, nunca el apellido.
+  nombre: string;
   fecha: string; // yyyy-MM-dd, hora del negocio (TIME_ZONE) — instante real de la cita
   hora: string; // HH:mm, hora del negocio (TIME_ZONE) — instante real de la cita
   esVirtual: boolean; // pilates siempre true; solo importa para nutrición
@@ -2256,11 +2259,27 @@ function renderConfirmationEmail(params: {
   // lo muestran en la zona del CLIENTE.
   const apptInstant = parseSheetDateTime(params.fecha, params.hora);
   const displayZone = params.clientTimezone || TIME_ZONE;
-  template.nombre_apellido = params.nombreApellido;
+  // La plantilla de pilates ES todavía tiene la variable nombrada "nombre_apellido" en el
+  // HTML (pilates EN y ambas de nutrición ya se renombraron a "nombre"), pero Gabriela
+  // confirmó (21 jul) que la intención es la misma en las 4: mostrar SOLO el primer nombre.
+  // Se inyecta el mismo valor bajo los dos nombres de variable, sin importar cuál use cada
+  // archivo — pendiente que Gabriela renombre "nombre_apellido" a "nombre" en ese archivo
+  // sin urgencia, porque no cambia el comportamiento.
+  template.nombre = params.nombre;
+  template.nombre_apellido = params.nombre;
   template.fechaDisplay = formatFechaDisplay(apptInstant, params.idioma, displayZone);
   template.horaDisplay = formatHoraDisplay(apptInstant, displayZone);
   template.linkReagendar = params.linkReagendar;
   template.meetLink = params.meetLink || "";
+  // EXPERIMENTAL (21 jul) — ver comentario completo en buildAddToCalendarLink().
+  template.linkAgregarCalendario = buildAddToCalendarLink({
+    tipoCita: params.tipoCita,
+    idioma: params.idioma,
+    primerNombre: params.nombre,
+    apptInstant,
+    esVirtual: params.esVirtual,
+    meetLink: params.meetLink,
+  });
 
   if (!isPilates) {
     template.tituloConfirmacion = TITULOS_CONFIRMACION[params.idioma][params.tipoCita];
@@ -2278,6 +2297,61 @@ function renderConfirmationEmail(params: {
   return { subject, htmlBody: template.evaluate().getContent() };
 }
 
+// EXPERIMENTAL — agregado el 21 jul, NO es parte del diseño original de Gabriela. Es una
+// decisión tomada directamente con el usuario; el equipo de comunicación todavía no la ha
+// visto ni aprobado. Si no se aprueba, esta función y el bloque de botón correspondiente en
+// las 4 plantillas HTML se pueden remover sin afectar el resto del correo.
+//
+// Arma un link "render" de Google Calendar para que el CLIENTE agregue el evento a SU propio
+// calendario personal con un clic — separado por completo de la invitación nativa de
+// Calendar.Events.insert()/.patch(), que sigue apagada (sendUpdates:'none', ver historial de
+// deploy v25 en el CLAUDE.md). `details`/`location` NUNCA deben incluir cédula, fecha de
+// nacimiento, teléfono ni correo del cliente — ese fue justo el dato sensible que motivó
+// apagar la invitación nativa; solo lleva el primer nombre y el tipo de cita.
+function buildAddToCalendarLink(params: {
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  idioma: "es" | "en";
+  primerNombre: string;
+  apptInstant: Date;
+  esVirtual: boolean;
+  meetLink?: string;
+}): string {
+  const isPilates = params.tipoCita === "pilates";
+  const durationMinutes = getDurationForType(params.tipoCita);
+  const endInstant = new Date(params.apptInstant.getTime() + durationMinutes * 60000);
+  // Formato "render" de Google Calendar exige UTC básico yyyyMMdd'T'HHmmss'Z', sin importar
+  // la zona en la que se le muestra la fecha/hora al cliente en el resto del correo.
+  const toUtcStamp = (instant: Date) => Utilities.formatDate(instant, "Etc/UTC", "yyyyMMdd'T'HHmmss'Z'");
+  const dates = `${toUtcStamp(params.apptInstant)}/${toUtcStamp(endInstant)}`;
+
+  const text = isPilates
+    ? (params.idioma === "en" ? "Pilates class — Plant Powered by Dani" : "Clase de pilates — Plant Powered by Dani")
+    : (params.idioma === "en" ? "Nutrition appointment — Plant Powered by Dani" : "Cita de nutrición — Plant Powered by Dani");
+
+  let details = params.idioma === "en"
+    ? `Appointment for ${params.primerNombre} with Plant Powered by Dani.`
+    : `Cita de ${params.primerNombre} con Plant Powered by Dani.`;
+  if (params.esVirtual && params.meetLink) {
+    details += params.idioma === "en" ? ` Join: ${params.meetLink}` : ` Unirse: ${params.meetLink}`;
+  }
+
+  // Ubicación en texto plano, SIN el <br> de CONSULTORIO_DIRECCION (ese <br> es solo para el
+  // bloque HTML del correo) — Google Calendar la muestra como una sola línea de todas formas.
+  const location = !isPilates && !params.esVirtual
+    ? "Santa Ana Town Center, Work Space Republic, Segundo piso, Consultorio #33"
+    : "";
+
+  const queryParams = [
+    "action=TEMPLATE",
+    `text=${encodeURIComponent(text)}`,
+    `dates=${dates}`,
+    `details=${encodeURIComponent(details)}`,
+    `location=${encodeURIComponent(location)}`,
+    "ctz=America/Costa_Rica",
+  ];
+  return `https://calendar.google.com/calendar/render?${queryParams.join("&")}`;
+}
+
 // Función de testing manual (US-11, checklist ítems 1/2/5) — genera las 4 combinaciones
 // (nutrición ES/EN x virtual/presencial, pilates ES/EN) y las envía por GmailApp a la
 // cuenta de testing para inspección visual real. Correr manualmente desde el editor de
@@ -2290,7 +2364,7 @@ function testSendConfirmationEmails(): void {
     {
       tipoCita: "initial",
       idioma: "es",
-      nombreApellido: "María Fernández",
+      nombre: "María",
       fecha: "2026-07-20",
       hora: "13:30",
       esVirtual: false,
@@ -2299,7 +2373,7 @@ function testSendConfirmationEmails(): void {
     {
       tipoCita: "followup",
       idioma: "en",
-      nombreApellido: "Jane Smith",
+      nombre: "Jane",
       fecha: "2026-07-21",
       hora: "09:00",
       esVirtual: true,
@@ -2309,7 +2383,7 @@ function testSendConfirmationEmails(): void {
     {
       tipoCita: "pilates",
       idioma: "es",
-      nombreApellido: "Ana Rodríguez",
+      nombre: "Ana",
       fecha: "2026-07-25",
       hora: "10:00",
       esVirtual: true,
@@ -2319,7 +2393,7 @@ function testSendConfirmationEmails(): void {
     {
       tipoCita: "pilates",
       idioma: "en",
-      nombreApellido: "John Doe",
+      nombre: "John",
       fecha: "2026-07-25",
       hora: "10:00",
       esVirtual: true,
