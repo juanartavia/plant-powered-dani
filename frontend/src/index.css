@@ -2,8 +2,37 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'Jost';
+  src: url('./assets/fonts/Jost-Regular.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Jost';
+  src: url('./assets/fonts/Jost-Medium.ttf') format('truetype');
+  font-weight: 500;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Jost';
+  src: url('./assets/fonts/Jost-SemiBold.ttf') format('truetype');
+  font-weight: 600;
+  font-style: normal;
+}
+@font-face {
+  font-family: 'Jost';
+  src: url('./assets/fonts/Jost-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+}
+
+h1, h2, h3, h4 {
+  font-family: 'Jost', sans-serif;
+}
+
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Century Gothic', Futura, 'Trebuchet MS', Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
@@ -69,40 +98,40 @@ button:hover {
 
 @layer base {
   :root {
-    /* Pure white */
-    --background: 0 0% 100%;
-    /* Very dark blue */
-    --foreground: 240 10% 3.9%;
-    /* Pure white */
+    /* #FFF9F1 */
+    --background: 34 100% 97%;
+    /* #2C3F27 */
+    --foreground: 108 24% 20%;
+    /* #FFFFFF */
     --card: 0 0% 100%;
-    /* Very dark blue */
-    --card-foreground: 240 10% 3.9%;
-    /* Pure white */
+    /* #2C3F27 */
+    --card-foreground: 108 24% 20%;
+    /* #FFFFFF */
     --popover: 0 0% 100%;
-    /* Very dark blue */
-    --popover-foreground: 240 10% 3.9%;
-    /* Very dark blue */
-    --primary: 240 5.9% 10%;
-    /* Almost white */
-    --primary-foreground: 0 0% 98%;
-    /* Very light blue */
-    --secondary: 240 4.8% 95.9%;
+    /* #2C3F27 */
+    --popover-foreground: 108 24% 20%;
+    /* #2C3F27 */
+    --primary: 108 24% 20%;
+    /* #F9BFC6 */
+    --primary-foreground: 353 83% 86%;
+    /* #B9BD5B */
+    --secondary: 62 43% 55%;
     /* Very dark blue */
     --secondary-foreground: 240 5.9% 10%;
-    /* Very light blue */
-    --muted: 240 4.8% 95.9%;
-    /* Medium blue-gray */
-    --muted-foreground: 240 3.8% 46.1%;
-    /* Very light blue */
-    --accent: 240 4.8% 95.9%;
+    /* brandbook muted background */
+    --muted: 34 60% 95%;
+    /* brandbook muted text */
+    --muted-foreground: 62 20% 45%;
+    /* #F9BFC6 */
+    --accent: 353 83% 86%;
     /* Very dark blue */
     --accent-foreground: 240 5.9% 10%;
     /* Bright red */
     --destructive: 0 84.2% 60.2%;
     /* Almost white */
     --destructive-foreground: 0 0% 98%;
-    /* Light blue-gray */
-    --border: 240 5.9% 90%;
+    /* #EFE7DA */
+    --border: 37 40% 90%;
     /* Light blue-gray */
     --input: 240 5.9% 90%;
     /* Very dark blue */

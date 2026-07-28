@@ -323,10 +323,7 @@ function CancelScreen({
 
   return (
     <Card className="sm:w-[500px] mx-auto min-h-[300px]">
-      <CardHeader>
-        <CardTitle>{t.cancelButton}</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent className="space-y-4 pt-6">
         <AppointmentSummary info={info} lang={lang} />
       </CardContent>
       <CardFooter>
