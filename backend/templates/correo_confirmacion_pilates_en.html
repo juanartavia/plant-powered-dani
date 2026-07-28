@@ -80,7 +80,7 @@
 
   <!-- Preheader -->
   <div style="display:none; max-height:0; overflow:hidden; mso-hide:all; font-size:1px; line-height:1px; color:#FFF9F1;">
-    Your pilates class is confirmed! — here are all the details.
+    <? if (tituloConfirmacion) { ?><?= tituloConfirmacion ?><? } else { ?>Your pilates class is confirmed!<? } ?> — here are all the details.
     &nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;&nbsp;&zwnj;
   </div>
 
@@ -111,7 +111,10 @@
     <tr>
       <td align="center" class="fluid-padding" style="padding:20px 36px 0 36px;">
         <h1 class="h1-mobile" style="margin:0; font-family:Cambria, Georgia, 'Times New Roman', serif; font-size:22px; line-height:28px; font-weight:bold; color:#2C3F27; text-align:center;">
-          Your pilates class is confirmed!
+          <!-- EXTENSION (21 jul, alongside the client reschedule email) — title is no longer
+               100% hardcoded: if tituloConfirmacion is empty, falls back to the original
+               text, so the normal "confirmation" case is unchanged. -->
+          <? if (tituloConfirmacion) { ?><?= tituloConfirmacion ?><? } else { ?>Your pilates class is confirmed!<? } ?>
         </h1>
       </td>
     </tr>

@@ -72,6 +72,26 @@ function setupPilatesTestCalendar(): void {
 // Los clientes ven los horarios en su propia zona horaria (manejado en el frontend).
 const TIME_ZONE = "America/Costa_Rica";
 
+// URL pública real del Web App de testing (deployment con nombre, no HEAD) — deploymentId
+// AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ, ver CLAUDE.md
+// sección 12.
+//
+// NO usar ScriptApp.getService().getUrl() para construir links hacia el propio Web App
+// (linkReagendar/linkConfirmar/linkCancelar) — su valor depende del contexto de ejecución:
+// devuelve la URL de DESARROLLO del deployment HEAD (".../dev", con un ID que ni siquiera es
+// el de nuestro deployment con nombre) cuando el código corre por una ejecución MANUAL desde
+// el editor de Apps Script (que es como se ha estado probando sendRemindersJob(),
+// testSendConfirmationEmails(), etc.) — solo devuelve la URL pública real (".../exec") cuando
+// el código corre porque alguien accedió al link público de verdad. Confirmado como causa real
+// de links rotos en correos de producción/testing el 21 jul (correos ya enviados con enlaces
+// ".../dev" que ni siquiera apuntan al deployment correcto). Usar siempre esta constante fija.
+//
+// Producción (Sprint 3, deploy bajo la cuenta real de Dani): actualizar este valor a la URL
+// pública del deployment de producción antes de ir en vivo — es un valor distinto al de
+// testing, generado en su propio `clasp deploy`.
+const WEB_APP_URL =
+  "https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec";
+
 // Días de la semana habilitados como ventana de búsqueda (0=dom, 1=lun, ..., 6=sáb).
 // Se incluye sábado porque pilates es solo sábados. La disponibilidad real la controla
 // el Google Calendar de Dani/instructora — estos días son solo el rango de búsqueda.
@@ -140,6 +160,26 @@ function doGet(e: GoogleAppsScript.Events.DoGet): GoogleAppsScript.HTML.HtmlOutp
   // El parámetro ?type= en la URL determina el tipo de cita, su duración,
   // el calendario destino, la plantilla de correo y la lógica de disponibilidad.
   const type = e?.parameter?.type ?? "";
+
+  // US-31 (RF-2.6): el parámetro ?token= identifica una cita ya existente en vez de un
+  // tipo de cita nuevo — el SPA arranca en modo "gestionar mi cita" en lugar del flujo de
+  // agendamiento. `accion` es opcional: ausente para el link único del correo de
+  // confirmación (US-12, `linkReagendar` sin acción — el cliente elige reagendar/cancelar
+  // en pantalla) o "confirmar"/"reagendar"/"cancelar" para los 3 links del correo de
+  // recordatorio (US-14, ver buildBookingActionLink). El token/accion NO se validan aquí
+  // contra el Sheet (más rápido servir la página y validar en la primera llamada real de
+  // google.script.run) — se inyectan con JSON.stringify, no con interpolación directa,
+  // porque a diferencia de `type` (ya validado contra APPOINTMENT_DURATIONS antes de
+  // inyectarse abajo) su valor viene crudo de la URL.
+  const token = e?.parameter?.token ?? "";
+  if (token) {
+    const accion = e?.parameter?.accion ?? "";
+    const bookingScript = `<script>window.BOOKING_TOKEN = ${JSON.stringify(token)}; window.BOOKING_ACCION = ${JSON.stringify(accion)};</script>`;
+    return HtmlService.createHtmlOutputFromFile("index")
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+      .addMetaTag("viewport", "width=device-width, initial-scale=1")
+      .append(bookingScript);
+  }
 
   // Si el tipo está ausente o no es uno de los valores válidos, mostrar página de error bilingüe.
   if (!type || !APPOINTMENT_DURATIONS[type]) {
@@ -291,10 +331,16 @@ const SHEET_SCHEMAS: Record<string, string[]> = {
     "meet_link", "estado", "fecha_creacion", "recordatorio_enviado", "show_no_show",
     "cancelaciones_tardias", "requiere_pago", "event_id",
   ],
+  // "cancelaciones_tardias" (columna 17) agregada en US-33 — ver
+  // addCancelacionTardiaColumnToPilates() más abajo y el comentario de
+  // PILATES_CANCELACION_TARDIA_COL: a diferencia de Nutrición, "Pilates" NUNCA tuvo esta
+  // columna (ni en este schema ni en el spreadsheet real), así que US-33 sí necesitó
+  // crearla acá para poder marcar la bandera por-inscripción en ambos flujos.
   "Pilates": [
     "token", "nombre", "apellido", "correo", "telefono", "tipo_id", "numero_id", "fecha_nacimiento",
     "fecha_clase", "hora_clase", "zona_horaria_cliente", "idioma",
     "estado", "fecha_inscripcion", "recordatorio_enviado", "show_no_show",
+    "cancelaciones_tardias",
   ],
   // event_id/meet_link agregadas en US-10 (ver addEventIdColumnToCuposPilates) — columnas E y F.
   // No forman parte del spreadsheet creado por initializeSheets() (ya ejecutada, nota 11);
@@ -310,10 +356,15 @@ const SHEET_SCHEMAS: Record<string, string[]> = {
 // por separado con addClientesSheet() al spreadsheet ya existente.
 // cancelaciones_tardias/requiere_pago (columnas 8/9) agregadas en US-06: son la fuente de
 // verdad de la política de "2 cancelaciones/reagendamientos tardíos consecutivos → requiere
-// pago" (CLAUDE.md sección 3), acumulada POR CLIENTE (correo) y no por cita individual —
-// a diferencia de las columnas del mismo nombre que ya existían en Nutrición/Pilates, que
-// son por-cita y se dejan solo como log informativo (ver notifyLateCancellation/
-// incrementClientLateCancellation más abajo).
+// pago" (CLAUDE.md sección 3), acumulada POR CLIENTE (correo) y no por cita individual.
+//
+// ⚠️ NO CONFUNDIR con la columna del MISMO NOMBRE en Nutrición/Pilates (ver
+// NUTRICION_CANCELACION_TARDIA_COL/PILATES_CANCELACION_TARDIA_COL): esa es un BOOLEANO POR
+// CITA ("¿esta cita en particular se canceló tarde?"), en uso desde US-33; esta es un
+// CONTADOR ACUMULADO POR CLIENTE. Son dos preguntas distintas y ninguna se deriva de la
+// otra — el contador por cliente lo escribe exclusivamente
+// incrementClientLateCancellation/resetClientLateCancellationCounter, y la bandera por cita
+// la escribe exclusivamente markLateCancellationOnBookingRow.
 const CLIENTES_SCHEMA: string[] = [
   "correo", "nombre", "apellido", "telefono", "tipo_id", "numero_id", "fecha_nacimiento", "idioma",
   "cancelaciones_tardias", "requiere_pago",
@@ -795,18 +846,51 @@ const CUPOS_PILATES_MEET_LINK_COL = 6;
 // Columnas (1-based) de la pestaña "Nutrición" usadas por cancelBooking/rescheduleBooking
 // (US-06) para localizar y mover/eliminar el evento de Calendar real de una cita, y para
 // escribir el nuevo estado/fecha/hora. Coinciden con SHEET_SCHEMAS["Nutrición"] arriba.
+const NUTRICION_TOKEN_COL = 1;
+const NUTRICION_NOMBRE_COL = 2;
+const NUTRICION_CORREO_COL = 4;
+const NUTRICION_TIPO_CITA_COL = 9;
 const NUTRICION_FECHA_COL = 10;
 const NUTRICION_HORA_COL = 11;
 const NUTRICION_ZONA_HORARIA_COL = 12;
+const NUTRICION_MODALIDAD_COL = 13;
+const NUTRICION_IDIOMA_COL = 14;
 const NUTRICION_MEET_LINK_COL = 15;
 const NUTRICION_ESTADO_COL = 16;
+const NUTRICION_RECORDATORIO_ENVIADO_COL = 18;
+// "cancelaciones_tardias" de la pestaña "Nutrición" — EN USO desde US-33 (antes marcada como
+// legacy/sin usar en CLAUDE.md sección 8 y en el comentario de CLIENTES_SCHEMA). Es un
+// BOOLEANO POR CITA: TRUE solo en la fila de la cita que se canceló con menos de
+// CANCELLATION_HOURS de anticipación. NO es el contador acumulado por cliente — ese vive en
+// "Clientes" (CLIENTES_CANCELACIONES_COL, US-06) y sigue siendo la única fuente de verdad de
+// la regla de "2 tardías consecutivas → requiere_pago". Se reutilizó la columna que ya
+// existía en vez de crear una nueva, por pedido explícito de la tarjeta de US-33.
+// La columna vecina "requiere_pago" (21) sigue sin usarse a nivel de cita, a propósito.
+const NUTRICION_CANCELACION_TARDIA_COL = 20;
 const NUTRICION_EVENT_ID_COL = 22;
+// Agregada en US-14 (ver addAsistenciaConfirmadaColumnToNutricion más abajo) — NO reutiliza
+// "estado" (Agendada/Reagendada/Cancelada/Error_Calendar): son dos preguntas distintas ("¿en
+// qué estado está la cita?" vs. "¿el cliente ya dijo que va a asistir?").
+const NUTRICION_ASISTENCIA_CONFIRMADA_COL = 23;
 
 // Columnas (1-based) equivalentes para "Pilates".
 const PILATES_FECHA_COL = 9;
 const PILATES_HORA_COL = 10;
 const PILATES_ZONA_HORARIA_COL = 11;
 const PILATES_ESTADO_COL = 13;
+// Equivalente por-inscripción de NUTRICION_CANCELACION_TARDIA_COL (US-33).
+//
+// ⚠️ DISCREPANCIA REAL ENCONTRADA AL IMPLEMENTAR US-33: la tarjeta pedía "reutilizar la
+// columna cancelaciones_tardias (legacy) que ya existe en Nutrición y Pilates, sin crear
+// columnas nuevas" — pero esa columna NUNCA existió en "Pilates": ni en SHEET_SCHEMAS
+// (arriba), ni en la sección 8 del CLAUDE.md, ni en los headers del harness. Solo Nutrición
+// la tenía. Para poder marcar la bandera en los DOS flujos (que es el requisito funcional
+// real de la tarjeta) hubo que agregarla acá, siguiendo el mismo patrón de migración manual
+// e idempotente del resto del proyecto (addEventIdColumnToNutricion/
+// addAsistenciaConfirmadaColumnToNutricion): ver addCancelacionTardiaColumnToPilates(), que
+// hay que ejecutar UNA VEZ desde el editor de Apps Script antes de confiar en esta columna
+// en el Sheet real. En Nutrición NO se creó nada nuevo — ahí sí se reutilizó la existente.
+const PILATES_CANCELACION_TARDIA_COL = 17;
 
 // Agrega la columna "event_id" (US-06) a la pestaña "Nutrición" YA existente, sin volver a
 // ejecutar initializeSheets() (nota 11). Necesaria para que cancelBooking/rescheduleBooking
@@ -827,6 +911,51 @@ function addEventIdColumnToNutricion(): void {
 
   sheet.getRange(1, NUTRICION_EVENT_ID_COL).setValue("event_id").setFontWeight("bold");
   Logger.log('Columna "event_id" agregada a Nutrición.');
+}
+
+// Agrega la columna "asistencia_confirmada" (US-14) a la pestaña "Nutrición" YA existente, en
+// la posición NUTRICION_ASISTENCIA_CONFIRMADA_COL (justo después de "event_id"), sin volver a
+// ejecutar initializeSheets() (nota 11). Migración por POSICIÓN de columna, no por texto de
+// encabezado (nota técnica #28) — mismo criterio que addEventIdColumnToNutricion/
+// addCancelacionesColumnsToClientes. No-op seguro si ya existe. Ejecutar manualmente una sola
+// vez desde el editor de Apps Script, ANTES de correr installRemindersTrigger().
+function addAsistenciaConfirmadaColumnToNutricion(): void {
+  const sheet = getSheet("Nutrición");
+  const lastCol = sheet.getLastColumn();
+  const headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
+
+  if (headers.indexOf("asistencia_confirmada") >= 0) {
+    Logger.log('La columna "asistencia_confirmada" ya existe en Nutrición. No se hizo ningún cambio.');
+    return;
+  }
+
+  sheet.getRange(1, NUTRICION_ASISTENCIA_CONFIRMADA_COL).setValue("asistencia_confirmada").setFontWeight("bold");
+  Logger.log('Columna "asistencia_confirmada" agregada a Nutrición.');
+}
+
+// Agrega la columna "cancelaciones_tardias" (US-33) a la pestaña "Pilates" YA existente, en
+// la posición PILATES_CANCELACION_TARDIA_COL (justo después de "show_no_show"), sin volver a
+// ejecutar initializeSheets() (nota 11). Necesaria porque, a diferencia de "Nutrición",
+// "Pilates" nunca tuvo esa columna — ver el comentario largo de PILATES_CANCELACION_TARDIA_COL.
+// Migración por POSICIÓN de columna, no por texto de encabezado (nota técnica #28), igual que
+// addEventIdColumnToNutricion/addAsistenciaConfirmadaColumnToNutricion. No-op seguro si ya
+// existe. Ejecutar manualmente UNA SOLA VEZ desde el editor de Apps Script.
+//
+// Las inscripciones de pilates YA existentes quedan con la celda vacía, que se lee igual que
+// FALSE (markLateCancellationOnBookingRow solo escribe TRUE, nunca FALSE) — no hay forma de
+// reconstruir retroactivamente cuáles se cancelaron tarde, y tampoco hace falta: el contador
+// acumulado por cliente en "Clientes" (US-06) nunca dependió de esta columna.
+function addCancelacionTardiaColumnToPilates(): void {
+  const sheet = getSheet("Pilates");
+  const existingHeader = String(sheet.getRange(1, PILATES_CANCELACION_TARDIA_COL).getValue());
+
+  if (existingHeader === "cancelaciones_tardias") {
+    Logger.log('La columna "cancelaciones_tardias" ya existe en Pilates. No se hizo ningún cambio.');
+    return;
+  }
+
+  sheet.getRange(1, PILATES_CANCELACION_TARDIA_COL).setValue("cancelaciones_tardias").setFontWeight("bold");
+  Logger.log('Columna "cancelaciones_tardias" agregada a Pilates.');
 }
 
 // Agrega las columnas "event_id" y "meet_link" (US-10) a la pestaña "Cupos_Pilates" YA
@@ -874,12 +1003,30 @@ const MAX_PILATES_PARTICIPANTS = 5;
 // en vez de texto plano. Si eso pasa, getValues() devuelve un objeto Date en esa celda,
 // no el string original — y una comparación de igualdad contra el string esperado
 // ("2026-07-12" === Date(...)) nunca es true, aunque representen el mismo momento.
-// Esta función normaliza cualquier valor leído de esas columnas (fecha_clase/hora_clase)
-// al mismo string canónico que produce Utilities.formatDate, para que las comparaciones
-// y los keys de mapa calcen sin importar cómo lo haya tipado Sheets.
+// Esta función normaliza cualquier valor leído de esas columnas (fecha_clase/hora_clase,
+// y desde el bug real de US-14 también fecha/hora de Nutrición/Pilates) al mismo string
+// canónico que produce Utilities.formatDate, para que las comparaciones y los keys de mapa
+// calcen sin importar cómo lo haya tipado Sheets.
+//
+// ⚠️ BUG REAL CONFIRMADO (US-14, 21 jul): esta función reformateaba con TIME_ZONE
+// ("America/Costa_Rica") cuando el valor SÍ quedó coercionado a un objeto Date real — eso
+// hacía que sendRemindersJob() calculara mal las horas de anticipación de una cita real
+// (measurement, 23 jul 10:00) y la saltara en silencio (el resultado caía fuera de la
+// ventana 47-49hrs, sin lanzar ninguna excepción — el try/catch por fila no tenía nada que
+// atrapar). Causa raíz: Google Sheets ancla el valor coercionado de una celda de
+// fecha-sin-hora U hora-sin-fecha en UTC internamente — el mismo mecanismo, YA PROBADO en
+// este proyecto, que causó el corrimiento de ±1 día en fecha_nacimiento (nota técnica #29,
+// corregido con Utilities.formatDate(date, "UTC", ...) en vez de TIME_ZONE). La regla de la
+// nota #29 ("eventos reales siempre en TIME_ZONE") aplica a CÓMO SE ESCRIBE el string
+// original (Utilities.formatDate(start, TIME_ZONE, ...) al crear la cita) — es una
+// preocupación distinta de CÓMO SE RECUPERA un valor que Sheets ya coercionó a Date por su
+// cuenta, que sigue el mecanismo interno de Sheets (UTC), sin importar qué campo sea ni en
+// qué zona se pensó originalmente el valor. Por eso este fallback usa "UTC", no TIME_ZONE,
+// para las dos columnas de citas reales (fecha "yyyy-MM-dd" y hora "HH:mm") igual que para
+// fecha_clase/hora_clase.
 function normalizeSheetDateCell(value: unknown, pattern: string): string {
   if (value instanceof Date) {
-    return Utilities.formatDate(value, TIME_ZONE, pattern);
+    return Utilities.formatDate(value, "UTC", pattern);
   }
   return String(value);
 }
@@ -1056,13 +1203,84 @@ function resetClientLateCancellationCounter(correo: string): void {
   }
 }
 
-// TODO (Sprint 2, RF-2.5): enviar la notificación real por correo a Dani y Ali cuando una
-// cancelación o intento de reagendamiento cae fuera de la ventana de CANCELLATION_HOURS.
-// Stub a propósito — las plantillas y el envío de correos completos son Sprint 2 (ver
-// CLAUDE.md sección 9). Se deja el punto de llamada ya cableado en cancelBooking/
-// rescheduleBooking para no tener que volver a tocar esa lógica cuando se implemente.
-function notifyLateCancellation(correo: string, token: string, accion: "cancelacion" | "reagendamiento"): void {
-  Logger.log(`TODO Sprint 2 (RF-2.5): notificar a Dani/Ali - ${accion} tardío de ${correo} (token ${token})`);
+// US-33 (RF-2.5) — Aviso interno de que una cita se canceló FUERA de la ventana de
+// CANCELLATION_HOURS. Reemplaza el stub que existía desde US-06 (solo hacía Logger.log).
+//
+// Convive con la notificación interna general de "cita cancelada" (US-13/US-30, ver
+// sendNotificacionInterna en cancelBooking): en una cancelación tardía Dani/Ali reciben DOS
+// correos con propósitos distintos — uno informa la cancelación en sí, este alerta del
+// patrón de tardanza que alimenta el flag requiere_pago. No es un reemplazo del otro.
+//
+// ALCANCE DELIBERADO: solo envía correo para accion === "cancelacion". El reagendamiento
+// tardío (que rescheduleBooking BLOQUEA por completo, ver la asimetría documentada en
+// CLAUDE.md sección 3) sigue solo con Logger.log — la tarjeta de US-33 es explícitamente
+// sobre cancelación y pide no tocar el flujo de reagendamiento. Si algún día se quiere el
+// aviso también ahí, es cambiar este early-return y decidir qué decir en el correo (el
+// reagendamiento NO ocurrió, así que el copy actual no aplicaría tal cual).
+//
+// `canceladaEn` se recibe como parámetro en vez de hacer new Date() acá adentro para que el
+// correo muestre EXACTAMENTE el mismo instante de cancelación que usó cancelBooking para
+// calcular la anticipación — sin riesgo de que los dos valores se separen por unos
+// milisegundos ni de depender del reloj en dos puntos distintos.
+function notifyLateCancellation(
+  booking: BookingLookup,
+  accion: "cancelacion" | "reagendamiento",
+  canceladaEn: Date
+): void {
+  if (accion !== "cancelacion") {
+    Logger.log(
+      `notifyLateCancellation: ${accion} tardío de ${booking.correo} (token ${booking.token}) — ` +
+      `US-33 cubre solo cancelación, no se envía correo.`
+    );
+    return;
+  }
+
+  const startTime = parseSheetDateTime(booking.fecha, booking.hora);
+  const horasDeAnticipacion = (startTime.getTime() - canceladaEn.getTime()) / (60 * 60 * 1000);
+
+  sendNotificacionCancelacionTardia({
+    esPilates: booking.sheetName === "Pilates",
+    tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
+    nombreCompleto: `${booking.nombre} ${booking.apellido}`,
+    correo: booking.correo,
+    telefono: booking.telefono,
+    fecha: booking.fecha,
+    hora: booking.hora,
+    canceladaEn,
+    horasDeAnticipacion,
+    token: booking.token,
+  });
+}
+
+// US-33 — Marca la bandera POR CITA de cancelación tardía en la fila de la cita/inscripción
+// que se acaba de cancelar (columna "cancelaciones_tardias" de "Nutrición"/"Pilates", ver
+// NUTRICION_CANCELACION_TARDIA_COL/PILATES_CANCELACION_TARDIA_COL). Nunca escribe FALSE: una
+// cancelación dentro de la ventana simplemente deja la celda como estaba (vacía), que es lo
+// que pide la tarjeta.
+//
+// Deliberadamente NO toca el contador acumulado por cliente de "Clientes" — de eso se encarga
+// incrementClientLateCancellation (US-06), que es la fuente de verdad de requiere_pago. Dos
+// escrituras separadas, dos preguntas distintas, sin lógica duplicada entre ellas.
+//
+// El try/catch vive acá (y no en el punto de llamada) por el mismo criterio que los correos:
+// cuando esto corre, la cita YA quedó marcada "Cancelada" en el Sheet y el evento de Calendar
+// YA se eliminó — dejar escapar un error de esta escritura secundaria haría que
+// cancelBooking() truene y que el cliente vea un error en pantalla por una cancelación que sí
+// se aplicó. Se registra con Logger.log explícito (nota técnica #36: nada de fallos mudos).
+function markLateCancellationOnBookingRow(booking: BookingLookup): void {
+  try {
+    const sheet = getSheet(booking.sheetName);
+    const col = booking.sheetName === "Pilates"
+      ? PILATES_CANCELACION_TARDIA_COL
+      : NUTRICION_CANCELACION_TARDIA_COL;
+    sheet.getRange(booking.row, col).setValue(true);
+    SpreadsheetApp.flush();
+  } catch (e) {
+    Logger.log(
+      `markLateCancellationOnBookingRow: no se pudo marcar cancelación tardía en ` +
+      `${booking.sheetName} fila ${booking.row} (token ${booking.token}): ${(e as Error).message}`
+    );
+  }
 }
 
 // Inserta o actualiza (upsert) la fila de un cliente en "Clientes", identificado por
@@ -1234,7 +1452,28 @@ function appendBookingToSheet(type: string, data: BookingData): string {
         cuposSheet.appendRow([fecha, hora, 1, MAX_PILATES_PARTICIPANTS, "", ""]);
       }
 
-      getSheet("Pilates").appendRow([
+      // Fix real (US-14, 21 jul; corregido de nuevo 21 jul tras confirmar en Sheet real que
+      // NO funcionó): formatear la fila con setNumberFormat("@") ANTES de appendRow() no
+      // sirve — appendRow() decide internamente en qué fila escribir y cómo, y en la
+      // práctica la celda igual queda coercionada a fecha/hora real (confirmado a mano,
+      // doble clic en la celda seguía abriendo el selector de calendario en una fila
+      // nueva, posterior al deploy que ya tenía este intento de fix). Cupos_Pilates SÍ
+      // funciona porque ensureCuposPilatesPlainTextFormat formatea un rango AMPLIO
+      // (filas 2 a getMaxRows()-1) con anticipación, mucho antes de que appendRow() toque
+      // esa fila — no el patrón de "formatear solo la próxima fila, justo antes de
+      // escribir" que se usaba aquí.
+      //
+      // Nuevo enfoque (patrón "escribir, luego forzar texto, luego reescribir", workaround
+      // conocido para esta coerción de Apps Script/Sheets): se deja que appendRow() escriba
+      // fecha/hora como sea (aunque Sheets las coerciona a Date/hora real al vuelo), y
+      // DESPUÉS se localiza la fila real ya escrita por su token (findRowByToken — nunca se
+      // asume que es getLastRow(), evitando cualquier desfase de fila), se le aplica
+      // setNumberFormat("@") y se reescribe el valor con setValue() sobre la celda que ya
+      // tiene formato de texto plano. Escribir un string en una celda que YA es texto plano
+      // no se vuelve a coercionar — a diferencia de formatear una celda que todavía no
+      // existe/no tiene contenido, que es lo que fallaba antes.
+      const pilatesSheet = getSheet("Pilates");
+      pilatesSheet.appendRow([
         token,
         data.nombre,
         data.apellido,
@@ -1252,11 +1491,24 @@ function appendBookingToSheet(type: string, data: BookingData): string {
         false, // recordatorio_enviado
         "",    // show_no_show
       ]);
+      const writtenPilatesRow = findRowByToken(pilatesSheet, token);
+      if (writtenPilatesRow > 0) {
+        const pilatesDateRange = pilatesSheet.getRange(writtenPilatesRow, 9, 1, 2);
+        pilatesDateRange.setNumberFormat("@");
+        pilatesDateRange.setValues([[fecha, hora]]);
+      }
     } finally {
       lock.releaseLock();
     }
   } else {
-    getSheet("Nutrición").appendRow([
+    // Mismo fix real (US-14, 21 jul; corregido de nuevo 21 jul — ver comentario completo
+    // arriba, en el bloque de Pilates) aplicado a "Nutrición": formatear la PRÓXIMA fila
+    // antes de appendRow() no sirve en la práctica. Se usa el mismo patrón "escribir,
+    // luego forzar texto, luego reescribir": appendRow() escribe normalmente, después se
+    // localiza la fila real por token (findRowByToken) y se reescribe fecha/hora ya con
+    // setNumberFormat("@") aplicado, para que quede como texto plano de verdad.
+    const nutricionSheet = getSheet("Nutrición");
+    nutricionSheet.appendRow([
       token,
       data.nombre,
       data.apellido,
@@ -1279,6 +1531,12 @@ function appendBookingToSheet(type: string, data: BookingData): string {
       0,     // cancelaciones_tardias
       false, // requiere_pago
     ]);
+    const writtenNutricionRow = findRowByToken(nutricionSheet, token);
+    if (writtenNutricionRow > 0) {
+      const nutricionDateRange = nutricionSheet.getRange(writtenNutricionRow, 10, 1, 2);
+      nutricionDateRange.setNumberFormat("@");
+      nutricionDateRange.setValues([[fecha, hora]]);
+    }
   }
 
   // Bug real encontrado en testing (deploy v13, US-10): la primera reserva de un slot de
@@ -1685,7 +1943,7 @@ function bookTimeslot(
 
   try {
     const idioma: "es" | "en" = language === "en" ? "en" : "es";
-    const linkReagendar = `${ScriptApp.getService().getUrl()}?token=${token}`;
+    const linkReagendar = `${WEB_APP_URL}?token=${token}`;
     const { subject, htmlBody } = renderConfirmationEmail({
       tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
@@ -1803,6 +2061,46 @@ function findBookingByToken(token: string): BookingLookup {
   }
 
   throw new Error("TOKEN_NO_ENCONTRADO");
+}
+
+// Versión saneada de findBookingByToken() para exponer a la página visual de gestión de
+// cita (US-31, RF-2.6) vía google.script.run. A diferencia de BookingLookup completo, omite
+// apellido/telefono/tipoId/numeroId/birthdate — datos que no hace falta mostrarle al cliente
+// en esa pantalla y que no deberían viajar al navegador (quedarían visibles en el panel de
+// red de cualquiera con acceso al link, aunque sea solo su propia cita). meetLink se relee
+// aparte (Nutrición) o vía findPilatesMeetLink (Pilates) porque BookingLookup no lo trae.
+function getManageBookingInfo(token: string): {
+  token: string;
+  type: string;
+  fecha: string;
+  hora: string;
+  clientTimezone: string;
+  modalidad: string;
+  language: string;
+  estado: string;
+  nombre: string;
+  esVirtual: boolean;
+  meetLink: string;
+} {
+  const booking = findBookingByToken(token);
+  const esVirtual = booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual";
+  const meetLink = booking.sheetName === "Pilates"
+    ? findPilatesMeetLink(booking.fecha, booking.hora)
+    : String(getSheet("Nutrición").getRange(booking.row, NUTRICION_MEET_LINK_COL).getValue() || "");
+
+  return {
+    token: booking.token,
+    type: booking.type,
+    fecha: booking.fecha,
+    hora: booking.hora,
+    clientTimezone: booking.clientTimezone,
+    modalidad: booking.modalidad,
+    language: booking.language,
+    estado: booking.estado,
+    nombre: booking.nombre,
+    esVirtual,
+    meetLink,
+  };
 }
 
 // Reconstruye, en hora del negocio (TIME_ZONE), el instante exacto de una cita a partir de
@@ -2012,8 +2310,12 @@ function cancelBooking(token: string): { lateCancellation: boolean } {
     throw new Error("CITA_YA_CANCELADA");
   }
 
+  // Instante exacto de la cancelación: se captura UNA vez y se reutiliza para el cálculo de
+  // la ventana, para la bandera del Sheet y para el correo de US-33 (que muestra "cuándo se
+  // canceló"), en vez de llamar new Date() en cada punto.
+  const canceladaEn = new Date();
   const startTime = parseSheetDateTime(booking.fecha, booking.hora);
-  const hoursUntilStart = (startTime.getTime() - new Date().getTime()) / (60 * 60 * 1000);
+  const hoursUntilStart = (startTime.getTime() - canceladaEn.getTime()) / (60 * 60 * 1000);
   const lateCancellation = hoursUntilStart < CANCELLATION_HOURS;
 
   const sheet = getSheet(booking.sheetName);
@@ -2028,8 +2330,13 @@ function cancelBooking(token: string): { lateCancellation: boolean } {
   }
 
   if (lateCancellation) {
+    // 3 efectos distintos y deliberadamente separados de una cancelación tardía (US-33):
+    // 1) contador ACUMULADO por cliente en "Clientes" (US-06, alimenta requiere_pago),
+    // 2) bandera BOOLEANA por cita en la fila de Nutrición/Pilates,
+    // 3) correo de alerta al equipo (Dani o instructora, + Ali).
     incrementClientLateCancellation(booking.correo);
-    notifyLateCancellation(booking.correo, token, "cancelacion");
+    markLateCancellationOnBookingRow(booking);
+    notifyLateCancellation(booking, "cancelacion", canceladaEn);
   } else {
     resetClientLateCancellationCounter(booking.correo);
   }
@@ -2056,6 +2363,25 @@ function cancelBooking(token: string): { lateCancellation: boolean } {
     token,
   });
 
+  // Correo al CLIENTE avisando la cancelación (pedido directo del usuario, sin US propio —
+  // ver CLAUDE.md). Antes de esto el cliente solo veía la confirmación en pantalla de US-31.
+  // Propio try/catch, independiente del de sendNotificacionInterna de arriba — un fallo acá
+  // nunca debe revertir la cancelación ya aplicada ni afectar la notificación interna.
+  try {
+    const idioma: "es" | "en" = booking.language === "en" ? "en" : "es";
+    const { subject, htmlBody } = renderCancellationEmail({
+      tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
+      idioma,
+      nombre: booking.nombre,
+      fecha: booking.fecha,
+      hora: booking.hora,
+      clientTimezone: booking.clientTimezone,
+    });
+    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody });
+  } catch (e) {
+    Logger.log(`cancelBooking: fallo al enviar correo de cancelación a ${booking.correo} (token ${token}): ${(e as Error).message}`);
+  }
+
   return { lateCancellation };
 }
 
@@ -2078,7 +2404,12 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   const hoursUntilCurrent = (currentStart.getTime() - new Date().getTime()) / (60 * 60 * 1000);
   if (hoursUntilCurrent < CANCELLATION_HOURS) {
     incrementClientLateCancellation(booking.correo);
-    notifyLateCancellation(booking.correo, token, "reagendamiento");
+    // Actualización de firma solamente (US-33) — el comportamiento de este flujo NO cambia:
+    // notifyLateCancellation solo envía correo para "cancelacion", así que un reagendamiento
+    // tardío sigue quedando únicamente en el log, igual que antes. Tampoco se marca la
+    // bandera por cita: la cita no se canceló, el reagendamiento se bloquea y la cita sigue
+    // viva en su horario original.
+    notifyLateCancellation(booking, "reagendamiento", new Date());
     throw new Error("VENTANA_REAGENDAMIENTO_VENCIDA");
   }
 
@@ -2198,7 +2529,65 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
     token,
   });
 
+  // Correo al CLIENTE avisando el reagendamiento, con la fecha/hora NUEVA (pedido directo del
+  // usuario, sin US propio — ver CLAUDE.md). Reutiliza renderConfirmationEmail/el mismo
+  // diseño del correo de confirmación (US-11/US-12), solo con tipoAccion:"reagendada" para
+  // cambiar el título/subject. Propio try/catch, independiente del de sendNotificacionInterna
+  // de arriba — un fallo acá nunca debe revertir el reagendamiento ya aplicado.
+  try {
+    const idioma: "es" | "en" = booking.language === "en" ? "en" : "es";
+    const esVirtualCita = booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual";
+    const { subject, htmlBody } = renderConfirmationEmail({
+      tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
+      idioma,
+      nombre: booking.nombre,
+      fecha: newFecha,
+      hora: newHora,
+      esVirtual: esVirtualCita,
+      meetLink: meetLinkForNotif,
+      linkReagendar: `${WEB_APP_URL}?token=${token}`,
+      clientTimezone,
+      tipoAccion: "reagendada",
+    });
+    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody });
+  } catch (e) {
+    Logger.log(`rescheduleBooking: fallo al enviar correo de reagendamiento a ${booking.correo} (token ${token}): ${(e as Error).message}`);
+  }
+
   return token;
+}
+
+// Marca que el cliente confirmó su asistencia (botón "Confirmar mi asistencia" del correo de
+// recordatorio de 48hrs, US-14), identificado por token — mismo patrón de localización que
+// cancelBooking/rescheduleBooking (findBookingByToken, nunca por correo). Solo aplica a
+// nutrición: pilates no tiene recordatorio de 48hrs ni columna asistencia_confirmada (ver
+// CLAUDE.md/prompt de US-14 — confirmado explícitamente con el usuario). Los errores
+// (ASISTENCIA_SOLO_NUTRICION/CITA_CANCELADA/TOKEN_NO_ENCONTRADO de findBookingByToken) se
+// lanzan ANTES de marcar la columna y ANTES de la notificación interna de abajo — un token
+// inválido o una cita ya cancelada no marca nada ni envía ningún correo.
+function confirmAttendance(token: string): void {
+  const booking = findBookingByToken(token);
+  if (booking.sheetName !== "Nutrición") {
+    throw new Error("ASISTENCIA_SOLO_NUTRICION");
+  }
+  if (booking.estado === "Cancelada") {
+    throw new Error("CITA_CANCELADA");
+  }
+
+  const sheet = getSheet("Nutrición");
+  sheet.getRange(booking.row, NUTRICION_ASISTENCIA_CONFIRMADA_COL).setValue(true);
+  SpreadsheetApp.flush();
+
+  // US-32 — Notificación interna a Dani/Ali de que el cliente confirmó su asistencia. Su
+  // propio try/catch vive dentro de sendNotificacionInternaConfirmada, así que un fallo de
+  // correo nunca revierte la marca de asistencia_confirmada ya escrita arriba.
+  sendNotificacionInternaConfirmada({
+    esPilates: false,
+    nombreCompleto: `${booking.nombre} ${booking.apellido}`,
+    fecha: booking.fecha,
+    hora: booking.hora,
+    token,
+  });
 }
 
 // ============================================================================
@@ -2231,6 +2620,34 @@ const TITULOS_CONFIRMACION: Record<string, Record<string, string>> = {
   },
 };
 
+// El título de pilates era texto fijo horneado en la plantilla (ver comentario de
+// correo_confirmacion_pilates_es/en.html) — se extrae aquí como constante para poder
+// reutilizarlo también como DEFAULT dentro del propio HTML (fallback si tituloConfirmacion
+// viene vacío), sin cambiar el texto que ya estaba aprobado.
+const TITULOS_CONFIRMACION_PILATES: Record<string, string> = {
+  es: "¡Tu clase de pilates está confirmada!", // confirmado (ya vivía horneado en la plantilla)
+  en: "Your pilates class is confirmed!", // confirmado (ya vivía horneado en la plantilla)
+};
+
+// BORRADOR — pendiente aprobación Gabi/Dani. Reutiliza renderConfirmationEmail (mismo
+// diseño/branding que el correo de confirmación) para el correo de reagendamiento al
+// cliente (pedido directo del usuario, sin número de US propio — ver CLAUDE.md), solo
+// cambiando el título de "confirmada" a "reagendada".
+const TITULOS_REAGENDADA: Record<string, Record<string, string>> = {
+  es: {
+    initial: "¡Tu cita inicial fue reagendada!",
+    followup: "¡Tu cita de seguimiento fue reagendada!",
+    measurement: "¡Tu cita de medición fue reagendada!",
+    pilates: "¡Tu clase de pilates fue reagendada!",
+  },
+  en: {
+    initial: "Your initial appointment has been rescheduled!",
+    followup: "Your follow-up appointment has been rescheduled!",
+    measurement: "Your measurement appointment has been rescheduled!",
+    pilates: "Your pilates class has been rescheduled!",
+  },
+};
+
 const MODALIDAD_DISPLAY: Record<string, Record<string, string>> = {
   es: { virtual: "VIRTUAL", presencial: "PRESENCIAL" },
   en: { virtual: "VIRTUAL", presencial: "IN PERSON" },
@@ -2249,6 +2666,35 @@ const SUBJECTS_CONFIRMACION: Record<string, Record<string, string>> = {
     es: "Tu clase de pilates está confirmada", // BORRADOR — pendiente aprobación Gabi
     en: "Your pilates class is confirmed", // BORRADOR — pendiente aprobación Gabi
   },
+};
+
+// BORRADOR — pendiente aprobación Gabi/Dani, mismo criterio que SUBJECTS_CONFIRMACION.
+const SUBJECTS_REAGENDADA: Record<string, Record<string, string>> = {
+  nutricion: {
+    es: "Tu cita de nutrición con Dani fue reagendada",
+    en: "Your nutrition appointment with Dani has been rescheduled",
+  },
+  pilates: {
+    es: "Tu clase de pilates fue reagendada",
+    en: "Your pilates class has been rescheduled",
+  },
+};
+
+// BORRADOR — pendiente aprobación Gabi/Dani.
+const SUBJECTS_CANCELACION: Record<string, Record<string, string>> = {
+  nutricion: {
+    es: "Tu cita de nutrición con Dani fue cancelada",
+    en: "Your nutrition appointment with Dani was cancelled",
+  },
+  pilates: {
+    es: "Tu clase de pilates fue cancelada",
+    en: "Your pilates class was cancelled",
+  },
+};
+
+const CANCELLATION_TEMPLATE_FILE: Record<string, string> = {
+  es: "correo_cancelacion_cliente_es",
+  en: "correo_cancelacion_cliente_en",
 };
 
 const TEMPLATE_FILE_BY_TIPO_IDIOMA: Record<string, Record<string, string>> = {
@@ -2322,8 +2768,14 @@ function renderConfirmationEmail(params: {
   // Sheet/Calendar), solo cómo se formatea para lectura. Default TIME_ZONE para no romper
   // testSendConfirmationEmails() (US-11), que no la pasa.
   clientTimezone?: string;
+  // "reagendada" reutiliza esta misma función/plantilla para el correo de reagendamiento al
+  // cliente (pedido directo del usuario, sin US propio — ver CLAUDE.md), solo cambiando el
+  // título y el subject de "confirmada" a "reagendada". Default "confirmacion" para no
+  // cambiar el comportamiento de bookTimeslot/testSendConfirmationEmails, que no lo pasan.
+  tipoAccion?: "confirmacion" | "reagendada";
 }): { subject: string; htmlBody: string } {
   const isPilates = params.tipoCita === "pilates";
+  const tipoAccion = params.tipoAccion || "confirmacion";
   const servicio = isPilates ? "pilates" : "nutricion";
   const templateFile = TEMPLATE_FILE_BY_TIPO_IDIOMA[servicio][params.idioma];
   const template = HtmlService.createTemplateFromFile(templateFile);
@@ -2356,8 +2808,16 @@ function renderConfirmationEmail(params: {
     meetLink: params.meetLink,
   });
 
+  // tituloConfirmacion se manda SIEMPRE ahora (antes solo para nutrición) — las plantillas
+  // de pilates tienen un fallback fijo en el propio HTML si esta variable viene vacía (ver
+  // comentario en correo_confirmacion_pilates_es/en.html), así que esto no cambia el
+  // comportamiento del caso "confirmacion" en pilates, solo habilita el título distinto de
+  // "reagendada".
+  template.tituloConfirmacion = tipoAccion === "reagendada"
+    ? (isPilates ? TITULOS_REAGENDADA[params.idioma].pilates : TITULOS_REAGENDADA[params.idioma][params.tipoCita])
+    : (isPilates ? TITULOS_CONFIRMACION_PILATES[params.idioma] : TITULOS_CONFIRMACION[params.idioma][params.tipoCita]);
+
   if (!isPilates) {
-    template.tituloConfirmacion = TITULOS_CONFIRMACION[params.idioma][params.tipoCita];
     template.modalidadDisplay = MODALIDAD_DISPLAY[params.idioma][params.esVirtual ? "virtual" : "presencial"];
     template.esVirtual = params.esVirtual;
     template.direccion = CONSULTORIO_DIRECCION;
@@ -2365,9 +2825,41 @@ function renderConfirmationEmail(params: {
     template.wazeLink = CONSULTORIO_WAZE_LINK;
   }
 
+  const subjectsMap = tipoAccion === "reagendada" ? SUBJECTS_REAGENDADA : SUBJECTS_CONFIRMACION;
   const subject = isPilates
-    ? SUBJECTS_CONFIRMACION.pilates[params.idioma]
-    : SUBJECTS_CONFIRMACION.nutricion[params.idioma];
+    ? subjectsMap.pilates[params.idioma]
+    : subjectsMap.nutricion[params.idioma];
+
+  return { subject, htmlBody: template.evaluate().getContent() };
+}
+
+// Correo al CLIENTE cuando cancela su cita/clase desde la página visual de gestión (US-31) —
+// pedido directo del usuario, sin número de US propio (ver CLAUDE.md). A diferencia de
+// renderConfirmationEmail (reutilizada para reagendar), este usa una plantilla propia y más
+// simple (correo_cancelacion_cliente_es/en.html) porque no hace falta repetir Meet/dirección/
+// reagendar/agregar-a-calendario en un correo que solo confirma que la cita ya no existe.
+// Mismo criterio de zona horaria que renderConfirmationEmail: fecha/hora en la del CLIENTE.
+function renderCancellationEmail(params: {
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  idioma: "es" | "en";
+  nombre: string;
+  fecha: string; // yyyy-MM-dd, hora del negocio (TIME_ZONE) — instante real de la cita cancelada
+  hora: string; // HH:mm, hora del negocio (TIME_ZONE)
+  clientTimezone?: string;
+}): { subject: string; htmlBody: string } {
+  const isPilates = params.tipoCita === "pilates";
+  const template = HtmlService.createTemplateFromFile(CANCELLATION_TEMPLATE_FILE[params.idioma]);
+
+  const apptInstant = parseSheetDateTime(params.fecha, params.hora);
+  const displayZone = params.clientTimezone || TIME_ZONE;
+  template.nombre = params.nombre;
+  template.esClase = isPilates;
+  template.fechaDisplay = formatFechaDisplay(apptInstant, params.idioma, displayZone);
+  template.horaDisplay = formatHoraDisplay(apptInstant, displayZone);
+
+  const subject = isPilates
+    ? SUBJECTS_CANCELACION.pilates[params.idioma]
+    : SUBJECTS_CANCELACION.nutricion[params.idioma];
 
   return { subject, htmlBody: template.evaluate().getContent() };
 }
@@ -2604,6 +3096,356 @@ function sendNotificacionInterna(params: Parameters<typeof renderNotificacionInt
   }
 }
 
+// BORRADOR — pendiente aprobación Gabi/Dani, mismo criterio que buildNotificacionInternaSubject.
+function buildNotificacionInternaConfirmadaSubject(esPilates: boolean, nombreCompleto: string): string {
+  const sustantivo = esPilates ? "clase de pilates" : "cita de nutrición";
+  return `Confirmada: ${sustantivo} — ${nombreCompleto}`;
+}
+
+// US-32 — Correo interno cuando el cliente confirma su asistencia desde el botón "Confirmar
+// mi asistencia" del recordatorio de 48hrs (US-14). Diseño de Gabriela, carpeta
+// "design-reference/Comunicaciones/4. Correo interno de _cliente confirmo cita_ antes de 24
+// hr/" — plantilla propia y más simple que notificacion_interna_nueva_cita.html (sin datos de
+// contacto ni tabla de detalles, ver comentario del propio archivo HTML). Solo aplica a
+// nutrición hoy (confirmAttendance ya lo restringe), pero el template soporta esPilates por
+// si el negocio lo extiende más adelante.
+function renderNotificacionInternaConfirmada(params: {
+  esPilates: boolean;
+  nombreCompleto: string;
+  fecha: string; // yyyy-MM-dd, TIME_ZONE — mismo criterio que renderNotificacionInterna
+  hora: string; // HH:mm, TIME_ZONE
+}): { subject: string; htmlBody: string } {
+  const template = HtmlService.createTemplateFromFile("notificacion_interna_confirmada");
+  const apptInstant = parseSheetDateTime(params.fecha, params.hora);
+
+  template.esPilates = params.esPilates;
+  template.nombreCompleto = params.nombreCompleto;
+  template.fechaDisplay = formatFechaDisplay(apptInstant, "es", TIME_ZONE);
+  template.horaDisplay = formatHoraDisplay(apptInstant, TIME_ZONE);
+  template.sheetLink = getSpreadsheetUrl();
+
+  const subject = buildNotificacionInternaConfirmadaSubject(params.esPilates, params.nombreCompleto);
+  return { subject, htmlBody: template.evaluate().getContent() };
+}
+
+// Mismo criterio que sendNotificacionInterna: el try/catch vive aquí, no en confirmAttendance,
+// para que un fallo de correo nunca revierta la marca de asistencia_confirmada ya escrita.
+function sendNotificacionInternaConfirmada(params: Parameters<typeof renderNotificacionInternaConfirmada>[0] & { token: string }): void {
+  try {
+    const { subject, htmlBody } = renderNotificacionInternaConfirmada(params);
+    GmailApp.sendEmail(NOTIFICACION_INTERNA_DESTINATARIOS.join(","), subject, "", { htmlBody });
+  } catch (e) {
+    Logger.log(`sendNotificacionInternaConfirmada: fallo al enviar notificación interna (token ${params.token}): ${(e as Error).message}`);
+  }
+}
+
+// ============================================================================
+// US-33 (RF-2.5) — Alerta interna de CANCELACIÓN TARDÍA (menos de CANCELLATION_HOURS)
+//
+// Correo aparte de la notificación interna general de "cita cancelada" (US-13/US-30): en una
+// cancelación tardía se envían los dos, cada uno con su propósito (ver notifyLateCancellation).
+//
+// Es un correo INTERNO (Dani / instructora / Ali), así que a propósito NO es bilingüe — mismo
+// criterio que renderNotificacionInterna, y explícitamente fuera del alcance de US-11.
+//
+// A diferencia del resto de correos del proyecto, el HTML se arma acá en TypeScript en vez de
+// usar HtmlService.createTemplateFromFile() sobre un archivo de backend/templates/. Razones:
+//   1. No existe (todavía) un diseño de Gabriela para esta alerta — todas las plantillas del
+//      proyecto vienen de design-reference/Comunicaciones/, y esta no tiene carpeta ahí.
+//   2. La tarjeta pide un color de alerta que NO se use en las notificaciones normales, es
+//      decir, deliberadamente fuera de la paleta del brandbook (US-28).
+//   3. Evita de raíz la regresión de <?= direccion ?> vs <?!= direccion ?> que ya se repitió
+//      3 veces en este proyecto (nota técnica #35) — acá no hay scriptlets que se puedan
+//      perder al reemplazar un archivo.
+//   4. Permite que el harness verifique el CONTENIDO real del correo: el mock de
+//      createTemplateFromFile en gas-mock.js devuelve un HTML fijo que ignora las variables
+//      inyectadas, así que ninguna aserción sobre los datos del cuerpo sería posible con una
+//      plantilla (punto ciego conocido del mock, mismo tipo que el de la nota #39).
+// Si Gabriela entrega un diseño más adelante, migrar a plantilla es un reemplazo local de
+// renderNotificacionCancelacionTardia() sin tocar nada del cableado.
+// ============================================================================
+
+// Destinatarios de la alerta, leídos SIEMPRE de Script Properties (nunca hardcodeados), mismo
+// patrón que PILATES_CALENDAR_ID/SPREADSHEET_ID:
+//   DANI_EMAIL         → nutricionista, recibe las cancelaciones tardías de nutrición
+//   INSTRUCTORA_EMAIL  → instructora de pilates, recibe las de pilates
+//   ALI_EMAIL          → secretaria, recibe TODAS (ambos flujos)
+//
+// Nota para producción (Sprint 3): estas 3 propiedades son independientes del array
+// NOTIFICACION_INTERNA_DESTINATARIOS que usan US-13/US-30/US-32, que sigue con placeholders
+// hardcodeados. Cuando se reemplacen esos placeholders por correos reales, vale la pena
+// migrar aquellas notificaciones a estas mismas propiedades para no tener dos listas de
+// destinatarios que se puedan desincronizar — fuera del alcance de US-33, que no debe tocar
+// el comportamiento ya validado de esos correos.
+const LATE_CANCELLATION_PROP_DANI = "DANI_EMAIL";
+const LATE_CANCELLATION_PROP_INSTRUCTORA = "INSTRUCTORA_EMAIL";
+const LATE_CANCELLATION_PROP_ALI = "ALI_EMAIL";
+
+// Devuelve los destinatarios de la alerta según el flujo. Lanza si falta alguna propiedad —
+// el try/catch de sendNotificacionCancelacionTardia lo convierte en un Logger.log, así que un
+// entorno mal configurado nunca revierte una cancelación ya aplicada, pero tampoco falla en
+// silencio (nota técnica #36).
+//
+// Deduplica: en testing las 3 propiedades pueden apuntar a la misma cuenta, y sin esto
+// GmailApp recibiría "x@y,x@y" y la misma persona vería el correo duplicado.
+function getLateCancellationRecipients(esPilates: boolean): string[] {
+  const props = PropertiesService.getScriptProperties();
+  const responsableKey = esPilates ? LATE_CANCELLATION_PROP_INSTRUCTORA : LATE_CANCELLATION_PROP_DANI;
+
+  const recipients: string[] = [];
+  for (const key of [responsableKey, LATE_CANCELLATION_PROP_ALI]) {
+    const value = String(props.getProperty(key) || "").trim();
+    if (!value) {
+      throw new Error(
+        `${key} no configurado en Script Properties. En testing, ejecutar ` +
+        `setupLateCancellationEmailProperties() una vez desde el editor de Apps Script. ` +
+        `En producción, guardar ahí manualmente el correo real correspondiente.`
+      );
+    }
+    if (recipients.indexOf(value) < 0) recipients.push(value);
+  }
+  return recipients;
+}
+
+// Correo de la cuenta de testing (CLAUDE.md sección 12) — SOLO se usa acá, en el helper de
+// configuración del entorno de pruebas, nunca en la lógica de envío (que siempre lee Script
+// Properties). Mismo criterio que setupPilatesTestCalendar().
+const TESTING_ACCOUNT_EMAIL = "plantpoweredani.testing@gmail.com";
+
+// Configura DANI_EMAIL/INSTRUCTORA_EMAIL/ALI_EMAIL en Script Properties con la cuenta de
+// testing, para poder probar US-33 sin cuentas reales de Dani/Ali/instructora (que no existen
+// en el entorno de pruebas). Idempotente: solo escribe las propiedades que falten, nunca pisa
+// un valor ya configurado — así, si alguien ya puso un correo real, esto no lo revierte.
+//
+// ⚠️ NO ejecutar en producción. Ahí hay que guardar los 3 correos reales a mano desde el
+// editor de Apps Script (⚙️ Configuración del proyecto → Propiedades del script).
+// Ejecutar manualmente UNA SOLA VEZ desde el editor (testing), igual que
+// setupPilatesTestCalendar()/addAsistenciaConfirmadaColumnToNutricion().
+function setupLateCancellationEmailProperties(): void {
+  const props = PropertiesService.getScriptProperties();
+  const keys = [LATE_CANCELLATION_PROP_DANI, LATE_CANCELLATION_PROP_INSTRUCTORA, LATE_CANCELLATION_PROP_ALI];
+
+  for (const key of keys) {
+    const existing = String(props.getProperty(key) || "").trim();
+    if (existing) {
+      Logger.log(`${key} ya configurado (${existing}). No se hizo ningún cambio.`);
+      continue;
+    }
+    props.setProperty(key, TESTING_ACCOUNT_EMAIL);
+    Logger.log(`${key} configurado como ${TESTING_ACCOUNT_EMAIL} (valor de TESTING).`);
+  }
+}
+
+// Etiquetas legibles del tipo de cita para este correo, con el texto EXACTO pedido en la
+// tarjeta de US-33. Aparte de TIPO_CITA_LABEL_INTERNO a propósito: ese map es más corto
+// ("Inicial") porque en la notificación de US-13/US-30 el título del correo ya da el contexto,
+// y además no tiene entrada para "pilates" (ese template usa esPilates para el título). Acá el
+// tipo se muestra como un dato más de la tabla, sin contexto alrededor, así que necesita el
+// nombre completo — y sí necesita cubrir pilates.
+const TIPO_CITA_LABEL_CANCELACION_TARDIA: Record<string, string> = {
+  initial: "Consulta inicial",
+  followup: "Seguimiento",
+  measurement: "Solo medición",
+  pilates: "Clase de pilates",
+};
+
+// Escapa los valores que vienen del Sheet (nombre, correo, teléfono, token) antes de
+// inyectarlos en el HTML que se arma a mano acá. Con HtmlService.createTemplateFromFile esto
+// lo hacía <?= ?> automáticamente; sin plantilla hay que hacerlo explícito, aunque estos datos
+// hayan pasado por el formulario del portal.
+function escapeHtmlValue(value: string): string {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+// BORRADOR — pendiente aprobación Gabi/Dani, mismo criterio que buildNotificacionInternaSubject.
+// El "⚠️" y la frase "Cancelación tardía" son justamente lo que diferencia este asunto del de
+// una cancelación normal ("Cancelada: cita de nutrición — Nombre"), para que se distinga de un
+// vistazo en la bandeja de entrada sin abrir el correo.
+function buildCancelacionTardiaSubject(nombreCompleto: string): string {
+  return `⚠️ Cancelación tardía — ${nombreCompleto}`;
+}
+
+// "3 h 25 min de anticipación" / "la cita ya había empezado" (anticipación negativa: el
+// cliente canceló después de la hora de inicio, posible porque cancelar nunca se bloquea).
+function formatAnticipacionDisplay(horas: number): string {
+  if (horas < 0) return "la cita ya había empezado";
+  const totalMinutos = Math.floor(horas * 60);
+  const h = Math.floor(totalMinutos / 60);
+  const m = totalMinutos % 60;
+  if (h <= 0) return `${m} min de anticipación`;
+  return `${h} h ${m} min de anticipación`;
+}
+
+// Fecha/hora SIEMPRE en TIME_ZONE (Costa Rica), nunca en la zona del cliente — es un correo
+// interno, mismo criterio que renderNotificacionInterna (CLAUDE.md sección 3-a).
+function renderNotificacionCancelacionTardia(params: {
+  esPilates: boolean;
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  nombreCompleto: string;
+  correo: string;
+  telefono: string;
+  fecha: string; // yyyy-MM-dd, TIME_ZONE — la cita que fue cancelada
+  hora: string; // HH:mm, TIME_ZONE
+  canceladaEn: Date; // instante real en que se hizo la cancelación
+  horasDeAnticipacion: number;
+  token: string;
+}): { subject: string; htmlBody: string } {
+  const apptInstant = parseSheetDateTime(params.fecha, params.hora);
+
+  const nombreCompleto = escapeHtmlValue(params.nombreCompleto);
+  const correo = escapeHtmlValue(params.correo);
+  const telefono = escapeHtmlValue(params.telefono);
+  const token = escapeHtmlValue(params.token);
+  const tipoCitaLabel = TIPO_CITA_LABEL_CANCELACION_TARDIA[params.tipoCita] || params.tipoCita;
+  const citaDisplay = `${formatFechaDisplay(apptInstant, "es")} · ${formatHoraDisplay(apptInstant)}`;
+  const cancelacionDisplay = `${formatFechaDisplay(params.canceladaEn, "es")} · ${formatHoraDisplay(params.canceladaEn)}`;
+  const anticipacionDisplay = formatAnticipacionDisplay(params.horasDeAnticipacion);
+  const servicio = params.esPilates ? "clase de pilates" : "cita de nutrición";
+
+  // Rojo/naranja de alerta, deliberadamente FUERA de la paleta del brandbook (US-28) y sin
+  // reutilizar ninguno de los colores de notificacion_interna_nueva_cita.html (verde/rosado
+  // para "agendada", #B9BD5B para "reagendada", #8B8B8B para "cancelada") — el requisito de la
+  // tarjeta es que este correo NO se pueda confundir con una cancelación normal.
+  const htmlBody = `<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"></head>
+<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,Helvetica,sans-serif;color:#333333;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
+    <tr><td align="center">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e5e5;">
+        <tr>
+          <td style="background:#C0392B;padding:20px 24px;">
+            <div style="font-size:13px;letter-spacing:1.5px;color:#FBE3E0;text-transform:uppercase;">Alerta interna</div>
+            <div style="font-size:22px;font-weight:bold;color:#ffffff;padding-top:4px;">&#9888;&#65039; Cancelación tardía</div>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 24px 4px 24px;">
+            <p style="margin:0;font-size:15px;line-height:1.5;">
+              <strong>${nombreCompleto}</strong> canceló su ${servicio} <strong>fuera de la ventana de ${CANCELLATION_HOURS} horas</strong>
+              establecida en la política de cancelación.
+            </p>
+            <p style="margin:12px 0 0 0;padding:10px 12px;background:#FDF3F2;border-left:4px solid #E67E22;font-size:14px;line-height:1.5;">
+              Se canceló con <strong>${anticipacionDisplay}</strong>.
+              El contador de cancelaciones tardías de este cliente ya fue actualizado en la pestaña "Clientes".
+            </p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 24px 8px 24px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;border-collapse:collapse;">
+              <tr>
+                <td style="padding:8px 0;color:#777777;width:42%;border-bottom:1px solid #eeeeee;">Cliente</td>
+                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;"><strong>${nombreCompleto}</strong></td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Tipo de cita</td>
+                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${tipoCitaLabel}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Cita cancelada</td>
+                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${citaDisplay}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Se canceló el</td>
+                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${cancelacionDisplay}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Correo</td>
+                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${correo}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Teléfono</td>
+                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${telefono}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 0;color:#777777;">Token de la cita</td>
+                <td style="padding:8px 0;font-family:monospace;font-size:12px;color:#777777;">${token}</td>
+              </tr>
+            </table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:8px 24px 24px 24px;">
+            <a href="${getSpreadsheetUrl()}" style="display:inline-block;background:#C0392B;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:4px;font-size:14px;">Ver registro completo</a>
+          </td>
+        </tr>
+        <tr>
+          <td style="background:#fafafa;padding:14px 24px;font-size:11px;color:#999999;border-top:1px solid #eeeeee;">
+            Correo interno automático — Plant Powered by Dani. Todas las horas están en hora de Costa Rica.
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+  return { subject: buildCancelacionTardiaSubject(params.nombreCompleto), htmlBody };
+}
+
+// Mismo criterio que sendNotificacionInterna/sendNotificacionInternaConfirmada: el try/catch
+// vive acá, no en el punto de llamada, para que un fallo de correo (o una Script Property sin
+// configurar) nunca revierta ni bloquee la cancelación que ya se aplicó.
+function sendNotificacionCancelacionTardia(params: Parameters<typeof renderNotificacionCancelacionTardia>[0]): void {
+  try {
+    const destinatarios = getLateCancellationRecipients(params.esPilates);
+    const { subject, htmlBody } = renderNotificacionCancelacionTardia(params);
+    GmailApp.sendEmail(destinatarios.join(","), subject, "", { htmlBody });
+  } catch (e) {
+    Logger.log(
+      `sendNotificacionCancelacionTardia: fallo al enviar la alerta de cancelación tardía ` +
+      `(token ${params.token}): ${(e as Error).message}`
+    );
+  }
+}
+
+// Función de testing manual (US-33) — envía las 2 variantes (nutrición y pilates) a la cuenta
+// que ejecuta, para inspección visual real del banner de alerta y de que se distinga a simple
+// vista de la notificación de cancelación normal. Correr manualmente desde el editor de Apps
+// Script; no forma parte de ningún flujo automático (eso ya está cableado en cancelBooking).
+function testSendNotificacionCancelacionTardia(): void {
+  const destinatario = Session.getActiveUser().getEmail();
+  const canceladaEn = new Date();
+
+  const casos: Array<Parameters<typeof renderNotificacionCancelacionTardia>[0]> = [
+    {
+      esPilates: false,
+      tipoCita: "initial",
+      nombreCompleto: "María Fernández",
+      correo: "maria@example.com",
+      telefono: "8888-8888",
+      fecha: "2026-07-28",
+      hora: "13:30",
+      canceladaEn,
+      horasDeAnticipacion: 3.42,
+      token: "token-demo-nutricion",
+    },
+    {
+      esPilates: true,
+      tipoCita: "pilates",
+      nombreCompleto: "Laura Jiménez",
+      correo: "laura@example.com",
+      telefono: "8888-9999",
+      fecha: "2026-08-01",
+      hora: "10:00",
+      canceladaEn,
+      horasDeAnticipacion: 0.75,
+      token: "token-demo-pilates",
+    },
+  ];
+
+  for (const caso of casos) {
+    const { subject, htmlBody } = renderNotificacionCancelacionTardia(caso);
+    GmailApp.sendEmail(destinatario, `[TEST] ${subject}`, "", { htmlBody });
+    Logger.log(`Enviado a ${destinatario}: ${subject}`);
+  }
+}
+
 // Función de testing manual (US-13/US-30) — genera las 6 combinaciones (nutrición/pilates x
 // agendada/reagendada/cancelada) y las envía por GmailApp a la cuenta de testing para
 // inspección visual real del badge/título por tipoAccion. Correr manualmente desde el editor
@@ -2704,4 +3546,195 @@ function testSendNotificacionInterna(): void {
     GmailApp.sendEmail(destinatario, `[TEST US-13/US-30] ${subject}`, "", { htmlBody });
     Logger.log(`Enviado: esPilates=${caso.esPilates}/tipoAccion=${caso.tipoAccion}/tipo=${caso.tipoCita}`);
   });
+}
+
+// ============================================================================
+// US-14 — Recordatorio automático 48hrs antes (SOLO nutrición — pilates no tiene
+// recordatorio de 48hrs, confirmado con el usuario) + backend base de "Confirmar asistencia"
+// ============================================================================
+
+// Convención de URL elegida para diferenciar las 3 acciones del correo de recordatorio
+// (confirmar/reagendar/cancelar) sobre la misma base que ya usa linkReagendar en
+// renderConfirmationEmail/bookTimeslot (`${WEB_APP_URL}?token=...` — ver comentario de
+// WEB_APP_URL sobre por qué NO se usa ScriptApp.getService().getUrl() aquí): se agrega un
+// parámetro `accion` con valor "confirmar" | "reagendar" | "cancelar". El linkReagendar YA
+// existente (sin `accion`) que usan el correo de confirmación (US-12) y la notificación
+// interna (US-13/US-30) se deja intacto a propósito — ese link no se toca aquí para no
+// arriesgar una regresión en flujos ya validados (nota técnica #32e del CLAUDE.md); esta
+// convención nueva con `accion` solo aplica a los 3 links del correo de recordatorio. La
+// página visual que lee `token`/`accion` desde la URL (US-31, RF-2.6) interpreta la ausencia
+// de `accion` como el comportamiento por defecto (mostrar opciones de reagendar/cancelar).
+function buildBookingActionLink(token: string, accion: "confirmar" | "reagendar" | "cancelar"): string {
+  return `${WEB_APP_URL}?token=${token}&accion=${accion}`;
+}
+
+const RECORDATORIO_TEMPLATE_FILE_BY_IDIOMA: Record<string, string> = {
+  es: "recordatorio_48h_nutricion_es",
+  en: "recordatorio_48h_nutricion_en",
+};
+
+// tipoCitaLabel del correo de recordatorio (distinto de TITULOS_CONFIRMACION/TIPO_CITA_LABEL_INTERNO
+// — este es texto en minúscula insertado a media frase, "Este es un recordatorio de tu cita de
+// ___"). Valores tomados literalmente del comentario de cada plantilla (ver
+// design-reference/Comunicaciones/3. Recordatorio 48 hrs/).
+const TIPO_CITA_LABEL_RECORDATORIO: Record<string, Record<string, string>> = {
+  es: { initial: "inicial", followup: "seguimiento", measurement: "solo medición" },
+  en: { initial: "initial", followup: "follow-up", measurement: "measurement-only" },
+};
+
+// Subject BORRADOR — pendiente aprobación Gabi/Dani, mismo criterio que SUBJECTS_CONFIRMACION.
+// Tomado tal cual del comentario "SUGGESTED SUBJECT"/"ASUNTO SUGERIDO" de cada plantilla.
+const SUBJECT_RECORDATORIO: Record<string, string> = {
+  es: "Confirma tu cita de nutrición", // BORRADOR — pendiente aprobación Gabi/Dani
+  en: "Confirm your nutrition appointment", // BORRADOR — pendiente aprobación Gabi/Dani
+};
+
+// Renderiza el correo de recordatorio 48hrs (solo nutrición). Igual que renderConfirmationEmail
+// (US-11/US-12), la fecha/hora mostradas usan la zona horaria DEL CLIENTE (clientTimezone) — es
+// un correo dirigido al cliente, a diferencia de renderNotificacionInterna (US-13/US-30, que
+// siempre usa TIME_ZONE porque es para Dani/Ali).
+function renderRecordatorio48h(params: {
+  tipoCita: "initial" | "followup" | "measurement";
+  idioma: "es" | "en";
+  nombre: string; // primer nombre únicamente, mismo criterio que renderConfirmationEmail
+  fecha: string; // yyyy-MM-dd, TIME_ZONE — instante real de la cita
+  hora: string; // HH:mm, TIME_ZONE
+  esVirtual: boolean;
+  meetLink?: string;
+  clientTimezone?: string;
+  token: string;
+}): { subject: string; htmlBody: string } {
+  const templateFile = RECORDATORIO_TEMPLATE_FILE_BY_IDIOMA[params.idioma];
+  const template = HtmlService.createTemplateFromFile(templateFile);
+
+  const apptInstant = parseSheetDateTime(params.fecha, params.hora);
+  const displayZone = params.clientTimezone || TIME_ZONE;
+
+  template.nombre = params.nombre;
+  template.tipoCitaLabel = TIPO_CITA_LABEL_RECORDATORIO[params.idioma][params.tipoCita];
+  template.fechaDisplay = formatFechaDisplay(apptInstant, params.idioma, displayZone);
+  template.horaDisplay = formatHoraDisplay(apptInstant, displayZone);
+  template.modalidadDisplay = MODALIDAD_DISPLAY[params.idioma][params.esVirtual ? "virtual" : "presencial"];
+  template.esVirtual = params.esVirtual;
+  template.meetLink = params.meetLink || "";
+  template.linkConfirmar = buildBookingActionLink(params.token, "confirmar");
+  template.linkReagendar = buildBookingActionLink(params.token, "reagendar");
+  template.linkCancelar = buildBookingActionLink(params.token, "cancelar");
+  template.direccion = CONSULTORIO_DIRECCION;
+  template.mapsLink = CONSULTORIO_MAPS_LINK;
+  template.wazeLink = CONSULTORIO_WAZE_LINK;
+
+  return { subject: SUBJECT_RECORDATORIO[params.idioma], htmlBody: template.evaluate().getContent() };
+}
+
+// Recorre "Nutrición" y envía el recordatorio de 48hrs a cada cita elegible: estado en
+// ('Agendada', 'Reagendada'), recordatorio_enviado distinto de true, y entre 47 y 49 horas
+// exactas de anticipación (instalado para correr cada hora via installRemindersTrigger — ese
+// margen de ±1hr alrededor de las 48hrs exactas da holgura suficiente sin duplicar envíos,
+// gracias al flag recordatorio_enviado que se marca inmediatamente después de enviar). Cada
+// fila se procesa en su propio try/catch: un fallo en una cita (Gmail caído, plantilla rota,
+// etc.) no debe detener el procesamiento de las demás filas — se loguea con Logger.log() para
+// revisión manual, mismo criterio que el resto de correos "best-effort" del proyecto (US-12/
+// US-13, ver sus propios comentarios de try/catch).
+function sendRemindersJob(): void {
+  const sheet = getSheet("Nutrición");
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) {
+    Logger.log("sendRemindersJob: 'Nutrición' no tiene filas de datos. Nada que procesar.");
+    return;
+  }
+
+  const numDataRows = lastRow - 1;
+  const values = sheet.getRange(2, 1, numDataRows, sheet.getLastColumn()).getValues();
+  const now = new Date();
+  let enviados = 0;
+
+  // ⚠️ Bug real (21 jul): una fila SÍ elegible (measurement, 23 jul 10:00, dentro de la
+  // ventana 47-49hrs) no disparó ningún correo ni ningún error visible — el try/catch por
+  // fila solo logueaba EXCEPCIONES, no las razones por las que una fila se salta con
+  // `continue` (que no son errores, así que nunca llegaban al catch). Diagnosticar esto
+  // exigió reconstruir el caso a mano comparando timestamps. Desde este fix, cada `continue`
+  // deja su propio Logger.log() con el motivo exacto, y al final se loguea un resumen — la
+  // próxima vez que algo no se envíe, alcanza con leer el log de esa ejecución.
+  for (let i = 0; i < numDataRows; i++) {
+    const rowNumber = i + 2;
+    const row = values[i];
+    try {
+      const token = String(row[NUTRICION_TOKEN_COL - 1]);
+      if (!token) continue; // fila vacía dentro del rango — no se loguea, es esperado
+
+      const estado = String(row[NUTRICION_ESTADO_COL - 1]);
+      if (estado !== "Agendada" && estado !== "Reagendada") {
+        Logger.log(`sendRemindersJob: fila ${rowNumber} (token ${token}) — se salta, estado='${estado}'.`);
+        continue;
+      }
+
+      const recordatorioEnviado = row[NUTRICION_RECORDATORIO_ENVIADO_COL - 1] === true;
+      if (recordatorioEnviado) {
+        Logger.log(`sendRemindersJob: fila ${rowNumber} (token ${token}) — se salta, recordatorio_enviado ya es true.`);
+        continue;
+      }
+
+      const fecha = normalizeSheetDateCell(row[NUTRICION_FECHA_COL - 1], "yyyy-MM-dd");
+      const hora = normalizeSheetDateCell(row[NUTRICION_HORA_COL - 1], "HH:mm");
+      const apptInstant = parseSheetDateTime(fecha, hora);
+      const hoursUntilStart = (apptInstant.getTime() - now.getTime()) / (60 * 60 * 1000);
+
+      if (hoursUntilStart < 47 || hoursUntilStart > 49) {
+        Logger.log(
+          `sendRemindersJob: fila ${rowNumber} (token ${token}) — se salta, fecha='${fecha}' ` +
+          `hora='${hora}' -> ${hoursUntilStart.toFixed(2)}hrs de anticipación (fuera de 47-49).`
+        );
+        continue;
+      }
+
+      const tipoCita = String(row[NUTRICION_TIPO_CITA_COL - 1]) as "initial" | "followup" | "measurement";
+      const modalidad = String(row[NUTRICION_MODALIDAD_COL - 1]);
+      const idioma: "es" | "en" = String(row[NUTRICION_IDIOMA_COL - 1]) === "en" ? "en" : "es";
+      const clientTimezone = String(row[NUTRICION_ZONA_HORARIA_COL - 1]);
+      const correo = String(row[NUTRICION_CORREO_COL - 1]);
+      const nombre = String(row[NUTRICION_NOMBRE_COL - 1]);
+      const meetLink = String(row[NUTRICION_MEET_LINK_COL - 1] || "");
+      const esVirtual = modalidad === "virtual";
+
+      const { subject, htmlBody } = renderRecordatorio48h({
+        tipoCita,
+        idioma,
+        nombre,
+        fecha,
+        hora,
+        esVirtual,
+        meetLink,
+        clientTimezone,
+        token,
+      });
+      GmailApp.sendEmail(correo, subject, "", { htmlBody });
+
+      sheet.getRange(rowNumber, NUTRICION_RECORDATORIO_ENVIADO_COL).setValue(true);
+      SpreadsheetApp.flush();
+      enviados++;
+      Logger.log(`sendRemindersJob: fila ${rowNumber} (token ${token}) — recordatorio enviado a ${correo}, ${hoursUntilStart.toFixed(2)}hrs de anticipación.`);
+    } catch (e) {
+      Logger.log(`sendRemindersJob: error procesando fila ${rowNumber} de Nutrición: ${(e as Error).message}`);
+    }
+  }
+
+  Logger.log(`sendRemindersJob: ejecución completa — ${enviados} recordatorio(s) enviado(s) de ${numDataRows} fila(s) escaneada(s).`);
+}
+
+// Instalación manual del trigger de tiempo (US-14) — ejecutar UNA SOLA VEZ desde el editor de
+// Apps Script, igual que initializeSheets()/setupPilatesTestCalendar(). Corre sendRemindersJob
+// cada hora; revisa primero los triggers ya instalados (ScriptApp.getProjectTriggers()) para
+// no duplicar el trigger si esta función se corre dos veces por accidente.
+function installRemindersTrigger(): void {
+  const existing = ScriptApp.getProjectTriggers().some(
+    (trigger) => trigger.getHandlerFunction() === "sendRemindersJob"
+  );
+  if (existing) {
+    Logger.log('Ya existe un trigger para "sendRemindersJob". No se creó ninguno nuevo.');
+    return;
+  }
+
+  ScriptApp.newTrigger("sendRemindersJob").timeBased().everyHours(1).create();
+  Logger.log('Trigger de tiempo instalado: "sendRemindersJob" corre cada hora.');
 }
