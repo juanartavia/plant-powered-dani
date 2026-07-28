@@ -202,10 +202,14 @@ function createMockContext() {
     "meet_link", "estado", "fecha_creacion", "recordatorio_enviado", "show_no_show",
     "cancelaciones_tardias", "requiere_pago", "event_id",
   ];
+  // "cancelaciones_tardias" (col 17) agregada en US-33 — refleja el estado del Sheet real
+  // DESPUÉS de correr addCancelacionTardiaColumnToPilates() (migración manual, ver app.ts).
+  // A diferencia de Nutrición, esta columna no existía antes en Pilates.
   const PILATES_HEADERS = [
     "token", "nombre", "apellido", "correo", "telefono", "tipo_id", "numero_id", "fecha_nacimiento",
     "fecha_clase", "hora_clase", "zona_horaria_cliente", "idioma",
     "estado", "fecha_inscripcion", "recordatorio_enviado", "show_no_show",
+    "cancelaciones_tardias",
   ];
   const CUPOS_HEADERS = ["fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link"];
   const CLIENTES_HEADERS = ["correo", "nombre", "apellido", "telefono", "tipo_id", "numero_id", "fecha_nacimiento", "idioma", "cancelaciones_tardias", "requiere_pago"];
@@ -219,6 +223,14 @@ function createMockContext() {
     _props: {
       SPREADSHEET_ID: "mock-spreadsheet-id",
       PILATES_CALENDAR_ID: "mock-pilates-calendar-id",
+      // US-33: destinatarios de la alerta de cancelación tardía. A propósito son 3 valores
+      // DISTINTOS entre sí, a diferencia del entorno de testing real (donde las 3 propiedades
+      // apuntan a plantpoweredani.testing@gmail.com por no haber cuentas separadas): así los
+      // tests pueden verificar que nutrición le llega a Dani y NO a la instructora, y
+      // viceversa — algo imposible de comprobar si las 3 fueran el mismo correo.
+      DANI_EMAIL: "mock-dani@test.com",
+      INSTRUCTORA_EMAIL: "mock-instructora@test.com",
+      ALI_EMAIL: "mock-ali@test.com",
     },
     getProperty(key) {
       return this._props[key] || null;
@@ -317,8 +329,22 @@ function createMockContext() {
     },
     // Mock de US-12: la URL real de deploy no existe en testing local — basta con una URL
     // fija para que linkReagendar se construya sin lanzar error.
+    // Mock de US-14: getProjectTriggers()/newTrigger() para installRemindersTrigger — no
+    // testeado línea por línea en el harness (se ejecuta manualmente en el editor real), pero
+    // se deja el mock mínimo para que no truene si algún test llega a invocarla.
     ScriptApp: {
       getService: () => ({ getUrl: () => "https://mock-script-url.example/exec" }),
+      getProjectTriggers: () => sandbox.__triggers || [],
+      newTrigger: (handlerFunction) => ({
+        timeBased: () => ({
+          everyHours: () => ({
+            create: () => {
+              sandbox.__triggers = sandbox.__triggers || [];
+              sandbox.__triggers.push({ getHandlerFunction: () => handlerFunction });
+            },
+          }),
+        }),
+      }),
     },
     // Mock de US-12: registra los correos "enviados" en sandbox.__sentEmails para que los
     // tests puedan verificar que bookTimeslot intentó mandar el correo de confirmación, sin

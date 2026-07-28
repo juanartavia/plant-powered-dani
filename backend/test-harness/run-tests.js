@@ -24,6 +24,14 @@ function freshCtx() {
   const { sandbox, spreadsheet, events } = createMockContext();
   vm.createContext(sandbox);
   new vm.Script(code, { filename: "app.js" }).runInContext(sandbox);
+  // vm.createContext no expone los built-ins del NUEVO realm como propiedades leíbles de
+  // `sandbox` (p.ej. `sandbox.Date` es undefined pese a que `new Date()` funciona bien DENTRO
+  // del código corrido con runInContext) — hay que pedirlo explícitamente evaluando el
+  // identificador dentro del contexto. Sin esto, un `new Date(...)` armado en este archivo
+  // (el realm de Node normal) nunca pasa `instanceof Date` dentro de app.js (que corre en el
+  // realm del vm) — necesario para test32 (simulateSheetsDateCoercion), que necesita construir
+  // Date "coercionados" que SÍ sean reconocidos como tales por normalizeSheetDateCell().
+  sandbox.Date = vm.runInContext("Date", sandbox);
   return { sandbox, spreadsheet, events };
 }
 
@@ -42,6 +50,42 @@ function moveBookingTo(sandbox, sheetName, row, fechaCol, horaCol, hoursFromNow)
 
 function isoInHours(h) {
   return new Date(Date.now() + h * 3600000).toISOString();
+}
+
+// Simula la coerción REAL de Google Sheets sobre las celdas fecha/hora de una cita (bug
+// confirmado en producción, 21 jul: una fila measurement con fecha=2026-07-23/hora=10:00
+// no disparó su recordatorio de 48hrs pese a estar dentro de la ventana). El mock de este
+// harness (gas-mock.js) NUNCA coerciona strings a Date automáticamente como sí hace Google
+// Sheets real — es un punto ciego documentado del mock (mismo patrón que insertCheckboxes/
+// clearContent antes de la nota #30). Esta función reproduce a mano lo que Sheets real le
+// haría a esas dos celdas si appendBookingToSheet las escribiera SIN forzar
+// setNumberFormat("@") (el estado ANTES del fix de esta tarjeta): la celda "fecha"
+// (yyyy-MM-dd, sin componente de hora) queda anclada a medianoche UTC de ese mismo
+// año/mes/día; la celda "hora" (HH:mm, sin componente de fecha) queda anclada a las
+// hh:mm UTC del día base que usa Sheets para valores de solo-hora (30 de diciembre de
+// 1899) — mismo mecanismo, ya probado en este proyecto, que causó el corrimiento de
+// fecha_nacimiento (nota técnica #29).
+function simulateSheetsDateCoercion(sandbox, sheetName, row, fechaCol, horaCol, targetInstant) {
+  const fechaStr = formatDate(targetInstant, "America/Costa_Rica", "yyyy-MM-dd");
+  const horaStr = formatDate(targetInstant, "America/Costa_Rica", "HH:mm");
+  const [y, mo, da] = fechaStr.split("-").map(Number);
+  const [hh, mi] = horaStr.split(":").map(Number);
+
+  // OJO: hay que construir estos Date con el `Date` DEL CONTEXTO DE LA VM (sandbox.Date), no
+  // el `Date` global de este archivo — app.js corre en su propio vm.createContext (ver
+  // freshCtx()/gas-mock.js), y `value instanceof Date` dentro de normalizeSheetDateCell se
+  // evalúa contra el `Date` de ESE contexto. Un Date construido con el `Date` de este archivo
+  // (otro "realm" de Node) nunca pasa `instanceof Date` allá adentro, así que quedaría
+  // silenciosamente tratado como "ya es texto plano" (rama String(value)) en vez de simular
+  // la coerción real que se quiere probar — un punto ciego del harness en sí (vm por
+  // contexto), no relacionado con el bug real de Sheets que este test reproduce.
+  const coercedFecha = new sandbox.Date(sandbox.Date.UTC(y, mo - 1, da, 0, 0, 0));
+  const coercedHora = new sandbox.Date(sandbox.Date.UTC(1899, 11, 30, hh, mi, 0));
+
+  const sheet = sandbox.SpreadsheetApp.openById().getSheetByName(sheetName);
+  sheet.getRange(row, fechaCol, 1, 1).setValue(coercedFecha);
+  sheet.getRange(row, horaCol, 1, 1).setValue(coercedHora);
+  return { fechaStr, horaStr };
 }
 
 function findTokenRow(sheet, token) {
@@ -529,9 +573,13 @@ function clientRecord(overrides) {
   sandbox.__sentEmails = []; // limpia los correos del agendamiento para aislar los de cancelBooking
   sandbox.cancelBooking(token);
   const sent = sandbox.__sentEmails || [];
-  assert(sent.length === 1, "cancelBooking envía exactamente 1 correo (la notificación interna — el cliente no recibe correo de cancelación en esta tarjeta)");
-  assert(sent[0].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna de cancelación va a los destinatarios placeholder (Dani/Ali)");
-  assert(sent[0].subject.startsWith("Cancelada:"), "el subject usa el verbo 'Cancelada'");
+  assert(sent.length === 2, "cancelBooking envía 2 correos (notificación interna + correo de cancelación al cliente)");
+  const interno = sent.find((e) => e.to.includes("plantpoweredani.testing@gmail.com"));
+  const cliente = sent.find((e) => e.to === "fabricio@test.com");
+  assert(!!interno, "la notificación interna de cancelación va a los destinatarios placeholder (Dani/Ali)");
+  assert(interno.subject.startsWith("Cancelada:"), "el subject de la notificación interna usa el verbo 'Cancelada'");
+  assert(!!cliente, "el cliente recibe su propio correo de cancelación");
+  assert(cliente.subject.toLowerCase().includes("cancel"), "el subject del correo al cliente menciona la cancelación");
 })();
 
 // ── Test 22: rescheduleBooking envía notificación interna (tipoAccion=reagendada) ──────────
@@ -545,9 +593,13 @@ function clientRecord(overrides) {
   sandbox.__sentEmails = []; // limpia los correos del agendamiento para aislar los de rescheduleBooking
   sandbox.rescheduleBooking(token, isoInHours(96), "America/Costa_Rica");
   const sent = sandbox.__sentEmails || [];
-  assert(sent.length === 1, "rescheduleBooking envía exactamente 1 correo (la notificación interna)");
-  assert(sent[0].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna de reagendamiento va a los destinatarios placeholder (Dani/Ali)");
-  assert(sent[0].subject.startsWith("Reagendada:"), "el subject usa el verbo 'Reagendada'");
+  assert(sent.length === 2, "rescheduleBooking envía 2 correos (notificación interna + correo de reagendamiento al cliente)");
+  const interno = sent.find((e) => e.to.includes("plantpoweredani.testing@gmail.com"));
+  const cliente = sent.find((e) => e.to === "gina@test.com");
+  assert(!!interno, "la notificación interna de reagendamiento va a los destinatarios placeholder (Dani/Ali)");
+  assert(interno.subject.startsWith("Reagendada:"), "el subject de la notificación interna usa el verbo 'Reagendada'");
+  assert(!!cliente, "el cliente recibe su propio correo de reagendamiento");
+  assert(cliente.subject.toLowerCase().includes("reagendad"), "el subject del correo al cliente menciona el reagendamiento");
 })();
 
 // ── Test 23: pilates también dispara notificación interna al agendar/reagendar/cancelar ───
@@ -564,12 +616,16 @@ function clientRecord(overrides) {
   sandbox.__sentEmails = [];
   sandbox.rescheduleBooking(token, isoInHours(400), "America/Costa_Rica");
   const sentReagendar = sandbox.__sentEmails || [];
-  assert(sentReagendar.length === 1 && sentReagendar[0].subject.startsWith("Reagendada:"), "reagendar pilates dispara la notificación interna de reagendamiento");
+  assert(sentReagendar.length === 2, "reagendar pilates envía 2 correos (notificación interna + correo al cliente)");
+  assert(sentReagendar.some((e) => e.subject.startsWith("Reagendada:")), "reagendar pilates dispara la notificación interna de reagendamiento");
+  assert(sentReagendar.some((e) => e.to === "hugo@test.com"), "reagendar pilates también envía el correo de reagendamiento al cliente");
 
   sandbox.__sentEmails = [];
   sandbox.cancelBooking(token);
   const sentCancelar = sandbox.__sentEmails || [];
-  assert(sentCancelar.length === 1 && sentCancelar[0].subject.startsWith("Cancelada:"), "cancelar pilates dispara la notificación interna de cancelación");
+  assert(sentCancelar.length === 2, "cancelar pilates envía 2 correos (notificación interna + correo al cliente)");
+  assert(sentCancelar.some((e) => e.subject.startsWith("Cancelada:")), "cancelar pilates dispara la notificación interna de cancelación");
+  assert(sentCancelar.some((e) => e.to === "hugo@test.com"), "cancelar pilates también envía el correo de cancelación al cliente");
 })();
 
 // ── Test 24: un fallo de GmailApp.sendEmail en la notificación interna no revierte ni ──────
@@ -617,6 +673,409 @@ function clientRecord(overrides) {
   });
   assert(typeof htmlBody === "string" && htmlBody.length > 0, "renderNotificacionInterna produce htmlBody no vacío");
   assert(sandbox.formatFechaDisplay(nuevoInstante, "es", "America/Costa_Rica").length > 0, "formatFechaDisplay (usado internamente, siempre en TIME_ZONE) funciona sobre la fecha nueva pasada");
+})();
+
+// ── Test 26: sendRemindersJob envía el recordatorio dentro de la ventana 47-49hrs ──────────
+(function test26() {
+  console.log("Test 26: sendRemindersJob envía recordatorio dentro de la ventana 47-49hrs y marca el flag");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Deby", "Solis", "deby@test.com", "8888-0010", "cedula", "1-2222-6666",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 48); // dentro de 47-49hrs
+
+  const emailsBefore = (sandbox.__sentEmails || []).length;
+  sandbox.sendRemindersJob();
+  const emailsAfter = (sandbox.__sentEmails || []).length;
+
+  assert(emailsAfter === emailsBefore + 1, "se envía exactamente 1 correo de recordatorio nuevo");
+  assert(nutSheet.getRange(row, 18, 1, 1).getValue() === true, "recordatorio_enviado queda en true");
+})();
+
+// ── Test 27: sendRemindersJob NO envía fuera de la ventana 47-49hrs ────────────────────────
+(function test27() {
+  console.log("Test 27: sendRemindersJob no envía nada fuera de la ventana 47-49hrs");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "followup", isoInHours(72), "Efrain", "Vargas", "efrain@test.com", "8888-0011", "cedula", "1-2222-7777",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 60); // fuera de la ventana
+
+  const emailsBefore = (sandbox.__sentEmails || []).length;
+  sandbox.sendRemindersJob();
+  const emailsAfter = (sandbox.__sentEmails || []).length;
+
+  assert(emailsAfter === emailsBefore, "no se envía ningún correo nuevo");
+  assert(nutSheet.getRange(row, 18, 1, 1).getValue() !== true, "recordatorio_enviado sigue sin marcarse");
+})();
+
+// ── Test 28: sendRemindersJob no duplica el envío si recordatorio_enviado ya es true ───────
+(function test28() {
+  console.log("Test 28: sendRemindersJob no reenvía si recordatorio_enviado ya está en true");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "measurement", isoInHours(72), "Fabiola", "Rojas", "fabiola@test.com", "8888-0012", "cedula", "1-2222-8888",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 48);
+  nutSheet.getRange(row, 18, 1, 1).setValue(true); // ya se había enviado antes
+
+  const emailsBefore = (sandbox.__sentEmails || []).length;
+  sandbox.sendRemindersJob();
+  const emailsAfter = (sandbox.__sentEmails || []).length;
+
+  assert(emailsAfter === emailsBefore, "no se envía un segundo correo de recordatorio");
+})();
+
+// ── Test 29: sendRemindersJob no envía si la cita está Cancelada ───────────────────────────
+(function test29() {
+  console.log("Test 29: sendRemindersJob no envía recordatorio a una cita Cancelada");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Gerardo", "Mora", "gerardo@test.com", "8888-0013", "cedula", "1-2222-9999",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 48);
+  nutSheet.getRange(row, 16, 1, 1).setValue("Cancelada");
+
+  const emailsBefore = (sandbox.__sentEmails || []).length;
+  sandbox.sendRemindersJob();
+  const emailsAfter = (sandbox.__sentEmails || []).length;
+
+  assert(emailsAfter === emailsBefore, "no se envía ningún correo a una cita cancelada");
+  assert(nutSheet.getRange(row, 18, 1, 1).getValue() !== true, "recordatorio_enviado no se marca en una cita cancelada");
+})();
+
+// ── Test 30: confirmAttendance con token válido marca asistencia_confirmada ────────────────
+(function test30() {
+  console.log("Test 30: confirmAttendance marca asistencia_confirmada=true con un token válido");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Helena", "Castro", "helena@test.com", "8888-0014", "cedula", "1-3333-0000",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+
+  sandbox.__sentEmails = []; // limpia los correos del agendamiento para aislar el de US-32
+  let threw = null;
+  try {
+    sandbox.confirmAttendance(token);
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === null, "confirmAttendance no lanza error con un token válido");
+  assert(nutSheet.getRange(row, 23, 1, 1).getValue() === true, "asistencia_confirmada queda en true");
+  const sent = sandbox.__sentEmails || [];
+  assert(sent.length === 1, "US-32: confirmAttendance envía exactamente 1 correo (notificación interna de asistencia confirmada)");
+  assert(sent[0].to.includes("plantpoweredani.testing@gmail.com"), "el correo de asistencia confirmada va a los destinatarios placeholder (Dani/Ali)");
+  assert(sent[0].subject.startsWith("Confirmada:"), "el subject usa el verbo 'Confirmada'");
+})();
+
+// ── Test 31: confirmAttendance con una cita ya cancelada lanza CITA_CANCELADA ──────────────
+(function test31() {
+  console.log("Test 31: confirmAttendance falla en una cita cancelada (CITA_CANCELADA), no marca el flag");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "followup", isoInHours(72), "Ignacio", "Duarte", "ignacio@test.com", "8888-0015", "cedula", "1-3333-1111",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  sandbox.cancelBooking(token);
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+
+  sandbox.__sentEmails = []; // limpia los correos de cancelBooking para aislar confirmAttendance
+  let threw = null;
+  try {
+    sandbox.confirmAttendance(token);
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "CITA_CANCELADA", "lanza CITA_CANCELADA");
+  assert(nutSheet.getRange(row, 23, 1, 1).getValue() !== true, "asistencia_confirmada no se marca en una cita cancelada");
+  assert((sandbox.__sentEmails || []).length === 0, "US-32: no se envía ningún correo de asistencia confirmada en una cita cancelada (el error se lanza antes de llegar a ese punto)");
+})();
+
+// ── Test 32: reproduce el bug real (21 jul) — fecha/hora coercionadas por Sheets a Date ────
+// real, sendRemindersJob DEBE seguir detectando la cita dentro de la ventana 47-49hrs pese a
+// la coerción. Antes del fix (normalizeSheetDateCell reformateaba con TIME_ZONE en vez de
+// UTC + appendBookingToSheet no protegía las celdas con setNumberFormat("@")), este test
+// fallaba: el correo nunca se enviaba porque las horas de anticipación calculadas quedaban
+// fuera de la ventana por el corrimiento de zona horaria. NOTA sobre el punto ciego del
+// mock: gas-mock.js no coerciona solo NUNCA por su cuenta — simulateSheetsDateCoercion()
+// reproduce a mano lo que SÍ le pasaría a estas celdas en Google Sheets real si quedaran sin
+// la protección de setNumberFormat("@") agregada en este fix.
+(function test32() {
+  console.log("Test 32: sendRemindersJob detecta la cita aunque fecha/hora vengan coercionadas a Date (bug real 21 jul)");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "measurement", isoInHours(72), "Julieta", "Mora", "julieta@test.com", "8888-0016", "cedula", "1-3333-2222",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+
+  const targetInstant = new Date(Date.now() + 48 * 3600000); // dentro de la ventana 47-49hrs
+  simulateSheetsDateCoercion(sandbox, "Nutrición", row, 10, 11, targetInstant);
+
+  // Confirma que la simulación realmente dejó objetos Date en las celdas (no strings) —
+  // si esto fallara, el test no estaría probando lo que dice probar.
+  const rawFecha = nutSheet.getRange(row, 10, 1, 1).getValue();
+  const rawHora = nutSheet.getRange(row, 11, 1, 1).getValue();
+  // instanceof contra sandbox.Date, no el Date de este archivo — ver comentario de
+  // simulateSheetsDateCoercion sobre el punto ciego de realms distintos entre vm.createContext
+  // y el proceso Node que corre run-tests.js.
+  assert(rawFecha instanceof sandbox.Date && rawHora instanceof sandbox.Date, "las celdas fecha/hora quedan como objetos Date (coerción simulada)");
+
+  const emailsBefore = (sandbox.__sentEmails || []).length;
+  sandbox.sendRemindersJob();
+  const emailsAfter = (sandbox.__sentEmails || []).length;
+
+  assert(emailsAfter === emailsBefore + 1, "sendRemindersJob SÍ envía el recordatorio pese a fecha/hora coercionadas a Date");
+  assert(nutSheet.getRange(row, 18, 1, 1).getValue() === true, "recordatorio_enviado queda en true pese a la coerción");
+})();
+
+// ── Test 33: appendBookingToSheet escribe fecha/hora como string ───────────────────────────
+// ⚠️ ESTE TEST NO PRUEBA QUE EL FIX FUNCIONE EN GOOGLE SHEETS REAL. gas-mock.js NUNCA
+// coerciona strings a Date por su cuenta (documentado arriba, junto a simulateSheetsDateCoercion,
+// y en la nota #30 del CLAUDE.md) — por eso este test pasaba en verde incluso con el primer
+// intento de fix (formatear la fila con setNumberFormat("@") ANTES de appendRow()), que se
+// confirmó A MANO que NO funcionaba en el Sheet real (21 jul: una fila nueva de Nutrición
+// seguía abriendo el selector de calendario al hacer doble clic en la celda "fecha"). Lo único
+// que este test verifica es que bookTimeslot no rompe y que el VALOR lógico que se intenta
+// guardar es el string correcto — no verifica ni puede verificar si Sheets real lo coerciona
+// a Date al escribirlo. La única prueba válida de este fix es manual: agendar una cita NUEVA
+// en el Sheet real (Nutrición y Pilates) y confirmar con doble clic en la celda fecha/hora que
+// YA NO aparece el selector de calendario emergente.
+(function test33() {
+  console.log("Test 33: appendBookingToSheet escribe fecha/hora como string (NO prueba el fix real de coerción — ver comentario arriba)");
+  const { sandbox } = freshCtx();
+
+  const tokenNutricion = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Karla", "Nunez", "karla@test.com", "8888-0017", "cedula", "1-3333-3333",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const nutRow = findTokenRow(nutSheet, tokenNutricion);
+  assert(
+    typeof nutSheet.getRange(nutRow, 10, 1, 1).getValue() === "string" && typeof nutSheet.getRange(nutRow, 11, 1, 1).getValue() === "string",
+    "fecha/hora de Nutrición se guardan como string en el mock (setNumberFormat aplicado antes de escribir, mismo patrón que fecha_nacimiento/Cupos_Pilates)"
+  );
+
+  const tokenPilates = sandbox.bookTimeslot(
+    "pilates", isoInHours(20), "Luis", "Ortiz", "luis@test.com", "8888-0018", "cedula", "1-3333-4444",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const pilSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Pilates");
+  const pilRow = findTokenRow(pilSheet, tokenPilates);
+  assert(
+    typeof pilSheet.getRange(pilRow, 9, 1, 1).getValue() === "string" && typeof pilSheet.getRange(pilRow, 10, 1, 1).getValue() === "string",
+    "fecha_clase/hora_clase de Pilates se guardan como string en el mock"
+  );
+})();
+
+// ── Test 34: confirmAttendance con un token inválido no marca nada ni envía correo ─────────
+(function test34() {
+  console.log("Test 34: confirmAttendance con token inválido (TOKEN_NO_ENCONTRADO) no envía ningún correo");
+  const { sandbox } = freshCtx();
+  sandbox.__sentEmails = [];
+
+  let threw = null;
+  try {
+    sandbox.confirmAttendance("token-que-no-existe");
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "TOKEN_NO_ENCONTRADO", "lanza TOKEN_NO_ENCONTRADO");
+  assert((sandbox.__sentEmails || []).length === 0, "US-32: no se envía ningún correo con un token inválido");
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// US-33 — Alerta interna de cancelación tardía (RF-2.5)
+//
+// Los destinatarios salen de Script Properties (DANI_EMAIL/INSTRUCTORA_EMAIL/ALI_EMAIL), que
+// en gas-mock.js son 3 correos DISTINTOS a propósito — en el entorno de testing real las 3
+// apuntan a la misma cuenta, pero con valores distintos acá se puede verificar el ruteo por
+// tipo de cita (nutrición → Dani, pilates → instructora, Ali en ambos).
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+// Localiza la alerta de US-33 entre los correos enviados, por su asunto (el "⚠️ Cancelación
+// tardía" es justamente lo que la diferencia de la notificación normal "Cancelada: ...").
+function findAlertaTardia(sandbox) {
+  return (sandbox.__sentEmails || []).find((e) => e.subject.indexOf("Cancelación tardía") >= 0);
+}
+
+// ── Test 35: cancelar <24hrs (nutrición) → marca la columna, alerta a Dani + Ali ───────────
+(function test35() {
+  console.log("Test 35: cancelación tardía de nutrición marca cancelaciones_tardias y alerta a Dani+Ali");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Mariela", "Chacon", "mariela@test.com", "8888-0020", "cedula", "1-4444-0000",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 5); // faltan 5hrs < CANCELLATION_HOURS
+
+  sandbox.__sentEmails = []; // aísla los correos de cancelBooking de los del agendamiento
+  const result = sandbox.cancelBooking(token);
+
+  assert(result.lateCancellation === true, "la cancelación se detecta como tardía");
+  // Columna 20 = "cancelaciones_tardias" de Nutrición (NUTRICION_CANCELACION_TARDIA_COL),
+  // la columna que ya existía y US-33 reutiliza — NO se creó ninguna nueva en esta pestaña.
+  assert(nutSheet.getRange(row, 20, 1, 1).getValue() === true, "cancelaciones_tardias (col 20, por cita) queda en TRUE");
+
+  const sent = sandbox.__sentEmails || [];
+  assert(sent.length === 3, "se envían 3 correos: notificación interna general + correo al cliente + alerta de cancelación tardía");
+
+  const alerta = findAlertaTardia(sandbox);
+  assert(!!alerta, "se envía la alerta de US-33 con asunto de cancelación tardía");
+  assert(alerta.subject === "⚠️ Cancelación tardía — Mariela Chacon", "el asunto lleva el ⚠️ y el nombre del cliente (distinto al de una cancelación normal)");
+  assert(alerta.to.indexOf("mock-dani@test.com") >= 0, "la alerta de nutrición va a Dani (DANI_EMAIL)");
+  assert(alerta.to.indexOf("mock-ali@test.com") >= 0, "la alerta de nutrición también va a Ali (ALI_EMAIL)");
+  assert(alerta.to.indexOf("mock-instructora@test.com") < 0, "la alerta de nutrición NO va a la instructora de pilates");
+
+  // La notificación interna general (US-13/US-30) sigue enviándose además de la alerta —
+  // conviven, no se reemplazan.
+  assert(sent.some((e) => e.subject.indexOf("Cancelada:") === 0), "la notificación interna general de cancelación se sigue enviando aparte");
+
+  // El contador acumulado POR CLIENTE (US-06) sigue siendo una escritura independiente.
+  assert(sandbox.getClientPaymentStatus("mariela@test.com").cancelaciones_tardias === 1, "el contador por cliente en 'Clientes' sube a 1 (lógica de US-06 intacta)");
+})();
+
+// ── Test 36: cancelar >=24hrs → NO marca la columna ni envía la alerta ─────────────────────
+(function test36() {
+  console.log("Test 36: cancelación a tiempo (>=24hrs) no marca la columna ni dispara la alerta");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "followup", isoInHours(72), "Norberto", "Salas", "norberto@test.com", "8888-0021", "cedula", "1-4444-1111",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  // La cita queda a 72hrs — sin moveBookingTo, muy por fuera de la ventana de 24hrs.
+
+  sandbox.__sentEmails = [];
+  const result = sandbox.cancelBooking(token);
+
+  assert(result.lateCancellation === false, "la cancelación NO se detecta como tardía");
+  assert(nutSheet.getRange(row, 20, 1, 1).getValue() !== true, "cancelaciones_tardias (col 20) NO se marca en TRUE");
+  assert(!findAlertaTardia(sandbox), "NO se envía ninguna alerta de cancelación tardía");
+  assert((sandbox.__sentEmails || []).length === 2, "solo se envían los 2 correos de siempre (notificación interna + correo al cliente)");
+})();
+
+// ── Test 37: cancelar <24hrs (pilates) → columna de Pilates + alerta a instructora + Ali ───
+(function test37() {
+  console.log("Test 37: cancelación tardía de pilates marca su columna y alerta a la instructora+Ali (no a Dani)");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "pilates", isoInHours(200), "Olga", "Bermudez", "olga@test.com", "8888-0022", "cedula", "1-4444-2222",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const pilSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Pilates");
+  const row = findTokenRow(pilSheet, token);
+  moveBookingTo(sandbox, "Pilates", row, 9, 10, 6); // faltan 6hrs < CANCELLATION_HOURS
+
+  sandbox.__sentEmails = [];
+  const result = sandbox.cancelBooking(token);
+
+  assert(result.lateCancellation === true, "la cancelación de pilates se detecta como tardía");
+  // Columna 17 = PILATES_CANCELACION_TARDIA_COL, agregada en US-33 porque "Pilates" NUNCA
+  // tuvo la columna cancelaciones_tardias que sí existía en Nutrición (ver el comentario de
+  // la constante en app.ts y addCancelacionTardiaColumnToPilates).
+  assert(pilSheet.getRange(row, 17, 1, 1).getValue() === true, "cancelaciones_tardias (col 17 de Pilates, por inscripción) queda en TRUE");
+
+  const alerta = findAlertaTardia(sandbox);
+  assert(!!alerta, "se envía la alerta de US-33 también en el flujo de pilates");
+  assert(alerta.to.indexOf("mock-instructora@test.com") >= 0, "la alerta de pilates va a la instructora (INSTRUCTORA_EMAIL)");
+  assert(alerta.to.indexOf("mock-ali@test.com") >= 0, "la alerta de pilates también va a Ali (ALI_EMAIL)");
+  assert(alerta.to.indexOf("mock-dani@test.com") < 0, "la alerta de pilates NO va a Dani");
+})();
+
+// ── Test 38: el cuerpo del correo trae los 4 datos requeridos por la tarjeta ───────────────
+// Se llama a renderNotificacionCancelacionTardia() directamente (no vía cancelBooking) para
+// poder fijar valores conocidos y compararlos contra el HTML real. Esto SOLO es posible
+// porque este correo arma su HTML en TypeScript en vez de usar una plantilla: el mock de
+// HtmlService.createTemplateFromFile devuelve un HTML fijo que ignora las variables
+// inyectadas, así que ninguna aserción de contenido sería posible con una plantilla (mismo
+// tipo de punto ciego del mock que documenta la nota #39 del CLAUDE.md).
+(function test38() {
+  console.log("Test 38: el cuerpo de la alerta incluye nombre, tipo de cita, fecha/hora de la cita y de la cancelación");
+  const { sandbox } = freshCtx();
+
+  const canceladaEn = sandbox.parseSheetDateTime("2026-07-27", "08:15");
+  const { subject, htmlBody } = sandbox.renderNotificacionCancelacionTardia({
+    esPilates: false,
+    tipoCita: "initial",
+    nombreCompleto: "Paula Rojas",
+    correo: "paula@test.com",
+    telefono: "8888-0023",
+    fecha: "2026-07-28",
+    hora: "13:30",
+    canceladaEn,
+    horasDeAnticipacion: 5.5,
+    token: "tok-38",
+  });
+
+  const citaInstant = sandbox.parseSheetDateTime("2026-07-28", "13:30");
+
+  // (1) nombre completo del cliente
+  assert(htmlBody.indexOf("Paula Rojas") >= 0, "dato 1/4: el cuerpo incluye el nombre completo del cliente");
+  // (2) tipo de cita traducido a texto legible (no el código interno "initial")
+  assert(htmlBody.indexOf("Consulta inicial") >= 0, 'dato 2/4: el tipo de cita aparece legible ("Consulta inicial", no "initial")');
+  // (3) fecha y hora de la cita cancelada, en hora de Costa Rica
+  assert(htmlBody.indexOf(sandbox.formatFechaDisplay(citaInstant, "es")) >= 0, "dato 3/4a: el cuerpo incluye la FECHA de la cita cancelada");
+  assert(htmlBody.indexOf(sandbox.formatHoraDisplay(citaInstant)) >= 0, "dato 3/4b: el cuerpo incluye la HORA de la cita cancelada");
+  // (4) fecha y hora en que se hizo la cancelación
+  assert(htmlBody.indexOf(sandbox.formatFechaDisplay(canceladaEn, "es")) >= 0, "dato 4/4a: el cuerpo incluye la FECHA en que se hizo la cancelación");
+  assert(htmlBody.indexOf(sandbox.formatHoraDisplay(canceladaEn)) >= 0, "dato 4/4b: el cuerpo incluye la HORA en que se hizo la cancelación");
+
+  // Debe quedar claro que fue TARDÍA, y distinguirse visualmente de una cancelación normal.
+  assert(subject.indexOf("⚠️") >= 0 && subject.indexOf("Cancelación tardía") >= 0, "el asunto marca explícitamente que fue una cancelación tardía");
+  assert(htmlBody.indexOf("fuera de la ventana de 24 horas") >= 0, "el cuerpo dice explícitamente que fue fuera de la ventana de 24 horas");
+  assert(htmlBody.indexOf("5 h 30 min de anticipación") >= 0, "el cuerpo indica con cuánta anticipación real se canceló");
+  assert(htmlBody.indexOf("#C0392B") >= 0, "el cuerpo usa el color de alerta rojo, que no se usa en las notificaciones internas normales");
+})();
+
+// ── Test 39: una Script Property de destinatarios sin configurar no revierte la cancelación ─
+(function test39() {
+  console.log("Test 39: falta DANI_EMAIL → se registra el fallo pero la cancelación (y la bandera) se aplican igual");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "measurement", isoInHours(72), "Quirico", "Mena", "quirico@test.com", "8888-0024", "cedula", "1-4444-3333",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 2);
+
+  // Simula el entorno mal configurado (nunca se corrió setupLateCancellationEmailProperties()).
+  sandbox.PropertiesService.getScriptProperties().setProperty("DANI_EMAIL", "");
+
+  sandbox.__sentEmails = [];
+  let threw = null;
+  let result = null;
+  try {
+    result = sandbox.cancelBooking(token);
+  } catch (e) {
+    threw = e.message;
+  }
+
+  assert(threw === null, "cancelBooking NO relanza el error de la Script Property faltante");
+  assert(result.lateCancellation === true, "la cancelación se sigue reportando como tardía");
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Cancelada", "la cita sí queda 'Cancelada' en el Sheet");
+  assert(nutSheet.getRange(row, 20, 1, 1).getValue() === true, "la bandera por cita sí se marca (se escribe antes de intentar el correo)");
+  assert(!findAlertaTardia(sandbox), "no se envía la alerta (no hay destinatario válido), pero nada más se rompe");
 })();
 
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
