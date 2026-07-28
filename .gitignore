@@ -25,3 +25,7 @@ dist-ssr
 
 .clasp.json
 backend/test-harness/out/
+
+# Recuperación temporal del frontend de US-31 (OneDrive version history) — no comitear
+_recovered-frontend/
+*.zip

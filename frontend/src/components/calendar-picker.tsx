@@ -38,6 +38,7 @@ import {
 import * as React from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useTimezoneDropdown } from "./timezone-dropdown";
+import logoUrl from "@/assets/logo.png";
 
 declare global {
   interface Window {
@@ -417,6 +418,11 @@ export function CalendarPicker() {
         </When>
         {step === "calendar" && (
           <CardHeader className="max-w-full">
+            <img
+              src={logoUrl}
+              alt="Plant Powered by Dani"
+              className="w-36 mx-auto mb-4"
+            />
             <div className="flex justify-between items-center flex-col sm:flex-row gap-4 relative">
               <CardTitle className="max-w-64">
                 <div className="overflow-hidden">
@@ -665,7 +671,7 @@ function EmailStep({
   );
 }
 
-function CalendarTimeslotPicker({
+export function CalendarTimeslotPicker({
   handlePreviousMonth,
   currentMonth,
   handleNextMonth,
