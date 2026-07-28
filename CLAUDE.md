@@ -608,6 +608,7 @@ plantillas de recordatorio/notificación interna (no existen todavía, US-13/US-
 - Resolver acceso desde móvil (nota 17) antes de dar por completo RNF-3/RF-1.4.
 - Checklist de acceso de producción (sección 6).
 - Auditar `WORKDAYS`/`WORKHOURS` reales de Dani para NUTRICIÓN (pilates ya resuelto el 17 jul).
+- CLAUDE.md quedó desactualizado entre v27 y v42 — reconstruir el historial de deploys faltante (US-13/US-30, US-31, US-32, US-33, US-28 + fixes) cuando haya oportunidad, no bloquea nada.
 
 ---
 
@@ -619,7 +620,7 @@ plantillas de recordatorio/notificación interna (no existen todavía, US-13/US-
 | Credenciales | Guardadas en Drive: AutomáTica / Plant Powered Dani / Interno |
 | URL de testing activa | https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec |
 | Editor Apps Script | https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit |
-| Versión actual | **v23** |
+| Versión actual | **v44** (clasp version 44 — deployment actualizado 27 jul 2026, US-33: notificación de cancelación tardía + fix de build) |
 | Repo | https://github.com/juanartavia/plant-powered-dani |
 | Spreadsheet testing | https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit |
 | Calendario pilates (testing) | "Pilates - Testing" |
