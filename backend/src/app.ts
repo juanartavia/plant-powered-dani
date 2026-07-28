@@ -3148,21 +3148,18 @@ function sendNotificacionInternaConfirmada(params: Parameters<typeof renderNotif
 // Es un correo INTERNO (Dani / instructora / Ali), así que a propósito NO es bilingüe — mismo
 // criterio que renderNotificacionInterna, y explícitamente fuera del alcance de US-11.
 //
-// A diferencia del resto de correos del proyecto, el HTML se arma acá en TypeScript en vez de
-// usar HtmlService.createTemplateFromFile() sobre un archivo de backend/templates/. Razones:
-//   1. No existe (todavía) un diseño de Gabriela para esta alerta — todas las plantillas del
-//      proyecto vienen de design-reference/Comunicaciones/, y esta no tiene carpeta ahí.
-//   2. La tarjeta pide un color de alerta que NO se use en las notificaciones normales, es
-//      decir, deliberadamente fuera de la paleta del brandbook (US-28).
-//   3. Evita de raíz la regresión de <?= direccion ?> vs <?!= direccion ?> que ya se repitió
-//      3 veces en este proyecto (nota técnica #35) — acá no hay scriptlets que se puedan
-//      perder al reemplazar un archivo.
-//   4. Permite que el harness verifique el CONTENIDO real del correo: el mock de
-//      createTemplateFromFile en gas-mock.js devuelve un HTML fijo que ignora las variables
-//      inyectadas, así que ninguna aserción sobre los datos del cuerpo sería posible con una
-//      plantilla (punto ciego conocido del mock, mismo tipo que el de la nota #39).
-// Si Gabriela entrega un diseño más adelante, migrar a plantilla es un reemplazo local de
-// renderNotificacionCancelacionTardia() sin tocar nada del cableado.
+// Hasta el 27 jul 2026 el HTML se armaba acá mismo en TypeScript (string concatenado) en vez
+// de usar una plantilla real de backend/templates/, porque no existía todavía un diseño de
+// Gabriela para esta alerta específica. Eso permitía que el harness verificara el CONTENIDO
+// real del correo con aserciones de texto (el mock de HtmlService.createTemplateFromFile en
+// gas-mock.js devuelve un HTML fijo que ignora las variables inyectadas — punto ciego conocido,
+// documentado en la nota técnica #39 — así que con una plantilla real esas aserciones de
+// contenido dejan de ser posibles, mismo límite que ya tienen renderNotificacionInterna/
+// renderConfirmationEmail). Migrado a backend/templates/notificacion_cancelacion_tardia.html
+// (mismo patrón que renderNotificacionInterna) porque visualmente no coincidía con el resto
+// del sistema — ver CLAUDE.md. El Test 38 del harness se ajustó para probar los helpers puros
+// (formatAnticipacionDisplay, TIPO_CITA_LABEL_CANCELACION_TARDIA, subject) directamente en vez
+// de buscar texto dentro de htmlBody.
 // ============================================================================
 
 // Destinatarios de la alerta, leídos SIEMPRE de Script Properties (nunca hardcodeados), mismo
@@ -3249,18 +3246,6 @@ const TIPO_CITA_LABEL_CANCELACION_TARDIA: Record<string, string> = {
   pilates: "Clase de pilates",
 };
 
-// Escapa los valores que vienen del Sheet (nombre, correo, teléfono, token) antes de
-// inyectarlos en el HTML que se arma a mano acá. Con HtmlService.createTemplateFromFile esto
-// lo hacía <?= ?> automáticamente; sin plantilla hay que hacerlo explícito, aunque estos datos
-// hayan pasado por el formulario del portal.
-function escapeHtmlValue(value: string): string {
-  return String(value)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
 // BORRADOR — pendiente aprobación Gabi/Dani, mismo criterio que buildNotificacionInternaSubject.
 // El "⚠️" y la frase "Cancelación tardía" son justamente lo que diferencia este asunto del de
 // una cancelación normal ("Cancelada: cita de nutrición — Nombre"), para que se distinga de un
@@ -3294,98 +3279,25 @@ function renderNotificacionCancelacionTardia(params: {
   horasDeAnticipacion: number;
   token: string;
 }): { subject: string; htmlBody: string } {
+  const template = HtmlService.createTemplateFromFile("notificacion_cancelacion_tardia");
   const apptInstant = parseSheetDateTime(params.fecha, params.hora);
 
-  const nombreCompleto = escapeHtmlValue(params.nombreCompleto);
-  const correo = escapeHtmlValue(params.correo);
-  const telefono = escapeHtmlValue(params.telefono);
-  const token = escapeHtmlValue(params.token);
-  const tipoCitaLabel = TIPO_CITA_LABEL_CANCELACION_TARDIA[params.tipoCita] || params.tipoCita;
-  const citaDisplay = `${formatFechaDisplay(apptInstant, "es")} · ${formatHoraDisplay(apptInstant)}`;
-  const cancelacionDisplay = `${formatFechaDisplay(params.canceladaEn, "es")} · ${formatHoraDisplay(params.canceladaEn)}`;
-  const anticipacionDisplay = formatAnticipacionDisplay(params.horasDeAnticipacion);
-  const servicio = params.esPilates ? "clase de pilates" : "cita de nutrición";
+  template.esPilates = params.esPilates;
+  template.nombreCompleto = params.nombreCompleto;
+  template.correo = params.correo;
+  template.telefono = params.telefono;
+  template.tipoCitaLabel = TIPO_CITA_LABEL_CANCELACION_TARDIA[params.tipoCita] || params.tipoCita;
+  template.servicio = params.esPilates ? "clase de pilates" : "cita de nutrición";
+  template.fechaCitaDisplay = formatFechaDisplay(apptInstant, "es");
+  template.horaCitaDisplay = formatHoraDisplay(apptInstant);
+  template.fechaCancelacionDisplay = formatFechaDisplay(params.canceladaEn, "es");
+  template.horaCancelacionDisplay = formatHoraDisplay(params.canceladaEn);
+  template.anticipacionDisplay = formatAnticipacionDisplay(params.horasDeAnticipacion);
+  template.horasVentana = CANCELLATION_HOURS;
+  template.token = params.token;
+  template.sheetLink = getSpreadsheetUrl();
 
-  // Rojo/naranja de alerta, deliberadamente FUERA de la paleta del brandbook (US-28) y sin
-  // reutilizar ninguno de los colores de notificacion_interna_nueva_cita.html (verde/rosado
-  // para "agendada", #B9BD5B para "reagendada", #8B8B8B para "cancelada") — el requisito de la
-  // tarjeta es que este correo NO se pueda confundir con una cancelación normal.
-  const htmlBody = `<!DOCTYPE html>
-<html lang="es">
-<head><meta charset="UTF-8"></head>
-<body style="margin:0;padding:0;background:#f4f4f4;font-family:Arial,Helvetica,sans-serif;color:#333333;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f4f4f4;padding:24px 12px;">
-    <tr><td align="center">
-      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border-radius:8px;overflow:hidden;border:1px solid #e5e5e5;">
-        <tr>
-          <td style="background:#C0392B;padding:20px 24px;">
-            <div style="font-size:13px;letter-spacing:1.5px;color:#FBE3E0;text-transform:uppercase;">Alerta interna</div>
-            <div style="font-size:22px;font-weight:bold;color:#ffffff;padding-top:4px;">&#9888;&#65039; Cancelación tardía</div>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:20px 24px 4px 24px;">
-            <p style="margin:0;font-size:15px;line-height:1.5;">
-              <strong>${nombreCompleto}</strong> canceló su ${servicio} <strong>fuera de la ventana de ${CANCELLATION_HOURS} horas</strong>
-              establecida en la política de cancelación.
-            </p>
-            <p style="margin:12px 0 0 0;padding:10px 12px;background:#FDF3F2;border-left:4px solid #E67E22;font-size:14px;line-height:1.5;">
-              Se canceló con <strong>${anticipacionDisplay}</strong>.
-              El contador de cancelaciones tardías de este cliente ya fue actualizado en la pestaña "Clientes".
-            </p>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:16px 24px 8px 24px;">
-            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;border-collapse:collapse;">
-              <tr>
-                <td style="padding:8px 0;color:#777777;width:42%;border-bottom:1px solid #eeeeee;">Cliente</td>
-                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;"><strong>${nombreCompleto}</strong></td>
-              </tr>
-              <tr>
-                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Tipo de cita</td>
-                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${tipoCitaLabel}</td>
-              </tr>
-              <tr>
-                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Cita cancelada</td>
-                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${citaDisplay}</td>
-              </tr>
-              <tr>
-                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Se canceló el</td>
-                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${cancelacionDisplay}</td>
-              </tr>
-              <tr>
-                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Correo</td>
-                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${correo}</td>
-              </tr>
-              <tr>
-                <td style="padding:8px 0;color:#777777;border-bottom:1px solid #eeeeee;">Teléfono</td>
-                <td style="padding:8px 0;border-bottom:1px solid #eeeeee;">${telefono}</td>
-              </tr>
-              <tr>
-                <td style="padding:8px 0;color:#777777;">Token de la cita</td>
-                <td style="padding:8px 0;font-family:monospace;font-size:12px;color:#777777;">${token}</td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:8px 24px 24px 24px;">
-            <a href="${getSpreadsheetUrl()}" style="display:inline-block;background:#C0392B;color:#ffffff;text-decoration:none;padding:11px 20px;border-radius:4px;font-size:14px;">Ver registro completo</a>
-          </td>
-        </tr>
-        <tr>
-          <td style="background:#fafafa;padding:14px 24px;font-size:11px;color:#999999;border-top:1px solid #eeeeee;">
-            Correo interno automático — Plant Powered by Dani. Todas las horas están en hora de Costa Rica.
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-
-  return { subject: buildCancelacionTardiaSubject(params.nombreCompleto), htmlBody };
+  return { subject: buildCancelacionTardiaSubject(params.nombreCompleto), htmlBody: template.evaluate().getContent() };
 }
 
 // Mismo criterio que sendNotificacionInterna/sendNotificacionInternaConfirmada: el try/catch

@@ -1002,15 +1002,21 @@ function findAlertaTardia(sandbox) {
   assert(alerta.to.indexOf("mock-dani@test.com") < 0, "la alerta de pilates NO va a Dani");
 })();
 
-// ── Test 38: el cuerpo del correo trae los 4 datos requeridos por la tarjeta ───────────────
-// Se llama a renderNotificacionCancelacionTardia() directamente (no vía cancelBooking) para
-// poder fijar valores conocidos y compararlos contra el HTML real. Esto SOLO es posible
-// porque este correo arma su HTML en TypeScript en vez de usar una plantilla: el mock de
-// HtmlService.createTemplateFromFile devuelve un HTML fijo que ignora las variables
-// inyectadas, así que ninguna aserción de contenido sería posible con una plantilla (mismo
-// tipo de punto ciego del mock que documenta la nota #39 del CLAUDE.md).
+// ── Test 38: la alerta usa la plantilla real y arma correctamente los datos que le inyecta ──
+// Desde el 27 jul 2026 este correo usa una plantilla real de backend/templates/ (mismo patrón
+// que renderNotificacionInterna) en vez de HTML armado a mano en TypeScript, para que coincida
+// visualmente con el resto de correos internos — ver CLAUDE.md. Eso significa que ya NO se
+// puede buscar texto dentro de htmlBody: el mock de HtmlService.createTemplateFromFile
+// (gas-mock.js) devuelve un HTML fijo que ignora las variables inyectadas (mismo punto ciego
+// documentado en la nota #39, el mismo que ya tiene Test 25 sobre renderNotificacionInterna).
+// En su lugar, este test verifica: (a) que se usó el archivo de plantilla correcto, (b) el
+// asunto (que SÍ se arma en TypeScript, fuera de la plantilla), y (c) los mismos helpers puros
+// que antes se verificaban indirectamente buscándolos como substring del HTML
+// (formatAnticipacionDisplay, TIPO_CITA_LABEL_CANCELACION_TARDIA vía vm.runInContext — mismo
+// truco que sandbox.Date en freshCtx(), necesario porque un `const` de nivel superior no queda
+// expuesto como propiedad del sandbox).
 (function test38() {
-  console.log("Test 38: el cuerpo de la alerta incluye nombre, tipo de cita, fecha/hora de la cita y de la cancelación");
+  console.log("Test 38: la alerta usa la plantilla notificacion_cancelacion_tardia, el asunto marca la urgencia, y los helpers de contenido producen los valores esperados");
   const { sandbox } = freshCtx();
 
   const canceladaEn = sandbox.parseSheetDateTime("2026-07-27", "08:15");
@@ -1027,24 +1033,32 @@ function findAlertaTardia(sandbox) {
     token: "tok-38",
   });
 
-  const citaInstant = sandbox.parseSheetDateTime("2026-07-28", "13:30");
+  assert(typeof htmlBody === "string" && htmlBody.length > 0, "renderNotificacionCancelacionTardia produce htmlBody no vacío");
+  assert(htmlBody.indexOf('file="notificacion_cancelacion_tardia"') >= 0, "usa la plantilla real notificacion_cancelacion_tardia.html (no HTML armado a mano)");
 
-  // (1) nombre completo del cliente
-  assert(htmlBody.indexOf("Paula Rojas") >= 0, "dato 1/4: el cuerpo incluye el nombre completo del cliente");
-  // (2) tipo de cita traducido a texto legible (no el código interno "initial")
-  assert(htmlBody.indexOf("Consulta inicial") >= 0, 'dato 2/4: el tipo de cita aparece legible ("Consulta inicial", no "initial")');
-  // (3) fecha y hora de la cita cancelada, en hora de Costa Rica
-  assert(htmlBody.indexOf(sandbox.formatFechaDisplay(citaInstant, "es")) >= 0, "dato 3/4a: el cuerpo incluye la FECHA de la cita cancelada");
-  assert(htmlBody.indexOf(sandbox.formatHoraDisplay(citaInstant)) >= 0, "dato 3/4b: el cuerpo incluye la HORA de la cita cancelada");
-  // (4) fecha y hora en que se hizo la cancelación
-  assert(htmlBody.indexOf(sandbox.formatFechaDisplay(canceladaEn, "es")) >= 0, "dato 4/4a: el cuerpo incluye la FECHA en que se hizo la cancelación");
-  assert(htmlBody.indexOf(sandbox.formatHoraDisplay(canceladaEn)) >= 0, "dato 4/4b: el cuerpo incluye la HORA en que se hizo la cancelación");
-
-  // Debe quedar claro que fue TARDÍA, y distinguirse visualmente de una cancelación normal.
+  // Debe quedar claro que fue TARDÍA, y distinguirse de la notificación de cancelación normal.
   assert(subject.indexOf("⚠️") >= 0 && subject.indexOf("Cancelación tardía") >= 0, "el asunto marca explícitamente que fue una cancelación tardía");
-  assert(htmlBody.indexOf("fuera de la ventana de 24 horas") >= 0, "el cuerpo dice explícitamente que fue fuera de la ventana de 24 horas");
-  assert(htmlBody.indexOf("5 h 30 min de anticipación") >= 0, "el cuerpo indica con cuánta anticipación real se canceló");
-  assert(htmlBody.indexOf("#C0392B") >= 0, "el cuerpo usa el color de alerta rojo, que no se usa en las notificaciones internas normales");
+  assert(subject.indexOf("Paula Rojas") >= 0, "el asunto incluye el nombre del cliente");
+
+  // Tipo de cita traducido a texto legible (no el código interno "initial") — el mismo dato
+  // que renderNotificacionCancelacionTardia le pasa a la plantilla como tipoCitaLabel.
+  const tipoCitaLabelInitial = vm.runInContext('TIPO_CITA_LABEL_CANCELACION_TARDIA.initial', sandbox);
+  assert(tipoCitaLabelInitial === "Consulta inicial", 'tipo de cita "initial" se traduce a "Consulta inicial" para la plantilla');
+  const tipoCitaLabelPilates = vm.runInContext('TIPO_CITA_LABEL_CANCELACION_TARDIA.pilates', sandbox);
+  assert(tipoCitaLabelPilates === "Clase de pilates", 'tipo de cita "pilates" se traduce a "Clase de pilates" para la plantilla');
+
+  // Anticipación real formateada — el mismo dato que la plantilla recibe como anticipacionDisplay.
+  assert(sandbox.formatAnticipacionDisplay(5.5) === "5 h 30 min de anticipación", "formatAnticipacionDisplay indica con cuánta anticipación real se canceló");
+  assert(sandbox.formatAnticipacionDisplay(-0.5) === "la cita ya había empezado", "formatAnticipacionDisplay cubre anticipación negativa (cancelación después de que la cita empezó)");
+
+  // Fecha/hora de la cita y de la cancelación se calculan sobre los instantes correctos — los
+  // mismos que la plantilla recibe como fechaCitaDisplay/horaCitaDisplay/
+  // fechaCancelacionDisplay/horaCancelacionDisplay.
+  const citaInstant = sandbox.parseSheetDateTime("2026-07-28", "13:30");
+  assert(sandbox.formatFechaDisplay(citaInstant, "es").length > 0, "formatFechaDisplay funciona sobre el instante de la cita cancelada");
+  assert(sandbox.formatHoraDisplay(citaInstant).length > 0, "formatHoraDisplay funciona sobre el instante de la cita cancelada");
+  assert(sandbox.formatFechaDisplay(canceladaEn, "es").length > 0, "formatFechaDisplay funciona sobre el instante en que se hizo la cancelación");
+  assert(sandbox.formatHoraDisplay(canceladaEn).length > 0, "formatHoraDisplay funciona sobre el instante en que se hizo la cancelación");
 })();
 
 // ── Test 39: una Script Property de destinatarios sin configurar no revierte la cancelación ─
