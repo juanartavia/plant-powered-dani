@@ -200,7 +200,11 @@ function createMockContext() {
     "token", "nombre", "apellido", "correo", "telefono", "tipo_id", "numero_id", "fecha_nacimiento",
     "tipo_cita", "fecha", "hora", "zona_horaria_cliente", "modalidad", "idioma",
     "meet_link", "estado", "fecha_creacion", "recordatorio_enviado", "show_no_show",
-    "cancelaciones_tardias", "requiere_pago", "event_id",
+    "cancelaciones_tardias", "requiere_pago", "event_id", "asistencia_confirmada",
+    // "contador_reagendamientos" (col 24) agregada en US-42 — refleja el estado del Sheet
+    // real DESPUÉS de correr addContadorReagendamientosColumnToNutricion() (migración manual,
+    // ver app.ts). Contador POR CITA, nunca existió antes en ninguna de las dos pestañas.
+    "contador_reagendamientos",
   ];
   // "cancelaciones_tardias" (col 17) agregada en US-33 — refleja el estado del Sheet real
   // DESPUÉS de correr addCancelacionTardiaColumnToPilates() (migración manual, ver app.ts).
@@ -210,6 +214,9 @@ function createMockContext() {
     "fecha_clase", "hora_clase", "zona_horaria_cliente", "idioma",
     "estado", "fecha_inscripcion", "recordatorio_enviado", "show_no_show",
     "cancelaciones_tardias",
+    // "contador_reagendamientos" (col 18) agregada en US-42 — ver comentario equivalente
+    // arriba en NUTRICION_HEADERS. Mismo caso: ninguna de las dos pestañas la tenía antes.
+    "contador_reagendamientos",
   ];
   const CUPOS_HEADERS = ["fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link"];
   const CLIENTES_HEADERS = ["correo", "nombre", "apellido", "telefono", "tipo_id", "numero_id", "fecha_nacimiento", "idioma", "cancelaciones_tardias", "requiere_pago"];

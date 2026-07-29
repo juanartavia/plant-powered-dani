@@ -872,6 +872,12 @@ const NUTRICION_EVENT_ID_COL = 22;
 // "estado" (Agendada/Reagendada/Cancelada/Error_Calendar): son dos preguntas distintas ("¿en
 // qué estado está la cita?" vs. "¿el cliente ya dijo que va a asistir?").
 const NUTRICION_ASISTENCIA_CONFIRMADA_COL = 23;
+// Agregada en US-42 (ver addContadorReagendamientosColumnToNutricion más abajo). A
+// diferencia de NUTRICION_CANCELACION_TARDIA_COL/PILATES_CANCELACION_TARDIA_COL (US-33, que
+// reutilizó una columna ya existente en Nutrición), esta columna NUNCA existió en NINGUNA de
+// las dos pestañas — es un contador entero POR CITA (fila), no confundir con el contador
+// acumulado por cliente de "Clientes" ni con cancelaciones_tardias (otra pregunta distinta).
+const NUTRICION_CONTADOR_REAGENDAMIENTOS_COL = 24;
 
 // Columnas (1-based) equivalentes para "Pilates".
 const PILATES_FECHA_COL = 9;
@@ -891,6 +897,11 @@ const PILATES_ESTADO_COL = 13;
 // hay que ejecutar UNA VEZ desde el editor de Apps Script antes de confiar en esta columna
 // en el Sheet real. En Nutrición NO se creó nada nuevo — ahí sí se reutilizó la existente.
 const PILATES_CANCELACION_TARDIA_COL = 17;
+// Equivalente por-inscripción de NUTRICION_CONTADOR_REAGENDAMIENTOS_COL (US-42). Mismo caso
+// que PILATES_CANCELACION_TARDIA_COL: esta columna tampoco existía en NINGUNA de las dos
+// pestañas antes de US-42, así que hacen falta 2 migraciones nuevas (ver
+// addContadorReagendamientosColumnToNutricion/addContadorReagendamientosColumnToPilates).
+const PILATES_CONTADOR_REAGENDAMIENTOS_COL = 18;
 
 // Agrega la columna "event_id" (US-06) a la pestaña "Nutrición" YA existente, sin volver a
 // ejecutar initializeSheets() (nota 11). Necesaria para que cancelBooking/rescheduleBooking
@@ -956,6 +967,50 @@ function addCancelacionTardiaColumnToPilates(): void {
 
   sheet.getRange(1, PILATES_CANCELACION_TARDIA_COL).setValue("cancelaciones_tardias").setFontWeight("bold");
   Logger.log('Columna "cancelaciones_tardias" agregada a Pilates.');
+}
+
+// Agrega la columna "contador_reagendamientos" (US-42) a la pestaña "Nutrición" YA existente,
+// en la posición NUTRICION_CONTADOR_REAGENDAMIENTOS_COL (justo después de
+// "asistencia_confirmada"), sin volver a ejecutar initializeSheets() (nota 11). Migración por
+// POSICIÓN de columna, no por texto de encabezado (nota técnica #28), mismo criterio que
+// addAsistenciaConfirmadaColumnToNutricion/addCancelacionTardiaColumnToPilates. No-op seguro
+// si ya existe. Ejecutar manualmente UNA SOLA VEZ desde el editor de Apps Script.
+//
+// Las citas YA existentes quedan con la celda vacía, que rescheduleBooking/
+// incrementRescheduleCounterOnBookingRow leen como 0 (Number("") || 0) — no hay forma de
+// reconstruir retroactivamente cuántas veces se reagendó cada una antes de esta migración, y
+// tampoco hace falta: el contador simplemente empieza a contar desde el primer reagendamiento
+// posterior a la migración.
+function addContadorReagendamientosColumnToNutricion(): void {
+  const sheet = getSheet("Nutrición");
+  const existingHeader = String(sheet.getRange(1, NUTRICION_CONTADOR_REAGENDAMIENTOS_COL).getValue());
+
+  if (existingHeader === "contador_reagendamientos") {
+    Logger.log('La columna "contador_reagendamientos" ya existe en Nutrición. No se hizo ningún cambio.');
+    return;
+  }
+
+  sheet.getRange(1, NUTRICION_CONTADOR_REAGENDAMIENTOS_COL).setValue("contador_reagendamientos").setFontWeight("bold");
+  Logger.log('Columna "contador_reagendamientos" agregada a Nutrición.');
+}
+
+// Equivalente de addContadorReagendamientosColumnToNutricion() para "Pilates" (US-42), en la
+// posición PILATES_CONTADOR_REAGENDAMIENTOS_COL (justo después de "cancelaciones_tardias").
+// Mismo criterio idempotente por posición. Ejecutar manualmente UNA SOLA VEZ desde el editor
+// de Apps Script — junto con la de Nutrición de arriba, son las 2 migraciones nuevas que pide
+// US-42 (a diferencia de US-33, que solo necesitó crear la columna en Pilates porque Nutrición
+// ya tenía cancelaciones_tardias; acá NINGUNA de las dos pestañas tenía contador_reagendamientos).
+function addContadorReagendamientosColumnToPilates(): void {
+  const sheet = getSheet("Pilates");
+  const existingHeader = String(sheet.getRange(1, PILATES_CONTADOR_REAGENDAMIENTOS_COL).getValue());
+
+  if (existingHeader === "contador_reagendamientos") {
+    Logger.log('La columna "contador_reagendamientos" ya existe en Pilates. No se hizo ningún cambio.');
+    return;
+  }
+
+  sheet.getRange(1, PILATES_CONTADOR_REAGENDAMIENTOS_COL).setValue("contador_reagendamientos").setFontWeight("bold");
+  Logger.log('Columna "contador_reagendamientos" agregada a Pilates.');
 }
 
 // Agrega las columnas "event_id" y "meet_link" (US-10) a la pestaña "Cupos_Pilates" YA
@@ -1280,6 +1335,39 @@ function markLateCancellationOnBookingRow(booking: BookingLookup): void {
       `markLateCancellationOnBookingRow: no se pudo marcar cancelación tardía en ` +
       `${booking.sheetName} fila ${booking.row} (token ${booking.token}): ${(e as Error).message}`
     );
+  }
+}
+
+// US-42 — Incrementa en 1 el contador de reagendamientos POR CITA (columna
+// "contador_reagendamientos" de "Nutrición"/"Pilates", ver
+// NUTRICION_CONTADOR_REAGENDAMIENTOS_COL/PILATES_CONTADOR_REAGENDAMIENTOS_COL) y devuelve el
+// valor resultante, para que rescheduleBooking() decida si dispara la alerta de
+// reagendamientos múltiples (>=3). Celda vacía se lee como 0 (citas de antes de la migración
+// de US-42, o el primer reagendamiento de una cita nueva).
+//
+// Mismo criterio que markLateCancellationOnBookingRow: el try/catch vive acá, no en
+// rescheduleBooking, porque cuando esto corre el reagendamiento YA se aplicó de verdad (Sheet
+// y Calendar actualizados) — un fallo de esta escritura secundaria nunca debe hacer tronar
+// rescheduleBooking() ni revertir el cambio de horario ya confirmado. Si falla, devuelve -1
+// (nunca >= 3) para no arriesgar disparar la alerta con un conteo que no se pudo confirmar de
+// verdad — se pierde esa alerta puntual, pero nunca se envía una con un número inventado.
+function incrementRescheduleCounterOnBookingRow(booking: BookingLookup): number {
+  try {
+    const sheet = getSheet(booking.sheetName);
+    const col = booking.sheetName === "Pilates"
+      ? PILATES_CONTADOR_REAGENDAMIENTOS_COL
+      : NUTRICION_CONTADOR_REAGENDAMIENTOS_COL;
+    const current = Number(sheet.getRange(booking.row, col).getValue()) || 0;
+    const updated = current + 1;
+    sheet.getRange(booking.row, col).setValue(updated);
+    SpreadsheetApp.flush();
+    return updated;
+  } catch (e) {
+    Logger.log(
+      `incrementRescheduleCounterOnBookingRow: no se pudo incrementar el contador de ` +
+      `reagendamientos en ${booking.sheetName} fila ${booking.row} (token ${booking.token}): ${(e as Error).message}`
+    );
+    return -1;
   }
 }
 
@@ -2504,6 +2592,19 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
     }
   }
 
+  // US-42 — contador de reagendamientos POR CITA (no confundir con el contador acumulado por
+  // cliente en "Clientes", ni con cancelaciones_tardias, que es otra bandera distinta). Se
+  // incrementa SIEMPRE que un reagendamiento se aplica de verdad — nunca en un intento
+  // bloqueado por VENTANA_REAGENDAMIENTO_VENCIDA, que ya lanzó su Error más arriba y jamás
+  // llega hasta acá. Puramente informativo: el reagendamiento en sí ya está aplicado en el
+  // Sheet/Calendar antes de esta línea, y esta alerta nunca lo bloquea ni lo revierte. Se
+  // dispara EN CADA reagendamiento desde el 3ro en adelante (3ro, 4to, 5to...), no solo la
+  // primera vez que se cruza el umbral — decisión explícita del checklist de US-42.
+  const numeroReagendamiento = incrementRescheduleCounterOnBookingRow(booking);
+  if (numeroReagendamiento >= 3) {
+    notifyMultipleReschedules(booking, numeroReagendamiento, newFecha, newHora);
+  }
+
   resetClientLateCancellationCounter(booking.correo);
 
   // US-13/US-30 — Notificación interna de "cita reagendada", con la fecha/hora NUEVA (no la
@@ -3458,6 +3559,195 @@ function testSendNotificacionInterna(): void {
     GmailApp.sendEmail(destinatario, `[TEST US-13/US-30] ${subject}`, "", { htmlBody });
     Logger.log(`Enviado: esPilates=${caso.esPilates}/tipoAccion=${caso.tipoAccion}/tipo=${caso.tipoCita}`);
   });
+}
+
+// ============================================================================
+// US-42 — Alerta interna de REAGENDAMIENTOS MÚLTIPLES (una misma cita/inscripción se
+// reagendó 3 veces o más)
+//
+// Correo aparte de la notificación interna general de "cita reagendada" (US-13/US-30): en el
+// 3er reagendamiento (y en cada uno posterior) se envían los dos, cada uno con su propósito —
+// mismo criterio que notifyLateCancellation/sendNotificacionCancelacionTardia (US-33).
+//
+// A DIFERENCIA de US-33: es puramente informativa. rescheduleBooking() nunca bloquea ni
+// penaliza nada por esto, y no tiene ninguna relación con la ventana de 24hrs
+// (CANCELLATION_HOURS) que sí bloquea el reagendamiento tardío (ver la asimetría documentada
+// en CLAUDE.md sección 3). Se dispara EN CADA reagendamiento desde el 3ro en adelante (3ro,
+// 4to, 5to...), no solo la primera vez que el contador cruza el umbral — decisión explícita
+// del checklist de US-42.
+//
+// Es un correo INTERNO (Dani / instructora / Ali), así que a propósito NO es bilingüe — mismo
+// criterio que renderNotificacionInterna/renderNotificacionCancelacionTardia.
+// ============================================================================
+
+// Ordinal en español de un número de reagendamiento ("3er", "4to", "5to"...). Solo hace falta
+// cubrir desde 3 en adelante (nunca se llama con un número menor, ver el >= 3 en
+// rescheduleBooking), pero se resuelve de forma genérica por si el negocio algún día quiere
+// bajar el umbral. Más allá de la tabla conocida cae a un ordinal genérico ("11.º") en vez de
+// intentar pluralizar cada caso en español (fuera de alcance para un correo interno).
+function formatOrdinalReagendamiento(n: number): string {
+  const ORDINALES: Record<number, string> = {
+    1: "1er", 2: "2do", 3: "3er", 4: "4to", 5: "5to",
+    6: "6to", 7: "7mo", 8: "8vo", 9: "9no", 10: "10mo",
+  };
+  return ORDINALES[n] || `${n}.º`;
+}
+
+// BORRADOR — pendiente aprobación Gabi/Dani, mismo criterio que buildCancelacionTardiaSubject.
+//
+// ⚠️ BUG REAL ENCONTRADO Y CORREGIDO (visto en Gmail real): el emoji original de este asunto
+// era "🔁" (U+1F501, REPEAT BUTTON) — un carácter FUERA del BMP (Basic Multilingual Plane),
+// que en UTF-16 se representa como un PAR SUBROGADO (🔁, 2 code units). El asunto
+// llegaba a Gmail como una secuencia de caracteres corruptos ("�����") en vez del emoji.
+//
+// Causa raíz: backend/tsconfig.json compila a target "ES5", así que tsc baja los template
+// literals a concatenación de strings y reemite "🔁" como el escape literal 🔁 en el
+// .js compilado — eso en sí es JS válido y decodifica al mismo carácter. El problema real está
+// en la codificación del header "Subject" que arma GmailApp.sendEmail() del lado de Apps
+// Script: todo indica que codifica el asunto iterando code units UTF-16 uno por uno (en vez de
+// por code point/par subrogado completo), así que un par subrogado se corrompe ahí — nunca
+// llega a ser un problema de este código, sino del pipeline de envío de Gmail con astral chars.
+//
+// buildCancelacionTardiaSubject() (US-33) SÍ funciona porque "⚠️" (U+26A0 WARNING SIGN +
+// U+FE0F VARIATION SELECTOR-16) son 2 code points, pero AMBOS dentro del BMP — nunca generan
+// un par subrogado, así que nunca pisan este bug.
+//
+// Ojo: "📅" (calendario, U+1F4C5) — una de las alternativas sugeridas al investigar este bug —
+// es TAMBIÉN astral (fuera del BMP, mismo rango 1F3xx-1F5xx que "🔁"), así que habría
+// reproducido el mismo problema. Se optó por reutilizar el mismo "⚠️" que ya está probado y
+// funciona en real en este mismo proyecto (US-33), en vez de arriesgar otro emoji sin probar —
+// la diferenciación de bandeja de entrada la sigue dando el texto distinto ("Reagendamientos
+// múltiples" vs. "Cancelación tardía"), y el color del badge en el cuerpo (ámbar, ya aprobado)
+// sigue siendo la diferenciación visual principal dentro del correo.
+function buildReagendamientosMultiplesSubject(nombreCompleto: string, numeroReagendamientoOrdinal: string): string {
+  return `⚠️ Reagendamientos múltiples (${numeroReagendamientoOrdinal}) — ${nombreCompleto}`;
+}
+
+// Fecha/hora SIEMPRE en TIME_ZONE (Costa Rica), nunca en la zona del cliente — es un correo
+// interno, mismo criterio que renderNotificacionInterna/renderNotificacionCancelacionTardia
+// (CLAUDE.md sección 3-a). `fecha`/`hora` acá son las del NUEVO horario (el que quedó después
+// del reagendamiento que disparó esta alerta), no las anteriores.
+function renderNotificacionReagendamientosMultiples(params: {
+  esPilates: boolean;
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  nombreCompleto: string;
+  correo: string;
+  telefono: string;
+  numeroReagendamiento: number;
+  fecha: string; // yyyy-MM-dd, TIME_ZONE — el NUEVO horario
+  hora: string; // HH:mm, TIME_ZONE — el NUEVO horario
+  token: string;
+}): { subject: string; htmlBody: string } {
+  const template = HtmlService.createTemplateFromFile("notificacion_reagendamientos_multiples");
+  const nuevoInstant = parseSheetDateTime(params.fecha, params.hora);
+  const ordinal = formatOrdinalReagendamiento(params.numeroReagendamiento);
+
+  template.esPilates = params.esPilates;
+  template.nombreCompleto = params.nombreCompleto;
+  template.correo = params.correo;
+  template.telefono = params.telefono;
+  // Reutiliza TIPO_CITA_LABEL_CANCELACION_TARDIA (US-33) a propósito: es el mismo mapeo de los
+  // 4 tipos de cita a texto legible ("Consulta inicial"/"Seguimiento"/"Solo medición"/"Clase
+  // de pilates"), sin nada específico de cancelación en su contenido — el nombre quedó de la
+  // era de US-33, pero duplicar el mismo Record acá solo agregaría una segunda fuente de
+  // verdad para mantener sincronizada.
+  template.tipoCitaLabel = TIPO_CITA_LABEL_CANCELACION_TARDIA[params.tipoCita] || params.tipoCita;
+  template.servicio = params.esPilates ? "clase de pilates" : "cita de nutrición";
+  template.numeroReagendamiento = params.numeroReagendamiento;
+  template.numeroReagendamientoOrdinal = ordinal;
+  template.fechaNuevaDisplay = formatFechaDisplay(nuevoInstant, "es");
+  template.horaNuevaDisplay = formatHoraDisplay(nuevoInstant);
+  template.token = params.token;
+  template.sheetLink = getSpreadsheetUrl();
+
+  return {
+    subject: buildReagendamientosMultiplesSubject(params.nombreCompleto, ordinal),
+    htmlBody: template.evaluate().getContent(),
+  };
+}
+
+// Mismo criterio que sendNotificacionCancelacionTardia: el try/catch vive acá, no en
+// rescheduleBooking, para que un fallo de correo (o una Script Property sin configurar) nunca
+// revierta ni bloquee el reagendamiento que ya se aplicó.
+//
+// Reutiliza getLateCancellationRecipients() directamente (nutrición → DANI_EMAIL+ALI_EMAIL,
+// pilates → INSTRUCTORA_EMAIL+ALI_EMAIL) en vez de duplicar esa misma lectura de Script
+// Properties bajo otro nombre: la lista de destinatarios internos de CUALQUIER alerta de este
+// tipo (tardanza o reagendamientos múltiples) es exactamente la misma. El nombre de la función
+// quedó fijado en la era de US-33 y no se renombró para no tocar su comportamiento ya validado.
+function sendNotificacionReagendamientosMultiples(params: Parameters<typeof renderNotificacionReagendamientosMultiples>[0]): void {
+  try {
+    const destinatarios = getLateCancellationRecipients(params.esPilates);
+    const { subject, htmlBody } = renderNotificacionReagendamientosMultiples(params);
+    GmailApp.sendEmail(destinatarios.join(","), subject, "", { htmlBody });
+  } catch (e) {
+    Logger.log(
+      `sendNotificacionReagendamientosMultiples: fallo al enviar la alerta de reagendamientos ` +
+      `múltiples (token ${params.token}): ${(e as Error).message}`
+    );
+  }
+}
+
+// Arma los params de sendNotificacionReagendamientosMultiples a partir del BookingLookup y los
+// datos del reagendamiento que se acaba de aplicar — llamada desde rescheduleBooking() cuando
+// numeroReagendamiento >= 3.
+function notifyMultipleReschedules(
+  booking: BookingLookup,
+  numeroReagendamiento: number,
+  newFecha: string,
+  newHora: string
+): void {
+  sendNotificacionReagendamientosMultiples({
+    esPilates: booking.sheetName === "Pilates",
+    tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
+    nombreCompleto: `${booking.nombre} ${booking.apellido}`,
+    correo: booking.correo,
+    telefono: booking.telefono,
+    numeroReagendamiento,
+    fecha: newFecha,
+    hora: newHora,
+    token: booking.token,
+  });
+}
+
+// Función de testing manual (US-42) — envía las 2 variantes (nutrición y pilates) a la cuenta
+// que ejecuta, para inspección visual real del badge ámbar y de que se distinga a simple vista
+// de cualquier otra notificación interna (agendada/reagendada normal/cancelada/cancelación
+// tardía). Correr manualmente desde el editor de Apps Script; no forma parte de ningún flujo
+// automático (eso ya está cableado en rescheduleBooking).
+function testSendNotificacionReagendamientosMultiples(): void {
+  const destinatario = Session.getActiveUser().getEmail();
+
+  const casos: Array<Parameters<typeof renderNotificacionReagendamientosMultiples>[0]> = [
+    {
+      esPilates: false,
+      tipoCita: "followup",
+      nombreCompleto: "María Fernández",
+      correo: "maria@example.com",
+      telefono: "8888-8888",
+      numeroReagendamiento: 3,
+      fecha: "2026-08-04",
+      hora: "13:30",
+      token: "token-demo-nutricion",
+    },
+    {
+      esPilates: true,
+      tipoCita: "pilates",
+      nombreCompleto: "Laura Jiménez",
+      correo: "laura@example.com",
+      telefono: "8888-9999",
+      numeroReagendamiento: 5,
+      fecha: "2026-08-08",
+      hora: "10:00",
+      token: "token-demo-pilates",
+    },
+  ];
+
+  for (const caso of casos) {
+    const { subject, htmlBody } = renderNotificacionReagendamientosMultiples(caso);
+    GmailApp.sendEmail(destinatario, `[TEST] ${subject}`, "", { htmlBody });
+    Logger.log(`Enviado a ${destinatario}: ${subject}`);
+  }
 }
 
 // ============================================================================

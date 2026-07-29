@@ -1092,5 +1092,164 @@ function findAlertaTardia(sandbox) {
   assert(!findAlertaTardia(sandbox), "no se envía la alerta (no hay destinatario válido), pero nada más se rompe");
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// US-42 — Alerta interna de reagendamientos múltiples (una misma cita se reagenda 3 veces o más)
+//
+// Igual que US-33, los destinatarios salen de Script Properties (DANI_EMAIL/INSTRUCTORA_EMAIL/
+// ALI_EMAIL, mismas 3 propiedades — ver el comentario de sendNotificacionReagendamientosMultiples
+// en app.ts sobre por qué reutiliza getLateCancellationRecipients() directamente).
+//
+// A diferencia de US-33 (una condición binaria que se cruza una sola vez), acá el disparador es
+// puramente informativo y se repite: se prueba explícitamente que NO dispara en el 1er/2do
+// reagendamiento, SÍ en el 3ro, y de nuevo en el 4to — no solo la primera vez que cruza el umbral.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+// Localiza la alerta de US-42 entre los correos enviados, por su asunto ("Reagendamientos
+// múltiples" es justamente lo que la diferencia de la notificación normal "Reagendada: ...").
+function findAlertaReagendamientos(sandbox) {
+  return (sandbox.__sentEmails || []).find((e) => e.subject.indexOf("Reagendamientos múltiples") >= 0);
+}
+
+// ── Test 40: reagendar 3 veces (nutrición) → alerta SOLO desde el 3er reagendamiento ───────
+(function test40() {
+  console.log("Test 40: reagendar 3 veces (nutrición) → sin alerta en el 1ro/2do, SÍ en el 3ro");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "followup", isoInHours(500), "Ricardo", "Vargas", "ricardo@test.com", "8888-0025", "cedula", "1-5555-0000",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, isoInHours(520), "America/Costa_Rica"); // 1er reagendamiento
+  assert(!findAlertaReagendamientos(sandbox), "el 1er reagendamiento no dispara la alerta");
+  assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 1, "contador_reagendamientos (col 24) queda en 1");
+
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, isoInHours(540), "America/Costa_Rica"); // 2do reagendamiento
+  assert(!findAlertaReagendamientos(sandbox), "el 2do reagendamiento tampoco dispara la alerta");
+  assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 2, "contador_reagendamientos sube a 2");
+
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, isoInHours(560), "America/Costa_Rica"); // 3er reagendamiento
+  assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 3, "contador_reagendamientos sube a 3");
+
+  const alerta = findAlertaReagendamientos(sandbox);
+  assert(!!alerta, "el 3er reagendamiento SÍ dispara la alerta de reagendamientos múltiples");
+  assert(alerta.subject.indexOf("3er") >= 0, "el asunto indica el ordinal (3er)");
+  assert(alerta.subject.indexOf("Ricardo Vargas") >= 0, "el asunto incluye el nombre del cliente");
+  assert(alerta.to.indexOf("mock-dani@test.com") >= 0, "la alerta de nutrición va a Dani (DANI_EMAIL)");
+  assert(alerta.to.indexOf("mock-ali@test.com") >= 0, "la alerta de nutrición también va a Ali (ALI_EMAIL)");
+  assert(alerta.to.indexOf("mock-instructora@test.com") < 0, "la alerta de nutrición NO va a la instructora de pilates");
+
+  // El reagendamiento en sí sigue funcionando con total normalidad: nunca se bloquea por esto.
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Reagendada", "la cita queda 'Reagendada' con normalidad, sin ningún bloqueo por la alerta");
+})();
+
+// ── Test 41: un 4to reagendamiento dispara la alerta OTRA VEZ ──────────────────────────────
+(function test41() {
+  console.log("Test 41: un 4to reagendamiento dispara la alerta DE NUEVO (no solo la primera vez que se cruza el umbral)");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(500), "Sofia", "Delgado", "sofia@test.com", "8888-0026", "cedula", "1-5555-1111",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+
+  sandbox.rescheduleBooking(token, isoInHours(520), "America/Costa_Rica"); // 1ro
+  sandbox.rescheduleBooking(token, isoInHours(540), "America/Costa_Rica"); // 2do
+  sandbox.rescheduleBooking(token, isoInHours(560), "America/Costa_Rica"); // 3ro — ya dispara
+
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, isoInHours(580), "America/Costa_Rica"); // 4to
+  assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 4, "contador_reagendamientos sube a 4");
+  const alerta4 = findAlertaReagendamientos(sandbox);
+  assert(!!alerta4, "el 4to reagendamiento dispara la alerta DE NUEVO");
+  assert(alerta4.subject.indexOf("4to") >= 0, "el asunto indica el ordinal correcto (4to) en el 4to reagendamiento");
+})();
+
+// ── Test 42: pilates también dispara la alerta, ruteada a la instructora + Ali ─────────────
+(function test42() {
+  console.log("Test 42: reagendamientos múltiples en pilates alertan a la instructora+Ali (no a Dani)");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "pilates", isoInHours(72), "Tomas", "Esquivel", "tomas@test.com", "8888-0027", "cedula", "1-5555-2222",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const pilSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Pilates");
+  const row = findTokenRow(pilSheet, token);
+
+  sandbox.rescheduleBooking(token, isoInHours(120), "America/Costa_Rica"); // 1ro
+  sandbox.rescheduleBooking(token, isoInHours(168), "America/Costa_Rica"); // 2do
+
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, isoInHours(216), "America/Costa_Rica"); // 3ro
+
+  assert(pilSheet.getRange(row, 18, 1, 1).getValue() === 3, "contador_reagendamientos (col 18 de Pilates) queda en 3");
+  const alerta = findAlertaReagendamientos(sandbox);
+  assert(!!alerta, "se envía la alerta también en el flujo de pilates");
+  assert(alerta.to.indexOf("mock-instructora@test.com") >= 0, "la alerta de pilates va a la instructora (INSTRUCTORA_EMAIL)");
+  assert(alerta.to.indexOf("mock-ali@test.com") >= 0, "la alerta de pilates también va a Ali (ALI_EMAIL)");
+  assert(alerta.to.indexOf("mock-dani@test.com") < 0, "la alerta de pilates NO va a Dani");
+})();
+
+// ── Test 43: un fallo de GmailApp.sendEmail en la alerta no revierte el reagendamiento ─────
+(function test43() {
+  console.log("Test 43: un fallo de GmailApp.sendEmail no revierte el reagendamiento ya aplicado ni el contador ya incrementado");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "measurement", isoInHours(500), "Ursula", "Pineda", "ursula@test.com", "8888-0028", "cedula", "1-5555-3333",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+
+  sandbox.rescheduleBooking(token, isoInHours(520), "America/Costa_Rica"); // 1ro
+  sandbox.rescheduleBooking(token, isoInHours(540), "America/Costa_Rica"); // 2do
+
+  sandbox.GmailApp.sendEmail = () => { throw new Error("Mock: Gmail caído"); };
+
+  let threw = null;
+  let returnedToken = null;
+  try {
+    returnedToken = sandbox.rescheduleBooking(token, isoInHours(560), "America/Costa_Rica"); // 3ro
+  } catch (e) {
+    threw = e.message;
+  }
+
+  assert(threw === null, "rescheduleBooking NO relanza el error del envío de ningún correo (ni el general ni la alerta)");
+  assert(returnedToken === token, "rescheduleBooking retorna igual el token pese al fallo de correo");
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Reagendada", "el 3er reagendamiento sí se aplica en el Sheet pese al fallo de correo");
+  assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 3, "contador_reagendamientos sí sube a 3 pese al fallo de correo");
+})();
+
+// ── Test 44: un intento BLOQUEADO (ventana vencida) no incrementa el contador ni alerta ────
+(function test44() {
+  console.log("Test 44: un intento de reagendamiento bloqueado (ventana vencida) no incrementa el contador ni dispara la alerta");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Victor", "Solano", "victor@test.com", "8888-0029", "cedula", "1-5555-4444",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  moveBookingTo(sandbox, "Nutrición", row, 10, 11, 10); // faltan 10hrs < CANCELLATION_HOURS
+
+  sandbox.__sentEmails = [];
+  let threw = null;
+  try {
+    sandbox.rescheduleBooking(token, isoInHours(96), "America/Costa_Rica");
+  } catch (e) {
+    threw = e.message;
+  }
+
+  assert(threw === "VENTANA_REAGENDAMIENTO_VENCIDA", "el intento se bloquea igual que siempre (US-06, sin cambios)");
+  const contadorValue = nutSheet.getRange(row, 24, 1, 1).getValue();
+  assert(contadorValue === "" || contadorValue === 0, "contador_reagendamientos NO se incrementa en un intento bloqueado");
+  assert(!findAlertaReagendamientos(sandbox), "tampoco se dispara la alerta de reagendamientos múltiples en un intento bloqueado");
+})();
+
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
 process.exit(failed > 0 ? 1 : 0);
