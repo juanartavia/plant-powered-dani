@@ -30,6 +30,7 @@ import { es as esLocale } from "date-fns/locale";
 import { formatInTimeZone } from "date-fns-tz";
 import {
   ArrowLeft,
+  CalendarDays,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -37,7 +38,7 @@ import {
   Send,
 } from "lucide-react";
 import * as React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTimezoneDropdown } from "./timezone-dropdown";
 import { Separator } from "@/components/ui/separator";
 import logoUrl from "@/assets/logo.png";
@@ -94,6 +95,7 @@ const STRINGS = {
         "Esta clase de pilates ya está llena. Por favor elige otro horario disponible.",
       edadMinima:
         "Debes tener al menos 15 años cumplidos para agendar una cita.",
+      fechaNacimientoRequerida: "Selecciona tu fecha de nacimiento.",
     },
     form: {
       nombre: "Nombre",
@@ -151,6 +153,7 @@ const STRINGS = {
         "This pilates class is now full. Please choose another available time.",
       edadMinima:
         "You must be at least 15 years old to book an appointment.",
+      fechaNacimientoRequerida: "Please select your date of birth.",
     },
     form: {
       nombre: "First name",
@@ -848,6 +851,15 @@ function calculateAgeYears(birthdateStr: string, todayStr: string): number {
   return age;
 }
 
+// Convierte un valor "yyyy-MM-dd" (el mismo formato que consume el backend) a un Date
+// LOCAL a medianoche construido por componentes — nunca `new Date(str)`, que lo interpreta
+// como UTC y puede correr un día en zonas horarias negativas (mismo criterio de la nota #29).
+function parseBirthdateValue(value: string): Date | undefined {
+  if (!value) return undefined;
+  const [year, month, day] = value.split("-").map(Number);
+  return new Date(year, month - 1, day);
+}
+
 function ContactForm({
   handleSubmit,
   type,
@@ -870,43 +882,53 @@ function ContactForm({
     type === "measurement" ? "presencial" : type === "pilates" ? "virtual" : "";
   const t = STRINGS[uiLanguage].form;
   const tErrors = STRINGS[uiLanguage].errors;
+  const dateFnsLocale = uiLanguage === "es" ? { locale: esLocale } : undefined;
   const maxBirthdate = useMemo(() => getMaxBirthdate(), []);
-  const [ageError, setAgeError] = useState<string | null>(null);
-  const birthdateRef = useRef<HTMLInputElement>(null);
-
-  // El input nativo type="date" solo abre el overlay del calendario si se le
-  // acierta al ícono pequeño de la esquina — el resto del campo (label, borde,
-  // padding) solo mueve el foco/segmento. showPicker() amplía esa área a todo
-  // el campo, pero no existe en iOS Safari (ninguna versión) — por eso es una
-  // mejora progresiva sobre el focus() nativo, nunca el único mecanismo.
-  const openBirthdatePicker = () => {
-    const el = birthdateRef.current;
-    if (!el) return;
-    el.focus();
-    try {
-      el.showPicker?.();
-    } catch {
-      // no soportado (ej. iOS Safari) — el focus() ya activa el selector nativo del OS
-    }
-  };
+  // Límite superior real (regla de negocio: min. 15 años). El límite inferior del rango
+  // de navegación del calendario (100 años atrás) es solo para acotar el dropdown de años
+  // a algo razonable — no es una regla de negocio, no hay edad máxima definida.
+  const maxBirthdateDate = useMemo(
+    () => parseBirthdateValue(maxBirthdate)!,
+    [maxBirthdate]
+  );
+  const minBirthdateDate = useMemo(
+    () => new Date(maxBirthdateDate.getFullYear() - 100, maxBirthdateDate.getMonth(), 1),
+    [maxBirthdateDate]
+  );
+  const [birthdateError, setBirthdateError] = useState<string | null>(null);
+  const [birthdateValue, setBirthdateValue] = useState(
+    defaultValues?.fecha_nacimiento ?? ""
+  );
+  const [birthdatePopoverOpen, setBirthdatePopoverOpen] = useState(false);
+  const selectedBirthdateDate = useMemo(
+    () => parseBirthdateValue(birthdateValue),
+    [birthdateValue]
+  );
+  const isBirthdateDayDisabled = (date: Date) => date > maxBirthdateDate;
 
   const validateBirthdate = (value: string) => {
     if (!value) {
-      setAgeError(null);
-      return true;
+      setBirthdateError(tErrors.fechaNacimientoRequerida);
+      return false;
     }
     const todayCR = formatInTimeZone(new Date(), CR_TIME_ZONE, "yyyy-MM-dd");
     if (calculateAgeYears(value, todayCR) < MIN_AGE_YEARS) {
-      setAgeError(tErrors.edadMinima);
+      setBirthdateError(tErrors.edadMinima);
       return false;
     }
-    setAgeError(null);
+    setBirthdateError(null);
     return true;
   };
 
+  const handleBirthdateSelect = (date: Date | undefined) => {
+    if (!date) return;
+    const value = format(date, "yyyy-MM-dd");
+    setBirthdateValue(value);
+    validateBirthdate(value);
+    setBirthdatePopoverOpen(false);
+  };
+
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
-    const birthdateValue =
-      new FormData(e.currentTarget).get("birthdate")?.toString() || "";
     if (!validateBirthdate(birthdateValue)) {
       e.preventDefault();
       return;
@@ -979,22 +1001,57 @@ function ContactForm({
           defaultValue={defaultValues?.numeroId ?? ""}
         />
       </div>
-      <div className="space-y-2" onClick={openBirthdatePicker}>
-        <Label htmlFor="birthdate">{t.birthdate}</Label>
-        <Input
-          ref={birthdateRef}
-          id="birthdate"
-          name="birthdate"
-          type="date"
-          required
-          max={maxBirthdate}
-          defaultValue={defaultValues?.fecha_nacimiento ?? ""}
-          onBlur={(e) => validateBirthdate(e.target.value)}
-          onChange={(e) => validateBirthdate(e.target.value)}
-          aria-invalid={ageError ? true : undefined}
-        />
-        {ageError && (
-          <p className="text-sm text-destructive">{ageError}</p>
+      <div className="space-y-2">
+        {/* Sin onClick manual: el <label htmlFor> nativo ya sintetiza un clic real
+            sobre el botón asociado — agregar un handler propio aquí compite con eso
+            y puede terminar cerrando el Popover que la activación nativa acaba de abrir. */}
+        <Label htmlFor="birthdate-trigger">{t.birthdate}</Label>
+        <Popover open={birthdatePopoverOpen} onOpenChange={setBirthdatePopoverOpen}>
+          <PopoverTrigger asChild>
+            <button
+              id="birthdate-trigger"
+              type="button"
+              className={cn(
+                "flex h-9 w-full items-center justify-between rounded-md border border-input bg-transparent px-3 py-1 text-md shadow-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                !birthdateValue && "text-muted-foreground"
+              )}
+              aria-invalid={birthdateError ? true : undefined}
+            >
+              {selectedBirthdateDate
+                ? format(
+                    selectedBirthdateDate,
+                    uiLanguage === "es" ? "d 'de' MMMM 'de' yyyy" : "MMMM d, yyyy",
+                    dateFnsLocale
+                  )
+                : t.selectPlaceholder}
+              <CalendarDays className="h-4 w-4 shrink-0 opacity-50" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent className="w-auto p-0" align="start">
+            <Calendar
+              mode="single"
+              selected={selectedBirthdateDate}
+              onSelect={handleBirthdateSelect}
+              defaultMonth={selectedBirthdateDate ?? maxBirthdateDate}
+              startMonth={minBirthdateDate}
+              endMonth={maxBirthdateDate}
+              captionLayout="dropdown"
+              disabled={isBirthdateDayDisabled}
+              classNames={{
+                month_caption: "flex justify-center pb-2",
+                dropdowns: "flex items-center gap-2",
+                dropdown_root: "relative inline-flex items-center",
+                dropdown: "absolute inset-0 z-10 cursor-pointer opacity-0",
+                caption_label:
+                  "inline-flex items-center gap-1 rounded-md border border-input px-2 py-1 text-sm font-medium pointer-events-none",
+              }}
+              {...(uiLanguage === "es" ? { locale: esLocale } : {})}
+            />
+          </PopoverContent>
+        </Popover>
+        <input type="hidden" name="birthdate" value={birthdateValue} />
+        {birthdateError && (
+          <p className="text-sm text-destructive">{birthdateError}</p>
         )}
       </div>
       {showModalidad ? (
