@@ -206,7 +206,7 @@ function AppointmentSummary({
         {formatInTimeZone(
           instant,
           info.clientTimezone || CR_TIME_ZONE,
-          "MMMM d, yyyy",
+          lang === "es" ? "d 'de' MMMM 'de' yyyy" : "MMMM d, yyyy",
           dateFnsLocale
         )}{" "}
         — {formatInTimeZone(instant, info.clientTimezone || CR_TIME_ZONE, "h:mm a")}
@@ -392,7 +392,7 @@ function RescheduleScreen({
           {formatInTimeZone(
             selectedTimeSlot,
             timezone,
-            "MMMM d, yyyy h:mm a",
+            lang === "es" ? "d 'de' MMMM 'de' yyyy h:mm a" : "MMMM d, yyyy h:mm a",
             dateFnsLocale
           )}
         </div>

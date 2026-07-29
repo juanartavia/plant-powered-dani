@@ -517,7 +517,7 @@ export function CalendarPicker() {
           <h2 className="text-xl font-semibold mb-4 pt-6 px-6">
             {title} —{" "}
             {selectedDate
-              ? format(selectedDate, "MMMM d, yyyy", dateFnsLocale)
+              ? format(selectedDate, uiLanguage === "es" ? "d 'de' MMMM 'de' yyyy" : "MMMM d, yyyy", dateFnsLocale)
               : t.dateNotSelected}{" "}
             {t.at}{" "}
             {selectedTimeSlot
@@ -786,7 +786,7 @@ export function CalendarTimeslotPicker({
       <div className="flex-1 w-full lg:w-64">
         <h3 className="text-lg font-semibold mb-4 h-[36px] flex flex-col justify-center">
           {selectedDate
-            ? format(selectedDate, "MMMM d, yyyy", dateFnsLocale)
+            ? format(selectedDate, uiLanguage === "es" ? "d 'de' MMMM 'de' yyyy" : "MMMM d, yyyy", dateFnsLocale)
             : t.selectADate}
         </h3>
         {selectedDate && (
