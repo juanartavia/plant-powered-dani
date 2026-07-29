@@ -20,5 +20,10 @@ y llama directamente a las funciones expuestas (`bookTimeslot`, `cancelBooking`,
 
 Cubre: reagendar dentro/fuera de la ventana de 24hrs, cancelar dentro/fuera de la ventana,
 2 cancelaciones tardías consecutivas de un mismo cliente en tipos de cita DISTINTOS
-(`requiere_pago=true`), que el historial nunca borre filas, token inexistente, y
-reagendamiento de pilates entre dos slots grupales.
+(`requiere_pago=true`), que el historial nunca borre filas, token inexistente,
+reagendamiento de pilates entre dos slots grupales, cancelación tardía (US-33),
+reagendamientos múltiples (US-42), y (US-37) construcción de los 3 links "agregar a
+calendario" (formato UTC básico/extendido, ubicación física/virtual), el endpoint
+`?action=ics` (token válido/inválido/cancelado, y que refleja la fecha NUEVA tras un
+reagendamiento) y la invitación .ics real (METHOD:REQUEST) adjunta al correo de
+confirmación, incluyendo degradación con gracia si falla su construcción.

@@ -13,9 +13,11 @@
 
   CÓMO SE VE
   Logo arriba → título → saludo con el nombre del cliente → fecha y hora
-  → (si es virtual: botón para unirse a la llamada) → (si es presencial:
-  dirección con links de Maps/Waze) → link para reagendar o cancelar →
-  aviso de recordatorio → botón de WhatsApp para dudas → tagline al pie.
+  → fila de botones "Agregar a mi calendario" (Google / Outlook / Yahoo /
+  Apple-iCal, US-37) → (si es virtual: botón para unirse a la llamada) →
+  (si es presencial: dirección con links de Maps/Waze) → link para
+  reagendar o cancelar → aviso de recordatorio → botón de WhatsApp para
+  dudas → tagline al pie.
 
   VARIABLES QUE HAY QUE INYECTAR DESDE APPS SCRIPT
   Estas cambian según el cliente y la cita — vienen del Sheet o se arman
@@ -37,6 +39,24 @@
                           es true.
     linkReagendar         Link único (con token) para que el cliente
                           reagende o cancele su cita.
+
+    --- NUEVAS VARIABLES — US-37 "Agregar a mi calendario" ---
+    Reemplazan por completo el botón único EXPERIMENTAL de linkAgregarCalendario
+    (21 jul) — ver CLAUDE.md. Los primeros tres son URLs "deep link" que arma
+    buildAddCalLinks() en app.ts (fecha/hora en UTC, título, descripción,
+    ubicación o link de Meet). El cuarto apunta a un archivo .ics real.
+
+    addCalGoogleLink      URL de "Google Calendar > agregar evento".
+    addCalOutlookLink     URL de "Outlook.com/Office 365 > agregar evento".
+    addCalYahooLink       URL de "Yahoo Calendar > agregar evento".
+    addCalIcsLink         Link de descarga a un archivo .ics generado por
+                          Apps Script (doGet con ?action=ics&token=...).
+                          Cubre Apple Mail / iCal / Outlook de escritorio,
+                          que no tienen endpoint de "deeplink" como los
+                          anteriores. Se regenera con los datos ACTUALES de
+                          la cita en cada clic (a diferencia de los 3 links
+                          de arriba, que quedan fijos a la fecha/hora del
+                          momento en que se envió el correo).
 
   CONSTANTES QUE NO CAMBIAN POR CITA
   Estas se definen una sola vez (por ejemplo en Script Properties) y no
@@ -76,6 +96,12 @@
     "WhatsApp" son intencionalmente más discretos (un link de texto y un
     botón con borde y relleno transparente) para que no compitan
     visualmente con la acción principal.
+
+  - Los 4 botones de "Agregar a mi calendario" (US-37) son intencionalmente
+    chicos, con borde y sin relleno (mismo lenguaje visual que "Escribirnos
+    por WhatsApp"), para no competir con el único botón sólido del correo
+    (Meet). Van en fila de 2x2 que se apila a 1 columna en mobile, igual
+    que el bloque de fecha/hora/modalidad.
 
   - Colores: verde oscuro (#2C3F27) para todo el texto de lectura, y
     rosado (#F9BFC6) para el texto sobre el botón verde. El rosado NO se
@@ -138,6 +164,7 @@
     .h1-mobile { font-size: 20px !important; line-height: 26px !important; }
     .cta-primary-table { width: 100% !important; }
     .cta-primary-link { display: block !important; }
+    .addcal-cell { display: block !important; width: 100% !important; padding-left: 0 !important; padding-right: 0 !important; }
   }
 </style>
 <!--<![endif]-->
@@ -229,6 +256,83 @@
             </td>
           </tr>
 
+          <!-- ===================== AGREGAR A CALENDARIO (US-37) ===================== -->
+          <!-- 4 botones "chip" (borde, sin relleno) para agregar la cita con un
+               clic a Google Calendar, Outlook, Yahoo o Apple/iCal (.ics).
+               Mismo lenguaje visual que el botón de WhatsApp más abajo, para
+               no competir con el único botón sólido del correo (Meet). -->
+          <tr>
+            <td class="fluid-padding" style="padding:20px 36px 4px 36px;">
+              <span style="display:block; font-family:'Century Gothic', Futura, 'Trebuchet MS', Arial, sans-serif; font-size:11px; letter-spacing:1px; text-transform:uppercase; color:#8C9A3D; padding-bottom:10px;">Agregar a mi calendario</span>
+            </td>
+          </tr>
+          <tr>
+            <td class="fluid-padding" style="padding:0 36px 8px 36px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                <tr>
+                  <!-- Google Calendar -->
+                  <td class="addcal-cell" width="50%" style="padding:0 8px 12px 0;" align="center">
+                    <!--[if mso]>
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="<?= addCalGoogleLink ?>" style="height:40px;v-text-anchor:middle;width:250px;" arcsize="14%" strokecolor="#B9BD5B" strokeweight="1.5px" stroke="t" fillcolor="#FFFFFF">
+                    <w:anchorlock/>
+                    <center style="color:#2C3F27;font-family:Arial,sans-serif;font-size:13px;font-weight:bold;">&#128197; Google Calendar</center>
+                    </v:roundrect>
+                    <![endif]-->
+                    <!--[if !mso]><!-->
+                    <a href="<?= addCalGoogleLink ?>" target="_blank" class="addcal-link" style="background-color:transparent; border:1.5px solid #B9BD5B; border-radius:8px; color:#2C3F27; display:block; font-family:'Century Gothic', Futura, 'Trebuchet MS', Arial, sans-serif; font-size:13px; font-weight:bold; line-height:37px; padding:0 12px; text-align:center; text-decoration:none;">
+                      &#128197; Google Calendar
+                    </a>
+                    <!--<![endif]-->
+                  </td>
+                  <!-- Outlook -->
+                  <td class="addcal-cell" width="50%" style="padding:0 0 12px 8px;" align="center">
+                    <!--[if mso]>
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="<?= addCalOutlookLink ?>" style="height:40px;v-text-anchor:middle;width:250px;" arcsize="14%" strokecolor="#B9BD5B" strokeweight="1.5px" stroke="t" fillcolor="#FFFFFF">
+                    <w:anchorlock/>
+                    <center style="color:#2C3F27;font-family:Arial,sans-serif;font-size:13px;font-weight:bold;">&#128197; Outlook</center>
+                    </v:roundrect>
+                    <![endif]-->
+                    <!--[if !mso]><!-->
+                    <a href="<?= addCalOutlookLink ?>" target="_blank" class="addcal-link" style="background-color:transparent; border:1.5px solid #B9BD5B; border-radius:8px; color:#2C3F27; display:block; font-family:'Century Gothic', Futura, 'Trebuchet MS', Arial, sans-serif; font-size:13px; font-weight:bold; line-height:37px; padding:0 12px; text-align:center; text-decoration:none;">
+                      &#128197; Outlook
+                    </a>
+                    <!--<![endif]-->
+                  </td>
+                </tr>
+                <tr>
+                  <!-- Yahoo Calendar -->
+                  <td class="addcal-cell" width="50%" style="padding:0 8px 0 0;" align="center">
+                    <!--[if mso]>
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="<?= addCalYahooLink ?>" style="height:40px;v-text-anchor:middle;width:250px;" arcsize="14%" strokecolor="#B9BD5B" strokeweight="1.5px" stroke="t" fillcolor="#FFFFFF">
+                    <w:anchorlock/>
+                    <center style="color:#2C3F27;font-family:Arial,sans-serif;font-size:13px;font-weight:bold;">&#128197; Yahoo Calendar</center>
+                    </v:roundrect>
+                    <![endif]-->
+                    <!--[if !mso]><!-->
+                    <a href="<?= addCalYahooLink ?>" target="_blank" class="addcal-link" style="background-color:transparent; border:1.5px solid #B9BD5B; border-radius:8px; color:#2C3F27; display:block; font-family:'Century Gothic', Futura, 'Trebuchet MS', Arial, sans-serif; font-size:13px; font-weight:bold; line-height:37px; padding:0 12px; text-align:center; text-decoration:none;">
+                      &#128197; Yahoo Calendar
+                    </a>
+                    <!--<![endif]-->
+                  </td>
+                  <!-- Apple / iCal (descarga .ics) -->
+                  <td class="addcal-cell" width="50%" style="padding:0 0 0 8px;" align="center">
+                    <!--[if mso]>
+                    <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="<?= addCalIcsLink ?>" style="height:40px;v-text-anchor:middle;width:250px;" arcsize="14%" strokecolor="#B9BD5B" strokeweight="1.5px" stroke="t" fillcolor="#FFFFFF">
+                    <w:anchorlock/>
+                    <center style="color:#2C3F27;font-family:Arial,sans-serif;font-size:13px;font-weight:bold;">&#128197; Apple / iCal</center>
+                    </v:roundrect>
+                    <![endif]-->
+                    <!--[if !mso]><!-->
+                    <a href="<?= addCalIcsLink ?>" target="_blank" class="addcal-link" style="background-color:transparent; border:1.5px solid #B9BD5B; border-radius:8px; color:#2C3F27; display:block; font-family:'Century Gothic', Futura, 'Trebuchet MS', Arial, sans-serif; font-size:13px; font-weight:bold; line-height:37px; padding:0 12px; text-align:center; text-decoration:none;">
+                      &#128197; Apple / iCal
+                    </a>
+                    <!--<![endif]-->
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
           <!-- Divisor -->
           <tr>
             <td class="fluid-padding" style="padding:4px 36px 0 36px;">
@@ -287,25 +391,6 @@
               ¿Necesitás hacer un cambio? Podés reagendar o cancelar tu cita desde este enlace:
               <br>
               <a href="<?= linkReagendar ?>" target="_blank" style="color:#8C9A3D; font-weight:bold; text-decoration:underline;">Reagendar o cancelar mi cita</a>
-            </td>
-          </tr>
-
-          <!-- EXPERIMENTAL — agregado el 21 jul, NO es parte del diseño original de
-               Gabriela. Pendiente de validación con el equipo. Si no se aprueba, remover
-               este bloque completo (no toca ninguna otra parte del correo). -->
-          <tr>
-            <td class="fluid-padding" align="center" style="padding:8px 36px 8px 36px;">
-              <!--[if mso]>
-              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="<?= linkAgregarCalendario ?>" style="height:44px;v-text-anchor:middle;width:220px;" arcsize="16%" strokecolor="#F9BFC6" strokeweight="2px" stroke="t" fillcolor="#FFFFFF">
-              <w:anchorlock/>
-              <center style="color:#2C3F27;font-family:Arial,sans-serif;font-size:14px;font-weight:bold;">Agregar a mi calendario</center>
-              </v:roundrect>
-              <![endif]-->
-              <!--[if !mso]><!-->
-              <a href="<?= linkAgregarCalendario ?>" target="_blank" style="background-color:transparent; border:2px solid #F9BFC6; border-radius:8px; color:#2C3F27; display:inline-block; font-family:'Century Gothic', Futura, 'Trebuchet MS', Arial, sans-serif; font-size:14px; font-weight:bold; line-height:40px; padding:0 26px; text-align:center; text-decoration:none;">
-                Agregar a mi calendario
-              </a>
-              <!--<![endif]-->
             </td>
           </tr>
 

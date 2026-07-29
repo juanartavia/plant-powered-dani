@@ -1251,5 +1251,272 @@ function findAlertaReagendamientos(sandbox) {
   assert(!findAlertaReagendamientos(sandbox), "tampoco se dispara la alerta de reagendamientos múltiples en un intento bloqueado");
 })();
 
+// ════════════════════════════════════════════════════════════════════════════════════
+// US-37 — "Agregar a mi calendario" real: 4 links (Google/Outlook/Yahoo/.ics), endpoint de
+// descarga de .ics dinámico, e invitación .ics real (METHOD:REQUEST) adjunta al correo de
+// confirmación. buildAddCalLinks/buildBookingIcsContent/serveIcsDownload son funciones
+// puras/casi puras (sin I/O más allá del Sheet para serveIcsDownload) — se llaman
+// directamente, sin pasar por el HtmlService mock (que no renderiza variables reales, ver
+// nota en gas-mock.js), para poder verificar el contenido exacto de las URLs/.ics.
+// ════════════════════════════════════════════════════════════════════════════════════
+
+function getUrlParam(url, name) {
+  const match = url.match(new RegExp(`[?&]${name}=([^&]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+// ── Test 45: buildAddCalLinks — nutrición presencial (formato UTC + ubicación física) ───
+(function test45() {
+  console.log("Test 45: buildAddCalLinks — nutrición presencial ES (UTC básico/extendido + dirección física)");
+  const { sandbox } = freshCtx();
+  const apptInstant = new sandbox.Date(sandbox.Date.UTC(2026, 7, 10, 15, 0, 0)); // 09:00 CR
+  const links = sandbox.buildAddCalLinks({
+    tipoCita: "initial",
+    idioma: "es",
+    primerNombre: "Sofia",
+    apptInstant,
+    esVirtual: false,
+    token: "tok-45",
+  });
+  assert(getUrlParam(links.addCalGoogleLink, "dates") === "20260810T150000Z/20260810T160000Z", "Google: dates en UTC básico (yyyyMMdd'T'HHmmss'Z'), duración de 60min (initial)");
+  assert(getUrlParam(links.addCalOutlookLink, "startdt") === "2026-08-10T15:00:00Z", "Outlook: startdt en UTC extendido (yyyy-MM-dd'T'HH:mm:ss'Z'), NO en hora local");
+  assert(getUrlParam(links.addCalOutlookLink, "enddt") === "2026-08-10T16:00:00Z", "Outlook: enddt igual, +60min");
+  assert(getUrlParam(links.addCalYahooLink, "st") === "20260810T150000Z", "Yahoo: st en UTC básico, igual que Google");
+  assert(getUrlParam(links.addCalYahooLink, "et") === "20260810T160000Z", "Yahoo: et en UTC básico");
+  assert(getUrlParam(links.addCalGoogleLink, "location").indexOf("Santa Ana Town Center") >= 0, "presencial: la ubicación física aparece en el link (encoding correcto, decodeURIComponent lo recupera intacto)");
+  assert(links.addCalIcsLink.indexOf("action=ics") >= 0 && links.addCalIcsLink.indexOf("token=tok-45") >= 0, "addCalIcsLink apunta a ?action=ics&token=<el token de la cita>");
+})();
+
+// ── Test 46: buildAddCalLinks — nutrición virtual (ubicación = Meet, sin dirección física) ─
+(function test46() {
+  console.log("Test 46: buildAddCalLinks — nutrición virtual EN (ubicación = Google Meet, no dirección física)");
+  const { sandbox } = freshCtx();
+  const apptInstant = new sandbox.Date(sandbox.Date.UTC(2026, 7, 11, 13, 0, 0));
+  const links = sandbox.buildAddCalLinks({
+    tipoCita: "followup",
+    idioma: "en",
+    primerNombre: "Jane",
+    apptInstant,
+    esVirtual: true,
+    meetLink: "https://meet.google.com/abc-defg-hij",
+    token: "tok-46",
+  });
+  const location = getUrlParam(links.addCalGoogleLink, "location");
+  assert(location === "Google Meet: https://meet.google.com/abc-defg-hij", "virtual: la ubicación es el link de Meet, no la dirección física del consultorio");
+  assert(getUrlParam(links.addCalGoogleLink, "details").indexOf("meet.google.com") >= 0, "el link de Meet también aparece en la descripción (details)");
+})();
+
+// ── Test 47: buildAddCalLinks — pilates (siempre virtual, texto/summary distinto) ───────
+(function test47() {
+  console.log("Test 47: buildAddCalLinks — pilates ES (summary/texto propio de clase, no de cita)");
+  const { sandbox } = freshCtx();
+  const apptInstant = new sandbox.Date(sandbox.Date.UTC(2026, 7, 15, 16, 0, 0));
+  const links = sandbox.buildAddCalLinks({
+    tipoCita: "pilates",
+    idioma: "es",
+    primerNombre: "Ana",
+    apptInstant,
+    esVirtual: true,
+    meetLink: "https://meet.google.com/pilates-slot",
+    token: "tok-47",
+  });
+  assert(getUrlParam(links.addCalGoogleLink, "text") === "Clase de pilates — Plant Powered by Dani", "pilates: título distinto al de una cita de nutrición");
+  assert(getUrlParam(links.addCalGoogleLink, "dates") === "20260815T160000Z/20260815T170000Z", "pilates dura 60min");
+})();
+
+// ── Test 48: buildBookingIcsContent — método PUBLISH (endpoint de descarga) ─────────────
+(function test48() {
+  console.log("Test 48: buildBookingIcsContent — METHOD:PUBLISH, sin ATTENDEE/ORGANIZER");
+  const { sandbox } = freshCtx();
+  const apptInstant = new sandbox.Date(sandbox.Date.UTC(2026, 7, 10, 15, 0, 0));
+  const ics = sandbox.buildBookingIcsContent({
+    token: "tok-48",
+    tipoCita: "initial",
+    idioma: "es",
+    primerNombre: "Sofia",
+    apptInstant,
+    esVirtual: false,
+    method: "PUBLISH",
+    sequence: 0,
+  });
+  assert(ics.indexOf("BEGIN:VCALENDAR") === 0, "arranca con BEGIN:VCALENDAR");
+  assert(ics.indexOf("METHOD:PUBLISH") >= 0, "declara METHOD:PUBLISH");
+  assert(ics.indexOf("UID:tok-48@plantpoweredbydani.com") >= 0, "UID estable armado a partir del token");
+  assert(ics.indexOf("DTSTART:20260810T150000Z") >= 0, "DTSTART en UTC");
+  assert(ics.indexOf("DTEND:20260810T160000Z") >= 0, "DTEND = DTSTART + duración del tipo de cita");
+  assert(ics.indexOf("ATTENDEE") === -1, "sin ATTENDEE en modo PUBLISH (nadie pasó attendeeEmail)");
+  assert(ics.indexOf("ORGANIZER") === -1, "sin ORGANIZER (nadie pasó organizerEmail)");
+  assert(ics.indexOf("END:VCALENDAR") >= 0, "termina con END:VCALENDAR");
+})();
+
+// ── Test 49: buildBookingIcsContent — método REQUEST (invitación real) ──────────────────
+(function test49() {
+  console.log("Test 49: buildBookingIcsContent — METHOD:REQUEST, con ORGANIZER/ATTENDEE y SEQUENCE");
+  const { sandbox } = freshCtx();
+  const apptInstant = new sandbox.Date(sandbox.Date.UTC(2026, 7, 10, 15, 0, 0));
+  const ics = sandbox.buildBookingIcsContent({
+    token: "tok-49",
+    tipoCita: "initial",
+    idioma: "es",
+    primerNombre: "Sofia",
+    apptInstant,
+    esVirtual: false,
+    method: "REQUEST",
+    sequence: 2,
+    organizerEmail: "dani@test.com",
+    attendeeEmail: "cliente@test.com",
+  });
+  assert(ics.indexOf("METHOD:REQUEST") >= 0, "declara METHOD:REQUEST");
+  assert(ics.indexOf("SEQUENCE:2") >= 0, "SEQUENCE refleja el parámetro (2, ej. un 2do reagendamiento)");
+  assert(ics.indexOf("ORGANIZER:mailto:dani@test.com") >= 0, "ORGANIZER presente cuando se pasa organizerEmail");
+  assert(ics.indexOf("ATTENDEE") >= 0 && ics.indexOf("mailto:cliente@test.com") >= 0, "ATTENDEE presente con el correo del cliente");
+})();
+
+// ── Test 50: doGet ?action=ics — token válido sirve el .ics con los datos ACTUALES ──────
+(function test50() {
+  console.log("Test 50: doGet ?action=ics con token válido responde ContentService/MimeType.ICAL con un .ics válido");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Gina", "Vindas", "gina@test.com", "8888-6000", "cedula", "1-6000-0000",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const output = sandbox.doGet({ parameter: { action: "ics", token } });
+  assert(typeof output.getMimeType === "function", "devuelve un ContentService.TextOutput, no el HtmlOutput del SPA");
+  assert(output.getMimeType() === "ICAL", "mimetype ICAL (text/calendar)");
+  assert(output.getContent().indexOf("BEGIN:VCALENDAR") === 0, "el contenido es un .ics válido");
+  assert(output.getContent().indexOf(`UID:${token}@plantpoweredbydani.com`) >= 0, "el UID incluye el token real de la cita");
+})();
+
+// ── Test 51: doGet ?action=ics — token inexistente responde texto de error, no un .ics roto ─
+(function test51() {
+  console.log("Test 51: doGet ?action=ics con token inexistente responde texto plano de error");
+  const { sandbox } = freshCtx();
+  const output = sandbox.doGet({ parameter: { action: "ics", token: "no-existe" } });
+  assert(output.getMimeType() === "TEXT", "mimetype TEXT, no ICAL — nunca un .ics roto");
+  assert(output.getContent().length > 0, "trae un mensaje de error no vacío");
+})();
+
+// ── Test 52: doGet ?action=ics — cita cancelada responde texto de error ─────────────────
+(function test52() {
+  console.log("Test 52: doGet ?action=ics con una cita ya cancelada responde texto plano de error");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "followup", isoInHours(72), "Hugo", "Rojas", "hugo@test.com", "8888-6001", "cedula", "1-6000-0001",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  sandbox.cancelBooking(token);
+  const output = sandbox.doGet({ parameter: { action: "ics", token } });
+  assert(output.getMimeType() === "TEXT", "mimetype TEXT para una cita cancelada");
+  assert(output.getContent().toLowerCase().indexOf("cancel") >= 0, "el mensaje de error menciona que la cita fue cancelada");
+})();
+
+// ── Test 53: doGet ?action=ics sin token responde texto de error (no revienta) ──────────
+(function test53() {
+  console.log("Test 53: doGet ?action=ics sin token responde texto plano de error, sin lanzar excepción");
+  const { sandbox } = freshCtx();
+  const output = sandbox.doGet({ parameter: { action: "ics" } });
+  assert(output.getMimeType() === "TEXT", "mimetype TEXT cuando falta el token");
+})();
+
+// ── Test 54: doGet con ?token= (sin action) sigue sirviendo el SPA — sin regresión de US-31 ─
+(function test54() {
+  console.log("Test 54: doGet con ?token= sin ?action= sigue sirviendo el SPA de gestión de cita (regresión US-31)");
+  const { sandbox } = freshCtx();
+  const output = sandbox.doGet({ parameter: { token: "cualquier-token" } });
+  assert(typeof output.append === "function", "sigue devolviendo el HtmlOutput del SPA (con .append), no el ContentService de US-37");
+})();
+
+// ── Test 55: el .ics del endpoint refleja la fecha/hora NUEVA tras un reagendamiento ────
+(function test55() {
+  console.log("Test 55: doGet ?action=ics refleja la fecha/hora NUEVA después de un reagendamiento (no la original)");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "measurement", isoInHours(72), "Karla", "Vega", "karla@test.com", "8888-6002", "cedula", "1-6000-0002",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const dtstartBefore = (sandbox.doGet({ parameter: { action: "ics", token } }).getContent().match(/DTSTART:(\S+)/) || [])[1];
+
+  sandbox.rescheduleBooking(token, isoInHours(300), "America/Costa_Rica");
+  const outputAfter = sandbox.doGet({ parameter: { action: "ics", token } });
+  const dtstartAfter = (outputAfter.getContent().match(/DTSTART:(\S+)/) || [])[1];
+
+  assert(!!dtstartBefore && !!dtstartAfter && dtstartBefore !== dtstartAfter, "el DTSTART del .ics cambia tras el reagendamiento");
+
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  const fechaSheet = nutSheet.getRange(row, 10, 1, 1).getValue();
+  const horaSheet = nutSheet.getRange(row, 11, 1, 1).getValue();
+  const expectedInstant = sandbox.parseSheetDateTime(fechaSheet, horaSheet);
+  const expectedDtstart = formatDate(expectedInstant, "Etc/UTC", "yyyyMMdd'T'HHmmss'Z'");
+  assert(dtstartAfter === expectedDtstart, "el DTSTART tras reagendar coincide EXACTAMENTE con la fecha/hora ACTUAL guardada en el Sheet, no con la original");
+})();
+
+// ── Test 56: bookTimeslot adjunta la invitación .ics real (METHOD:REQUEST) al correo ────
+(function test56() {
+  console.log("Test 56: bookTimeslot adjunta un .ics real (METHOD:REQUEST, ATTENDEE=cliente, SEQUENCE:0) al correo de confirmación");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Sofia", "Mora", "sofia-ics@test.com", "8888-6003", "cedula", "1-6000-0003",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "sofia-ics@test.com");
+  assert(!!confirmEmail, "se encuentra el correo de confirmación");
+  const attachments = (confirmEmail.options && confirmEmail.options.attachments) || [];
+  assert(attachments.length === 1, "el correo trae exactamente 1 adjunto");
+  const blob = attachments[0];
+  assert(blob.getContentType().indexOf("text/calendar") === 0, "content-type del adjunto empieza con text/calendar");
+  assert(blob.getContentType().indexOf("method=REQUEST") >= 0, "el content-type del adjunto declara method=REQUEST (para que Outlook lo detecte como invitación de un vistazo)");
+  const data = blob.getDataAsString();
+  assert(data.indexOf("METHOD:REQUEST") >= 0, "el contenido del .ics también declara METHOD:REQUEST");
+  assert(data.indexOf("mailto:sofia-ics@test.com") >= 0, "el cliente aparece como ATTENDEE");
+  assert(data.indexOf("SEQUENCE:0") >= 0, "SEQUENCE arranca en 0 para la confirmación inicial");
+})();
+
+// ── Test 57: rescheduleBooking sube el SEQUENCE del .ics adjunto (reusa contador US-42) ─
+(function test57() {
+  console.log("Test 57: rescheduleBooking adjunta la invitación .ics con SEQUENCE:1 en el primer reagendamiento");
+  const { sandbox } = freshCtx();
+  const token = sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Rita", "Leon", "rita-ics@test.com", "8888-6004", "cedula", "1-6000-0004",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, isoInHours(150), "America/Costa_Rica");
+  const sent = sandbox.__sentEmails || [];
+  const reagendarEmail = sent.find((e) => e.to === "rita-ics@test.com");
+  assert(!!reagendarEmail, "se envía el correo de reagendamiento al cliente");
+  const attachments = (reagendarEmail.options && reagendarEmail.options.attachments) || [];
+  assert(attachments.length === 1, "también trae 1 adjunto .ics");
+  assert(attachments[0].getDataAsString().indexOf("SEQUENCE:1") >= 0, "SEQUENCE sube a 1 (reusa incrementRescheduleCounterOnBookingRow de US-42, sin contador nuevo)");
+})();
+
+// ── Test 58: un fallo al construir el .ics no bloquea el envío del correo de confirmación ─
+(function test58() {
+  console.log("Test 58: un fallo de Utilities.newBlob al construir el adjunto .ics degrada con gracia (correo SIN adjunto, no un error)");
+  const { sandbox } = freshCtx();
+  sandbox.Utilities.newBlob = () => {
+    throw new Error("Mock: newBlob caído");
+  };
+
+  let threw = null;
+  let token = null;
+  try {
+    token = sandbox.bookTimeslot(
+      "initial", isoInHours(72), "Pedro", "Ruiz", "pedro-ics@test.com", "8888-6005", "cedula", "1-6000-0005",
+      "1990-01-01", "es", "presencial", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+
+  assert(threw === null, "bookTimeslot no lanza ningún error pese al fallo de Utilities.newBlob");
+  assert(!!token, "el agendamiento se completa normalmente (Sheet/Calendar no dependen del adjunto)");
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "pedro-ics@test.com");
+  assert(!!confirmEmail, "el correo de confirmación se envía igual");
+  assert(confirmEmail.options.attachments && confirmEmail.options.attachments.length === 0, "se envía SIN adjunto cuando falla la construcción del .ics, en vez de bloquear el correo completo");
+})();
+
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
 process.exit(failed > 0 ? 1 : 0);

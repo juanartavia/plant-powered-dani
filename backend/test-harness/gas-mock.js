@@ -55,6 +55,10 @@ function formatDate(date, tz, pattern) {
   // al formato genérico de abajo (con espacio y sin 'Z'), que es válido para logs pero NO es
   // el formato que Google Calendar espera en el parámetro `dates`.
   if (pattern === "yyyyMMdd'T'HHmmss'Z'") return `${y}${mo}${da}T${h}${mi}${s}Z`;
+  // Formato UTC "extendido" de Outlook (buildAddCalLinks, US-37) — mismo caso que el básico de
+  // arriba (blind spot ya documentado): sin este caso, el mock caía al formato genérico de
+  // abajo (con espacio, sin 'T' ni 'Z'), que Outlook.live.com no acepta para startdt/enddt.
+  if (pattern === "yyyy-MM-dd'T'HH:mm:ss'Z'") return `${y}-${mo}-${da}T${h}:${mi}:${s}Z`;
   // yyyy-MM-dd'T'HH:mm:ss / "yyyy-MM-dd HH:mm:ss" / cualquier otro con todos los campos
   return `${y}-${mo}-${da} ${h}:${mi}:${s}`;
 }
@@ -289,6 +293,15 @@ function createMockContext() {
       getUuid: () => `uuid-${Math.random().toString(36).slice(2)}`,
       formatDate,
       parseDate,
+      // Mock de US-37: alcanza con guardar data/contentType/name tal cual — buildBookingIcsContent
+      // ya arma el texto real del .ics en JS puro (no depende de ningún API de Apps Script), así
+      // que este mock solo necesita representar el "objeto Blob" para que
+      // GmailApp.sendEmail({attachments: [...]}) tenga algo que registrar.
+      newBlob: (data, contentType, name) => ({
+        getDataAsString: () => data,
+        getContentType: () => contentType,
+        getName: () => name,
+      }),
     },
     PropertiesService: {
       getScriptProperties: () => scriptProperties,
@@ -360,6 +373,25 @@ function createMockContext() {
       sendEmail: (to, subject, body, options) => {
         sandbox.__sentEmails = sandbox.__sentEmails || [];
         sandbox.__sentEmails.push({ to, subject, body, options });
+      },
+    },
+    // Mock de US-37: serveIcsDownload (doGet ?action=ics) usa ContentService en vez de
+    // HtmlService porque necesita controlar el Content-Type de la respuesta (text/calendar,
+    // vía MimeType.ICAL) — HtmlService siempre sirve text/html. Los valores del enum solo
+    // necesitan ser distintos entre sí; los tests verifican vía getMimeType()/getContent().
+    ContentService: {
+      MimeType: { ICAL: "ICAL", TEXT: "TEXT" },
+      createTextOutput: (content) => {
+        let mimeType = "TEXT";
+        const output = {
+          setMimeType: (mt) => {
+            mimeType = mt;
+            return output;
+          },
+          getMimeType: () => mimeType,
+          getContent: () => content,
+        };
+        return output;
       },
     },
   };

@@ -156,7 +156,18 @@ function getDurationForType(type: string): number {
   return duration;
 }
 
-function doGet(e: GoogleAppsScript.Events.DoGet): GoogleAppsScript.HTML.HtmlOutput {
+function doGet(e: GoogleAppsScript.Events.DoGet): GoogleAppsScript.HTML.HtmlOutput | GoogleAppsScript.Content.TextOutput {
+  // US-37 — descarga de .ics dinámico (?action=ics&token=...), para Apple Mail/iCal/Outlook
+  // de escritorio (ver buildAddCalLinks/addCalIcsLink: son los únicos que no tienen un
+  // endpoint de "deeplink" como Google/Outlook web/Yahoo, necesitan el archivo .ics en sí).
+  // Se evalúa ANTES que el branch genérico de `token` de abajo (US-31) — de lo contrario ESE
+  // branch serviría el SPA de gestión de cita en vez del archivo .ics, porque ambos comparten
+  // el mismo parámetro `token` en la URL.
+  const action = e?.parameter?.action ?? "";
+  if (action === "ics") {
+    return serveIcsDownload(e?.parameter?.token ?? "");
+  }
+
   // El parámetro ?type= en la URL determina el tipo de cita, su duración,
   // el calendario destino, la plantilla de correo y la lógica de disponibilidad.
   const type = e?.parameter?.type ?? "";
@@ -221,6 +232,65 @@ function doGet(e: GoogleAppsScript.Events.DoGet): GoogleAppsScript.HTML.HtmlOutp
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag("viewport", "width=device-width, initial-scale=1")
     .append(typeScript);
+}
+
+// US-37 — sirve el .ics de descarga de una cita, regenerado con sus datos ACTUALES en cada
+// clic (a diferencia de los 3 deep links de Google/Outlook/Yahoo, ver comentario de
+// buildAddCalLinks). METHOD:PUBLISH y sin ATTENDEE — a diferencia del adjunto de invitación
+// del correo de confirmación (METHOD:REQUEST, ver renderConfirmationEmail), este archivo es
+// para que el cliente IMPORTE el evento a su propio calendario, no para que reciba una
+// invitación con RSVP.
+//
+// Token inválido o cita cancelada: responde con un mensaje de error claro en texto plano, no
+// con un archivo .ics roto — un .ics vacío o mal formado fallaría silenciosamente al importar
+// en la mayoría de clientes de calendario, sin explicarle nada al cliente.
+//
+// ⚠️ LIMITACIÓN CONOCIDA de ContentService (Apps Script): no existe forma de fijar un nombre
+// de archivo real (header Content-Disposition) para la respuesta — el navegador/cliente de
+// correo decide el nombre de descarga a partir de la URL o de su propio criterio. No bloquea
+// la funcionalidad (el .ics se importa igual), pero el nombre del archivo descargado puede no
+// ser "invite.ics" como el adjunto del correo.
+function serveIcsDownload(token: string): GoogleAppsScript.Content.TextOutput {
+  if (!token) {
+    return ContentService.createTextOutput(
+      "Enlace de calendario inválido: falta el token de la cita."
+    ).setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  let booking: BookingLookup;
+  try {
+    booking = findBookingByToken(token);
+  } catch (e) {
+    return ContentService.createTextOutput(
+      "No se encontró ninguna cita con este enlace. Por favor contactá a Plant Powered by Dani."
+    ).setMimeType(ContentService.MimeType.TEXT);
+  }
+  if (booking.estado === "Cancelada") {
+    return ContentService.createTextOutput(
+      "Esta cita fue cancelada — no se puede generar el archivo de calendario."
+    ).setMimeType(ContentService.MimeType.TEXT);
+  }
+
+  const idioma: "es" | "en" = booking.language === "en" ? "en" : "es";
+  const apptInstant = parseSheetDateTime(booking.fecha, booking.hora);
+  const esVirtual = booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual";
+  const meetLink = booking.sheetName === "Pilates"
+    ? findPilatesMeetLink(booking.fecha, booking.hora)
+    : String(getSheet("Nutrición").getRange(booking.row, NUTRICION_MEET_LINK_COL).getValue() || "");
+
+  const icsContent = buildBookingIcsContent({
+    token: booking.token,
+    tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
+    idioma,
+    primerNombre: booking.nombre,
+    apptInstant,
+    esVirtual,
+    meetLink,
+    method: "PUBLISH",
+    sequence: 0,
+  });
+
+  return ContentService.createTextOutput(icsContent).setMimeType(ContentService.MimeType.ICAL);
 }
 
 function fetchAvailability(type: string): {
@@ -2032,7 +2102,7 @@ function bookTimeslot(
   try {
     const idioma: "es" | "en" = language === "en" ? "en" : "es";
     const linkReagendar = `${WEB_APP_URL}?token=${token}`;
-    const { subject, htmlBody } = renderConfirmationEmail({
+    const { subject, htmlBody, icsAttachment } = renderConfirmationEmail({
       tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
       nombre,
@@ -2042,8 +2112,11 @@ function bookTimeslot(
       meetLink: meetLinkForEmail,
       linkReagendar,
       clientTimezone,
+      token,
+      correo: email,
+      icsSequence: 0,
     });
-    GmailApp.sendEmail(email, subject, "", { htmlBody });
+    GmailApp.sendEmail(email, subject, "", { htmlBody, attachments: icsAttachment ? [icsAttachment] : [] });
   } catch (e) {
     Logger.log(`bookTimeslot: fallo al enviar correo de confirmación a ${email} (token ${token}): ${(e as Error).message}`);
   }
@@ -2638,7 +2711,7 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   try {
     const idioma: "es" | "en" = booking.language === "en" ? "en" : "es";
     const esVirtualCita = booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual";
-    const { subject, htmlBody } = renderConfirmationEmail({
+    const { subject, htmlBody, icsAttachment } = renderConfirmationEmail({
       tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
       nombre: booking.nombre,
@@ -2649,8 +2722,15 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
       linkReagendar: `${WEB_APP_URL}?token=${token}`,
       clientTimezone,
       tipoAccion: "reagendada",
+      token,
+      correo: booking.correo,
+      // Reusa el contador de reagendamientos (US-42) como SEQUENCE de la invitación .ics —
+      // ya sube en cada reagendamiento real, exactamente lo que un cliente de calendario
+      // necesita para reconocer esta invitación como una actualización de la anterior (ver
+      // comentario de icsSequence en renderConfirmationEmail).
+      icsSequence: numeroReagendamiento,
     });
-    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody });
+    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, attachments: icsAttachment ? [icsAttachment] : [] });
   } catch (e) {
     Logger.log(`rescheduleBooking: fallo al enviar correo de reagendamiento a ${booking.correo} (token ${token}): ${(e as Error).message}`);
   }
@@ -2874,7 +2954,22 @@ function renderConfirmationEmail(params: {
   // título y el subject de "confirmada" a "reagendada". Default "confirmacion" para no
   // cambiar el comportamiento de bookTimeslot/testSendConfirmationEmails, que no lo pasan.
   tipoAccion?: "confirmacion" | "reagendada";
-}): { subject: string; htmlBody: string } {
+  // --- US-37 ---
+  // token de la cita: hace falta para addCalIcsLink (deep link al .ics propio) y para el UID
+  // estable del .ics real que se adjunta al correo (ver buildBookingIcsContent).
+  token: string;
+  // Correo del cliente: se usa como ATTENDEE de la invitación .ics real adjunta (ver el
+  // bloque icsAttachment más abajo) — NUNCA se imprime en la plantilla HTML ni en los 3 deep
+  // links (mismo criterio de datos sensibles que buildEventContentParts).
+  correo: string;
+  // SEQUENCE de la invitación .ics adjunta (RFC 5546): 0 para la confirmación inicial: en cada
+  // reenvío real de una invitación para la MISMA cita (reagendamiento) debe subir, para que un
+  // cliente de calendario que ya tenía la invitación vieja la reconozca como una actualización
+  // en vez de un evento nuevo. rescheduleBooking pasa el contador de reagendamientos ya
+  // existente (US-42, incrementRescheduleCounterOnBookingRow) — no hace falta un contador
+  // nuevo. Default 0 para no romper bookTimeslot/testSendConfirmationEmails, que no lo pasan.
+  icsSequence?: number;
+}): { subject: string; htmlBody: string; icsAttachment: GoogleAppsScript.Base.Blob | null } {
   const isPilates = params.tipoCita === "pilates";
   const tipoAccion = params.tipoAccion || "confirmacion";
   const servicio = isPilates ? "pilates" : "nutricion";
@@ -2899,15 +2994,21 @@ function renderConfirmationEmail(params: {
   template.horaDisplay = formatHoraDisplay(apptInstant, displayZone);
   template.linkReagendar = params.linkReagendar;
   template.meetLink = params.meetLink || "";
-  // EXPERIMENTAL (21 jul) — ver comentario completo en buildAddToCalendarLink().
-  template.linkAgregarCalendario = buildAddToCalendarLink({
+  // US-37 — 4 botones "agregar a mi calendario" (ver buildAddCalLinks para el detalle y la
+  // limitación conocida de los 3 deep links vs. el .ics propio).
+  const addCalLinks = buildAddCalLinks({
     tipoCita: params.tipoCita,
     idioma: params.idioma,
     primerNombre: params.nombre,
     apptInstant,
     esVirtual: params.esVirtual,
     meetLink: params.meetLink,
+    token: params.token,
   });
+  template.addCalGoogleLink = addCalLinks.addCalGoogleLink;
+  template.addCalOutlookLink = addCalLinks.addCalOutlookLink;
+  template.addCalYahooLink = addCalLinks.addCalYahooLink;
+  template.addCalIcsLink = addCalLinks.addCalIcsLink;
 
   // tituloConfirmacion se manda SIEMPRE ahora (antes solo para nutrición) — las plantillas
   // de pilates tienen un fallback fijo en el propio HTML si esta variable viene vacía (ver
@@ -2931,7 +3032,44 @@ function renderConfirmationEmail(params: {
     ? subjectsMap.pilates[params.idioma]
     : subjectsMap.nutricion[params.idioma];
 
-  return { subject, htmlBody: template.evaluate().getContent() };
+  // US-37 — invitación .ics REAL adjunta al correo (METHOD:REQUEST + ATTENDEE), para que
+  // Gmail/Outlook/Apple Mail la detecten automáticamente como invitación (sin necesitar
+  // whitelisting de Google) y ofrezcan sus propios botones nativos "Aceptar/Rechazar" además
+  // de los 4 botones "agregar a mi calendario" de arriba. Su propio try/catch: un fallo acá
+  // (por ejemplo, Script Properties de organizer mal configuradas) NUNCA debe impedir que el
+  // correo de confirmación salga — mismo criterio de resiliencia que el resto de esta función
+  // y de bookTimeslot/rescheduleBooking (ver sus try/catch alrededor de GmailApp.sendEmail).
+  let icsAttachment: GoogleAppsScript.Base.Blob | null = null;
+  try {
+    const icsContent = buildBookingIcsContent({
+      token: params.token,
+      tipoCita: params.tipoCita,
+      idioma: params.idioma,
+      primerNombre: params.nombre,
+      apptInstant,
+      esVirtual: params.esVirtual,
+      meetLink: params.meetLink,
+      method: "REQUEST",
+      // Math.max(0, ...) — no solo `|| 0`: incrementRescheduleCounterOnBookingRow (US-42)
+      // devuelve -1 si falló al escribir el contador (ver su propio try/catch), y -1 es
+      // truthy en JS, así que `|| 0` lo dejaría pasar tal cual como SEQUENCE, violando RFC
+      // 5545 (debe ser un entero no negativo).
+      sequence: Math.max(0, params.icsSequence || 0),
+      organizerEmail: getOrganizerEmailForTipoCita(params.tipoCita),
+      attendeeEmail: params.correo,
+    });
+    // Content-Type con method=REQUEST explícito (no solo en el propio VCALENDAR) — práctica
+    // estándar para que clientes como Outlook detecten el adjunto como invitación de
+    // calendario de un vistazo, sin tener que abrir el archivo. Ver investigación de US-37 en
+    // CLAUDE.md: la documentación oficial de GmailApp no cubre esto explícitamente, pero
+    // Utilities.newBlob acepta cualquier string de Content-Type y GmailApp.sendEmail reenvía
+    // el de cada adjunto tal cual.
+    icsAttachment = Utilities.newBlob(icsContent, "text/calendar; method=REQUEST; charset=UTF-8", "invite.ics");
+  } catch (e) {
+    Logger.log(`renderConfirmationEmail: fallo al construir el adjunto .ics (token ${params.token}): ${(e as Error).message}`);
+  }
+
+  return { subject, htmlBody: template.evaluate().getContent(), icsAttachment };
 }
 
 // Correo al CLIENTE cuando cancela su cita/clase desde la página visual de gestión (US-31) —
@@ -2965,67 +3103,250 @@ function renderCancellationEmail(params: {
   return { subject, htmlBody: template.evaluate().getContent() };
 }
 
-// EXPERIMENTAL — agregado el 21 jul, NO es parte del diseño original de Gabriela. Es una
-// decisión tomada directamente con el usuario; el equipo de comunicación todavía no la ha
-// visto ni aprobado. Si no se aprueba, esta función y el bloque de botón correspondiente en
-// las 4 plantillas HTML se pueden remover sin afectar el resto del correo.
+// US-37 — reemplaza por completo el botón único EXPERIMENTAL buildAddToCalendarLink (21 jul,
+// ver CLAUDE.md), ahora con el diseño de 4 botones aprobado por Dani/Gabriela. Título,
+// descripción y ubicación son compartidos entre los 3 links "deep link" (Google/Outlook/Yahoo,
+// ver buildAddCalLinks) y el .ics real (descarga y adjunto de invitación, ver
+// buildBookingIcsContent) para que las 4 formas de "agregar a calendario" muestren el mismo
+// contenido. `description`/`location` NUNCA deben incluir cédula, fecha de nacimiento,
+// teléfono ni correo del cliente — mismo criterio que la función original: ese fue justo el
+// dato sensible que motivó apagar la invitación nativa de Calendar.Events.insert()
+// (sendUpdates:'none').
+function buildEventContentParts(params: {
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  idioma: "es" | "en";
+  primerNombre: string;
+  esVirtual: boolean;
+  meetLink?: string;
+}): { summary: string; description: string; location: string } {
+  const isPilates = params.tipoCita === "pilates";
+
+  const summary = isPilates
+    ? (params.idioma === "en" ? "Pilates class — Plant Powered by Dani" : "Clase de pilates — Plant Powered by Dani")
+    : (params.idioma === "en" ? "Nutrition appointment — Plant Powered by Dani" : "Cita de nutrición — Plant Powered by Dani");
+
+  let description = params.idioma === "en"
+    ? `Appointment for ${params.primerNombre} with Plant Powered by Dani.`
+    : `Cita de ${params.primerNombre} con Plant Powered by Dani.`;
+  if (params.esVirtual && params.meetLink) {
+    description += params.idioma === "en" ? ` Join: ${params.meetLink}` : ` Unirse: ${params.meetLink}`;
+  }
+
+  // Ubicación en texto plano, SIN el <br> de CONSULTORIO_DIRECCION (ese <br> es solo para el
+  // bloque HTML del correo). Si es virtual, se usa el link de Meet como "ubicación" (mismo
+  // criterio que un evento real de Calendar) — antes (buildAddToCalendarLink original) esto
+  // quedaba vacío para citas virtuales; se amplía acá porque el .ics real sí necesita un
+  // LOCATION útil para quien lo importa a Apple Calendar/Outlook de escritorio.
+  const location = !isPilates && !params.esVirtual
+    ? "Santa Ana Town Center, Work Space Republic, Segundo piso, Consultorio #33"
+    : (params.meetLink ? `Google Meet: ${params.meetLink}` : "");
+
+  return { summary, description, location };
+}
+
+// Arma las 3 URLs "deep link" (Google/Outlook/Yahoo) para que el CLIENTE agregue el evento a
+// SU propio calendario personal con un clic, más el link de descarga del .ics propio (ver
+// buildBookingIcsContent/doGet ?action=ics) — separado por completo de la invitación nativa de
+// Calendar.Events.insert()/.patch(), que sigue apagada (sendUpdates:'none').
 //
-// Arma un link "render" de Google Calendar para que el CLIENTE agregue el evento a SU propio
-// calendario personal con un clic — separado por completo de la invitación nativa de
-// Calendar.Events.insert()/.patch(), que sigue apagada (sendUpdates:'none', ver historial de
-// deploy v25 en el CLAUDE.md). `details`/`location` NUNCA deben incluir cédula, fecha de
-// nacimiento, teléfono ni correo del cliente — ese fue justo el dato sensible que motivó
-// apagar la invitación nativa; solo lleva el primer nombre y el tipo de cita.
-function buildAddToCalendarLink(params: {
+// ⚠️ LIMITACIÓN CONOCIDA, inherente a estos 3 proveedores (no a nuestra implementación): a
+// diferencia de addCalIcsLink (apunta a nuestro propio endpoint, que regenera el contenido con
+// los datos ACTUALES de la cita en cada clic), estos 3 links quedan con la fecha/hora FIJA al
+// momento en que se envió el correo — Google/Outlook/Yahoo no ofrecen ningún mecanismo para
+// que un link ya generado "recalcule" su contenido después. Si el cliente reagenda su cita
+// DESPUÉS de recibir el correo, el correo viejo (ya en su bandeja) va a seguir ofreciendo
+// agregar la fecha VIEJA a estos 3 calendarios — sí recibe un correo NUEVO con links correctos
+// en cada reagendamiento (ver rescheduleBooking), pero el correo viejo no se puede "arreglar"
+// retroactivamente. No hay forma de evitar esto con estos 3 proveedores — es aceptable dado el
+// volumen bajo del negocio, y queda anotado acá y en CLAUDE.md.
+function buildAddCalLinks(params: {
   tipoCita: "initial" | "followup" | "measurement" | "pilates";
   idioma: "es" | "en";
   primerNombre: string;
   apptInstant: Date;
   esVirtual: boolean;
   meetLink?: string;
-}): string {
-  const isPilates = params.tipoCita === "pilates";
+  token: string;
+}): { addCalGoogleLink: string; addCalOutlookLink: string; addCalYahooLink: string; addCalIcsLink: string } {
+  const { summary, description, location } = buildEventContentParts(params);
   const durationMinutes = getDurationForType(params.tipoCita);
   const endInstant = new Date(params.apptInstant.getTime() + durationMinutes * 60000);
-  // Formato "render" de Google Calendar exige UTC básico yyyyMMdd'T'HHmmss'Z', sin importar
-  // la zona en la que se le muestra la fecha/hora al cliente en el resto del correo.
-  const toUtcStamp = (instant: Date) => Utilities.formatDate(instant, "Etc/UTC", "yyyyMMdd'T'HHmmss'Z'");
-  const dates = `${toUtcStamp(params.apptInstant)}/${toUtcStamp(endInstant)}`;
 
-  const text = isPilates
-    ? (params.idioma === "en" ? "Pilates class — Plant Powered by Dani" : "Clase de pilates — Plant Powered by Dani")
-    : (params.idioma === "en" ? "Nutrition appointment — Plant Powered by Dani" : "Cita de nutrición — Plant Powered by Dani");
+  // Google/Yahoo usan el formato UTC "básico" (sin guiones/dos puntos); Outlook exige el
+  // formato "extendido" (con guiones/dos puntos) — confirmado contra la documentación real del
+  // deeplink de outlook.live.com (?startdt=...Z&enddt=...Z), no es un capricho: son dos
+  // proveedores con dos parsers distintos para el mismo instante UTC.
+  const toUtcBasic = (instant: Date) => Utilities.formatDate(instant, "Etc/UTC", "yyyyMMdd'T'HHmmss'Z'");
+  const toUtcExtended = (instant: Date) => Utilities.formatDate(instant, "Etc/UTC", "yyyy-MM-dd'T'HH:mm:ss'Z'");
 
-  let details = params.idioma === "en"
-    ? `Appointment for ${params.primerNombre} with Plant Powered by Dani.`
-    : `Cita de ${params.primerNombre} con Plant Powered by Dani.`;
-  if (params.esVirtual && params.meetLink) {
-    details += params.idioma === "en" ? ` Join: ${params.meetLink}` : ` Unirse: ${params.meetLink}`;
-  }
-
-  // Ubicación en texto plano, SIN el <br> de CONSULTORIO_DIRECCION (ese <br> es solo para el
-  // bloque HTML del correo) — Google Calendar la muestra como una sola línea de todas formas.
-  const location = !isPilates && !params.esVirtual
-    ? "Santa Ana Town Center, Work Space Republic, Segundo piso, Consultorio #33"
-    : "";
-
-  const queryParams = [
+  const addCalGoogleLink = `https://calendar.google.com/calendar/render?${[
     "action=TEMPLATE",
-    `text=${encodeURIComponent(text)}`,
-    `dates=${dates}`,
-    `details=${encodeURIComponent(details)}`,
+    `text=${encodeURIComponent(summary)}`,
+    `dates=${toUtcBasic(params.apptInstant)}/${toUtcBasic(endInstant)}`,
+    `details=${encodeURIComponent(description)}`,
     `location=${encodeURIComponent(location)}`,
     "ctz=America/Costa_Rica",
+  ].join("&")}`;
+
+  const addCalOutlookLink = `https://outlook.live.com/calendar/0/deeplink/compose?${[
+    "path=/calendar/action/compose",
+    "rru=addevent",
+    `startdt=${toUtcExtended(params.apptInstant)}`,
+    `enddt=${toUtcExtended(endInstant)}`,
+    `subject=${encodeURIComponent(summary)}`,
+    `body=${encodeURIComponent(description)}`,
+    `location=${encodeURIComponent(location)}`,
+  ].join("&")}`;
+
+  const addCalYahooLink = `https://calendar.yahoo.com/?${[
+    "v=60",
+    "view=d",
+    "type=20",
+    `title=${encodeURIComponent(summary)}`,
+    `st=${toUtcBasic(params.apptInstant)}`,
+    `et=${toUtcBasic(endInstant)}`,
+    `desc=${encodeURIComponent(description)}`,
+    `in_loc=${encodeURIComponent(location)}`,
+  ].join("&")}`;
+
+  const addCalIcsLink = `${WEB_APP_URL}?action=ics&token=${encodeURIComponent(params.token)}`;
+
+  return { addCalGoogleLink, addCalOutlookLink, addCalYahooLink, addCalIcsLink };
+}
+
+// Escapa texto según RFC 5545 (value type TEXT): backslash, punto y coma, coma y saltos de
+// línea deben escaparse para no romper el parseo de propiedades del .ics — sin esto, por
+// ejemplo, una ubicación con coma ("Santa Ana Town Center, Work Space Republic...") partiría
+// la propiedad LOCATION en dos. NO implementa line-folding (líneas >75 octetos) del mismo RFC
+// — aceptable acá porque summary/description/location de este negocio son siempre cortos;
+// si algún día se agrega una descripción larga, hay que revisar esto.
+function icsEscape(text: string): string {
+  return text
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
+}
+
+// Construye el bloque VCALENDAR/VEVENT completo de un evento — genérico, sin conocer nada de
+// "citas de Plant Powered by Dani" (eso lo arma buildBookingIcsContent envolviendo esta
+// función). Reutilizado tanto por el endpoint de descarga (?action=ics, METHOD:PUBLISH, sin
+// asistente) como por el adjunto de invitación real del correo de confirmación (METHOD:REQUEST,
+// con ORGANIZER/ATTENDEE — ver renderConfirmationEmail).
+//
+// UID estable (armado por el caller a partir del token) para que un cliente de calendario que
+// reciba una invitación REQUEST posterior (reagendamiento) la reconozca como una ACTUALIZACIÓN
+// de la misma cita en vez de un evento nuevo — por eso `sequence` debe subir en cada reenvío
+// real de una invitación (ver icsSequence en renderConfirmationEmail/rescheduleBooking).
+function buildIcsContent(params: {
+  uid: string;
+  apptInstant: Date;
+  durationMinutes: number;
+  summary: string;
+  description: string;
+  location: string;
+  sequence: number;
+  method: "PUBLISH" | "REQUEST";
+  organizerEmail?: string;
+  attendeeEmail?: string;
+}): string {
+  const endInstant = new Date(params.apptInstant.getTime() + params.durationMinutes * 60000);
+  const toUtcStamp = (instant: Date) => Utilities.formatDate(instant, "Etc/UTC", "yyyyMMdd'T'HHmmss'Z'");
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "VERSION:2.0",
+    "PRODID:-//Plant Powered by Dani//Booking System//ES",
+    `METHOD:${params.method}`,
+    "CALSCALE:GREGORIAN",
+    "BEGIN:VEVENT",
+    `UID:${params.uid}`,
+    `DTSTAMP:${toUtcStamp(new Date())}`,
+    `DTSTART:${toUtcStamp(params.apptInstant)}`,
+    `DTEND:${toUtcStamp(endInstant)}`,
+    `SEQUENCE:${params.sequence}`,
+    `SUMMARY:${icsEscape(params.summary)}`,
+    `DESCRIPTION:${icsEscape(params.description)}`,
   ];
-  return `https://calendar.google.com/calendar/render?${queryParams.join("&")}`;
+  if (params.location) lines.push(`LOCATION:${icsEscape(params.location)}`);
+  // ORGANIZER es opcional a propósito (ver getOrganizerEmailForTipoCita): un METHOD:REQUEST
+  // sin ORGANIZER no es 100% RFC 5546, pero los clientes de calendario reales son tolerantes,
+  // y preferimos degradar (invitación sin organizer) antes que romper el envío del correo si
+  // DANI_EMAIL/INSTRUCTORA_EMAIL no están configurados en Script Properties.
+  if (params.organizerEmail) lines.push(`ORGANIZER:mailto:${params.organizerEmail}`);
+  if (params.attendeeEmail) {
+    lines.push(`ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION;CN=${icsEscape(params.attendeeEmail)}:mailto:${params.attendeeEmail}`);
+  }
+  lines.push("STATUS:CONFIRMED", "END:VEVENT", "END:VCALENDAR");
+
+  // RFC 5545 exige CRLF como terminador de línea.
+  return lines.join("\r\n") + "\r\n";
+}
+
+// Envoltorio de buildIcsContent con el conocimiento específico de una cita de Plant Powered by
+// Dani (UID a partir del token, contenido de evento vía buildEventContentParts). Único punto
+// que arma un .ics real — usado por serveIcsDownload (?action=ics) y por
+// renderConfirmationEmail (adjunto de invitación).
+function buildBookingIcsContent(params: {
+  token: string;
+  tipoCita: "initial" | "followup" | "measurement" | "pilates";
+  idioma: "es" | "en";
+  primerNombre: string;
+  apptInstant: Date;
+  esVirtual: boolean;
+  meetLink?: string;
+  method: "PUBLISH" | "REQUEST";
+  sequence: number;
+  organizerEmail?: string;
+  attendeeEmail?: string;
+}): string {
+  const { summary, description, location } = buildEventContentParts(params);
+  const durationMinutes = getDurationForType(params.tipoCita);
+  return buildIcsContent({
+    uid: `${params.token}@plantpoweredbydani.com`,
+    apptInstant: params.apptInstant,
+    durationMinutes,
+    summary,
+    description,
+    location,
+    sequence: params.sequence,
+    method: params.method,
+    organizerEmail: params.organizerEmail,
+    attendeeEmail: params.attendeeEmail,
+  });
+}
+
+// Correo de Dani/instructora a usar como ORGANIZER de la invitación REQUEST adjunta al correo
+// de confirmación (ver renderConfirmationEmail). Decisión explícita (US-37): SÍ se incluye
+// ORGANIZER, aunque eso significa que si el cliente hace clic en "Aceptar/Rechazar" en su
+// cliente de calendario, algunos clientes (notablemente Outlook) le mandan un correo de RSVP
+// de vuelta a esta dirección. Dado el volumen bajo del negocio (unas pocas citas por día), esto
+// no debería ser un problema práctico — pero queda anotado acá y en CLAUDE.md por si en algún
+// momento se vuelve ruidoso y hay que reconsiderarlo. Best-effort: si la Script Property
+// correspondiente no está configurada, se omite el ORGANIZER en vez de lanzar error (mismo
+// criterio de resiliencia que el resto del correo de confirmación — un dato faltante acá nunca
+// debe bloquear el envío).
+function getOrganizerEmailForTipoCita(tipoCita: "initial" | "followup" | "measurement" | "pilates"): string | undefined {
+  const key = tipoCita === "pilates" ? LATE_CANCELLATION_PROP_INSTRUCTORA : LATE_CANCELLATION_PROP_DANI;
+  const value = String(PropertiesService.getScriptProperties().getProperty(key) || "").trim();
+  return value || undefined;
 }
 
 // Función de testing manual (US-11, checklist ítems 1/2/5) — genera las 4 combinaciones
 // (nutrición ES/EN x virtual/presencial, pilates ES/EN) y las envía por GmailApp a la
 // cuenta de testing para inspección visual real. Correr manualmente desde el editor de
 // Apps Script; no forma parte de ningún flujo automático (eso es US-12).
+// Segundo destinatario de prueba, agregado junto con US-37 (además de la cuenta de testing de
+// Gmail) específicamente para poder revisar el correo desde un cliente Outlook/Office 365
+// real — la cuenta de testing de Gmail no sirve para confirmar si Outlook detecta la
+// invitación .ics adjunta (METHOD:REQUEST) con su propio botón nativo "Aceptar/Rechazar".
+// Cuenta personal del usuario, NO la cuenta de testing del proyecto — no usar para nada más
+// que esta revisión visual puntual.
+const TESTING_SECONDARY_EMAIL = "juan.artavia.urena@est.una.ac.cr";
+
 function testSendConfirmationEmails(): void {
   const destinatario = Session.getActiveUser().getEmail();
+  const destinatariosPrueba = [destinatario, TESTING_SECONDARY_EMAIL];
   const linkReagendarFake = "https://script.google.com/macros/s/FAKE_DEPLOYMENT_ID/exec?token=test-token-1234";
 
   const casos: Array<Parameters<typeof renderConfirmationEmail>[0]> = [
@@ -3037,6 +3358,8 @@ function testSendConfirmationEmails(): void {
       hora: "13:30",
       esVirtual: false,
       linkReagendar: linkReagendarFake,
+      token: "test-token-1234",
+      correo: destinatario,
     },
     {
       tipoCita: "followup",
@@ -3047,6 +3370,8 @@ function testSendConfirmationEmails(): void {
       esVirtual: true,
       meetLink: "https://meet.google.com/fake-link-test",
       linkReagendar: linkReagendarFake,
+      token: "test-token-1234",
+      correo: destinatario,
     },
     {
       tipoCita: "pilates",
@@ -3057,6 +3382,8 @@ function testSendConfirmationEmails(): void {
       esVirtual: true,
       meetLink: "https://meet.google.com/fake-link-pilates",
       linkReagendar: linkReagendarFake,
+      token: "test-token-1234",
+      correo: destinatario,
     },
     {
       tipoCita: "pilates",
@@ -3067,13 +3394,27 @@ function testSendConfirmationEmails(): void {
       esVirtual: true,
       meetLink: "https://meet.google.com/fake-link-pilates-en",
       linkReagendar: linkReagendarFake,
+      token: "test-token-1234",
+      correo: destinatario,
     },
   ];
 
+  // US-37 — cada caso también verifica visualmente los 4 botones "agregar a mi calendario" y
+  // la invitación .ics real adjunta (METHOD:REQUEST). El token es falso (no existe en ningún
+  // Sheet), así que el botón "Apple / iCal" del correo (addCalIcsLink, que apunta a
+  // ?action=ics&token=test-token-1234) va a mostrar el mensaje de "cita no encontrada" de
+  // serveIcsDownload si se hace clic desde este correo de prueba — comportamiento esperado,
+  // no un bug: para probar ese botón de verdad hace falta un token real (ver
+  // testSendConfirmationEmails vs. una prueba end-to-end contra una cita agendada de verdad).
   casos.forEach((caso) => {
-    const { subject, htmlBody } = renderConfirmationEmail(caso);
-    GmailApp.sendEmail(destinatario, `[TEST US-11] ${subject}`, "", { htmlBody });
-    Logger.log(`Enviado: ${caso.tipoCita}/${caso.idioma}/esVirtual=${caso.esVirtual}`);
+    const { subject, htmlBody, icsAttachment } = renderConfirmationEmail(caso);
+    destinatariosPrueba.forEach((destinatarioPrueba) => {
+      GmailApp.sendEmail(destinatarioPrueba, `[TEST US-11/US-37] ${subject}`, "", {
+        htmlBody,
+        attachments: icsAttachment ? [icsAttachment] : [],
+      });
+    });
+    Logger.log(`Enviado a ${destinatariosPrueba.join(", ")}: ${caso.tipoCita}/${caso.idioma}/esVirtual=${caso.esVirtual}/icsAttachment=${!!icsAttachment}`);
   });
 }
 
