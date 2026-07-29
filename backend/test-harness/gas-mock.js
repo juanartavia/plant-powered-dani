@@ -311,6 +311,10 @@ function createMockContext() {
           getDataAsString: () => data,
           getContentType: () => blob._contentType,
           getName: () => name,
+          // getBytes() agregado para el diagnóstico pre-send de US-37 (attachments[0].getBytes().length)
+          // — no necesita ser un array real de bytes UTF-8 exacto para los tests, solo tener
+          // .length correcto.
+          getBytes: () => new Array(Buffer.byteLength(data, "utf8")),
           setContentType: (newContentType) => {
             blob._contentType = newContentType;
             return blob;
@@ -318,6 +322,12 @@ function createMockContext() {
         };
         return blob;
       },
+      // Mock de US-37 (diagnóstico post-envío): no hay tiempo real que esperar en el harness.
+      sleep: () => {},
+      // Mock de US-37 (imágenes embebidas vía inlineImages): base64Decode() real de Apps
+      // Script devuelve un array de bytes — Buffer.from(...) alcanza para los tests, que solo
+      // necesitan pasar por Utilities.newBlob() sin tronar.
+      base64Decode: (str) => Buffer.from(str, "base64"),
     },
     PropertiesService: {
       getScriptProperties: () => scriptProperties,
@@ -336,6 +346,28 @@ function createMockContext() {
     CalendarApp: {
       createCalendar: () => ({ getId: () => "mock-created-calendar-id" }),
     },
+    // Mock de US-37 (PRUEBA-B, diagnóstico): createFile()+getAs() alcanza con devolver un
+    // blob-like consistente con el resto del mock (mismos métodos que Utilities.newBlob) —
+    // setTrashed() es un no-op, no hace falta rastrear estado de papelera para los tests.
+    DriveApp: {
+      createFile: (name, content, mimeType) => ({
+        getAs: (asMimeType) => {
+          const blob = {
+            _contentType: asMimeType || mimeType,
+            getDataAsString: () => content,
+            getContentType: () => blob._contentType,
+            getName: () => name,
+            getBytes: () => new Array(Buffer.byteLength(content, "utf8")),
+            setContentType: (newContentType) => {
+              blob._contentType = newContentType;
+              return blob;
+            },
+          };
+          return blob;
+        },
+        setTrashed: () => {},
+      }),
+    },
     Calendar: {
       Freebusy: {
         query: () => ({ calendars: { primary: { busy: [] } } }),
@@ -343,10 +375,17 @@ function createMockContext() {
       Events: CalendarEvents,
     },
     HtmlService: {
+      // getContent() agregado para US-37: buildInlineImagesForTemplate() reutiliza
+      // createHtmlOutputFromFile() para leer los archivos asset_*.html (que contienen SOLO un
+      // string base64, sin HTML real — mismo truco que las plantillas de correo). El mock
+      // devuelve un base64 válido fijo ("bW9jay1pbWFnZS1kYXRh" = "mock-image-data") sin
+      // importar el nombre de archivo — no necesita representar cada asset real por separado,
+      // solo que Utilities.base64Decode() tenga algo válido para decodificar.
       createHtmlOutputFromFile: () => ({
         setXFrameOptionsMode: function () { return this; },
         addMetaTag: function () { return this; },
         append: function () { return this; },
+        getContent: () => "bW9jay1pbWFnZS1kYXRh",
       }),
       createHtmlOutput: () => ({
         setXFrameOptionsMode: function () { return this; },
@@ -389,6 +428,28 @@ function createMockContext() {
       sendEmail: (to, subject, body, options) => {
         sandbox.__sentEmails = sandbox.__sentEmails || [];
         sandbox.__sentEmails.push({ to, subject, body, options });
+      },
+      // Mock de US-37 (diagnóstico post-envío): verifySentEmailAttachmentsViaGmail() pregunta
+      // a "Gmail mismo" (no a nuestras variables) si el mensaje recién enviado trae el adjunto
+      // real. Este mock reconstruye "threads"/"messages" a partir de sandbox.__sentEmails en
+      // vez de un índice de búsqueda real — solo entiende el patrón "to:X" de la query (lo
+      // único que ese código realmente usa), no la sintaxis completa de búsqueda de Gmail.
+      search: (query) => {
+        const toMatch = (query.match(/to:(\S+)/) || [])[1];
+        const matches = (sandbox.__sentEmails || []).filter((e) => !toMatch || e.to === toMatch);
+        return matches.map((e) => ({
+          getMessages: () => [
+            {
+              getSubject: () => e.subject,
+              getAttachments: () =>
+                ((e.options && e.options.attachments) || []).map((blob) => ({
+                  getName: () => blob.getName(),
+                  getContentType: () => blob.getContentType(),
+                  getSize: () => (blob.getBytes ? blob.getBytes().length : blob.getDataAsString().length),
+                })),
+            },
+          ],
+        }));
       },
     },
     // Mock de US-37: serveIcsDownload (doGet ?action=ics) usa ContentService en vez de

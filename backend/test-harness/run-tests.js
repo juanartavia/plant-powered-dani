@@ -486,12 +486,13 @@ function clientRecord(overrides) {
     "1990-01-01", "es", "presencial", "America/Costa_Rica"
   );
   const sent = sandbox.__sentEmails || [];
-  assert(sent.length === 2, "se envían exactamente 2 correos (confirmación al cliente + notificación interna US-13/US-30)");
+  assert(sent.length === 2, "se envían exactamente 2 correos (confirmación al cliente + notificación interna US-13/US-30) — PRUEBA-A/PRUEBA-B (diagnóstico US-37) ya se removieron");
   assert(sent[0].to === "sofia-correo@test.com", "el correo de confirmación va dirigido al cliente que agendó");
   assert(typeof sent[0].subject === "string" && sent[0].subject.length > 0, "el correo trae un subject no vacío");
   assert(sent[0].options && sent[0].options.htmlBody && sent[0].options.htmlBody.length > 0, "el correo trae htmlBody no vacío");
-  assert(sent[1].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna va a los destinatarios placeholder (Dani/Ali)");
-  assert(sent[1].subject.startsWith("Nueva:"), "el subject de la notificación interna usa el verbo 'Nueva' al agendar");
+  const notifInterna = sent.find((e) => typeof e.subject === "string" && e.subject.startsWith("Nueva:"));
+  assert(!!notifInterna, "hay una notificación interna con el verbo 'Nueva' al agendar (buscada por subject, no por posición, por las pruebas de control intercaladas)");
+  assert(notifInterna.to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna va a los destinatarios placeholder (Dani/Ali)");
 })();
 
 // ── Test 17: bookTimeslot envía correo de confirmación en pilates (idioma EN) ───────────
@@ -505,7 +506,8 @@ function clientRecord(overrides) {
   const sent = sandbox.__sentEmails || [];
   assert(sent.length === 2, "se envían exactamente 2 correos (confirmación al cliente + notificación interna US-13/US-30)");
   assert(sent[0].to === "kelly-correo@test.com", "el correo de confirmación va dirigido al cliente que se inscribió");
-  assert(sent[1].to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna va a los destinatarios placeholder (Dani/Ali)");
+  const notifInterna = sent.find((e) => e.to && e.to.includes && e.to.includes("plantpoweredani.testing@gmail.com") && !/PRUEBA-[AB]/.test(e.subject || ""));
+  assert(!!notifInterna, "hay una notificación interna real (no una prueba de control) dirigida a los destinatarios placeholder (Dani/Ali)");
 })();
 
 // ── Test 18: un fallo al enviar el correo NO revierte ni bloquea el agendamiento ────────
@@ -1466,7 +1468,12 @@ function getUrlParam(url, name) {
   assert(attachments.length === 1, "el correo trae exactamente 1 adjunto");
   const blob = attachments[0];
   assert(blob.getContentType().indexOf("text/calendar") === 0, "content-type del adjunto empieza con text/calendar");
-  assert(blob.getContentType().indexOf("method=REQUEST") >= 0, "el content-type del adjunto declara method=REQUEST (para que Outlook lo detecte como invitación de un vistazo)");
+  // DIAGNÓSTICO TEMPORAL en curso (US-37): por ahora el blob que se ADJUNTA de verdad se deja
+  // con content-type LIMPIO a propósito (prueba de control pedida por el usuario para aislar
+  // si GmailApp.sendEmail descarta silenciosamente un content-type con parámetros extra) — el
+  // "; method=REQUEST" ya NO va en el header en esta ronda. Actualizar este assert cuando se
+  // resuelva el diagnóstico y se decida el comportamiento final.
+  assert(blob.getContentType() === "text/calendar", "[DIAGNÓSTICO] por ahora el content-type del adjunto queda LIMPIO (sin parámetros extra) a propósito, como prueba de control");
   const data = blob.getDataAsString();
   assert(data.indexOf("METHOD:REQUEST") >= 0, "el contenido del .ics también declara METHOD:REQUEST");
   assert(data.indexOf("mailto:sofia-ics@test.com") >= 0, "el cliente aparece como ATTENDEE");
@@ -1543,6 +1550,168 @@ function getUrlParam(url, name) {
   assert(attachments.length === 1, "el adjunto SÍ se manda (no se pierde por el fallo de setContentType)");
   assert(attachments[0].getContentType() === "text/calendar", "queda con el content-type limpio (sin los parámetros extra que el 2do paso no pudo aplicar)");
   assert(attachments[0].getDataAsString().indexOf("METHOD:REQUEST") >= 0, "el contenido del .ics igual declara METHOD:REQUEST (lo que realmente exige RFC 5546, no el header)");
+})();
+
+// ── Test 60: camino feliz — bookTimeslot escribe una fila "OK" en Debug_US37 ────────────
+(function test60() {
+  console.log("Test 60: adjunto .ics construido OK escribe una fila de diagnóstico en la hoja Debug_US37");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Olga", "Mena", "olga-debug@test.com", "8888-6007", "cedula", "1-6000-0007",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const debugSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Debug_US37");
+  assert(!!debugSheet, "la hoja Debug_US37 se crea automáticamente, sin migración manual previa");
+  assert(debugSheet.data[0][0] === "timestamp" && debugSheet.data[0][1] === "mensaje", "encabezados timestamp/mensaje");
+  const rows = debugSheet.data.slice(1);
+  assert(rows.length >= 1, "se escribió al menos 1 fila tras un agendamiento exitoso");
+  const okRow = rows.find((r) => String(r[1]).indexOf("construido OK") >= 0);
+  assert(!!okRow, "hay una fila del camino feliz ('adjunto .ics construido OK')");
+  assert(!!okRow[0], "la fila trae un timestamp no vacío");
+})();
+
+// ── Test 61: camino de error — un fallo real escribe la fila de error en Debug_US37 ─────
+(function test61() {
+  console.log("Test 61: un fallo al construir el adjunto .ics escribe la fila de error (con describeError) en Debug_US37, no solo en Logger/console");
+  const { sandbox } = freshCtx();
+  sandbox.Utilities.newBlob = () => {
+    throw new Error("Mock: fallo real simulado en newBlob");
+  };
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Pablo", "Zeledon", "pablo-debug@test.com", "8888-6008", "cedula", "1-6000-0008",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const debugSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Debug_US37");
+  const rows = debugSheet.data.slice(1);
+  const errorRow = rows.find((r) => String(r[1]).indexOf("fallo al construir el adjunto .ics") >= 0);
+  assert(!!errorRow, "hay una fila describiendo el fallo real de construcción del .ics");
+  assert(String(errorRow[1]).indexOf("Mock: fallo real simulado en newBlob") >= 0, "el mensaje incluye el detalle real del error (vía describeError)");
+})();
+
+// ── Test 62: log de diagnóstico INMEDIATAMENTE ANTES de GmailApp.sendEmail (US-37) ──────
+(function test62() {
+  console.log("Test 62: bookTimeslot escribe en Debug_US37, justo antes de GmailApp.sendEmail, cuántos attachments trae options y el detalle del primero");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Quique", "Fallas", "quique-debug@test.com", "8888-6009", "cedula", "1-6000-0009",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const debugSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Debug_US37");
+  const rows = debugSheet.data.slice(1);
+  const preSendRow = rows.find((r) => String(r[1]).indexOf("a punto de llamar GmailApp.sendEmail") >= 0);
+  assert(!!preSendRow, "hay una fila de diagnóstico justo antes del envío real");
+  assert(String(preSendRow[1]).indexOf("attachments.length=1") >= 0, "reporta attachments.length=1 en el momento exacto del envío");
+  assert(String(preSendRow[1]).indexOf('contentType="text/calendar"') >= 0, "reporta el contentType exacto del adjunto en ese momento");
+  assert(String(preSendRow[1]).indexOf("bytes=") >= 0, "reporta el tamaño en bytes del adjunto en ese momento");
+})();
+
+// ── Test 63: verificación POST-envío contra Gmail mismo (GmailApp.search + getAttachments) ─
+(function test63() {
+  console.log("Test 63: bookTimeslot verifica el mensaje YA ENTREGADO vía GmailApp.search — Debug_US37 refleja lo que Gmail reporta, no nuestras variables");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Tomas", "Vargas", "tomas-postenvio@test.com", "8888-6010", "cedula", "1-6000-0010",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const debugSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Debug_US37");
+  const rows = debugSheet.data.slice(1);
+  const postSendRow = rows.find((r) => String(r[1]).indexOf("[DIAGNÓSTICO-POSTENVÍO]") >= 0);
+  assert(!!postSendRow, "hay una fila de verificación post-envío (contra Gmail, no contra nuestras variables)");
+  assert(String(postSendRow[1]).indexOf("Gmail reporta 1 adjunto(s)") >= 0, "Gmail (mock) confirma 1 adjunto en el mensaje ya entregado");
+  assert(String(postSendRow[1]).indexOf('name="invite.ics"') >= 0, "incluye el nombre del adjunto según Gmail");
+  assert(String(postSendRow[1]).indexOf('contentType="text/calendar"') >= 0, "incluye el content-type del adjunto según Gmail");
+})();
+
+// ── Test 64: verificación post-envío cuando NO se encuentra el mensaje (no rompe el flujo) ──
+(function test64() {
+  console.log("Test 64: si GmailApp.search no encuentra el mensaje (ej. demora de indexado), se registra en Debug_US37 sin romper bookTimeslot");
+  const { sandbox } = freshCtx();
+  sandbox.GmailApp.search = () => [];
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "initial", isoInHours(72), "Ursula", "Mora", "ursula-postenvio@test.com", "8888-6011", "cedula", "1-6000-0011",
+      "1990-01-01", "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === null, "bookTimeslot no lanza ningún error aunque GmailApp.search no encuentre nada");
+  const debugSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Debug_US37");
+  const rows = debugSheet.data.slice(1);
+  const notFoundRow = rows.find((r) => String(r[1]).indexOf("no se encontró vía GmailApp.search") >= 0);
+  assert(!!notFoundRow, "se deja registrada la situación de 'no encontrado' en vez de fallar silenciosamente");
+})();
+
+// ── Test 65: FIX REAL (US-37) — el correo real trae inlineImages Y attachments juntos ───
+(function test65() {
+  console.log("Test 65: bookTimeslot (nutrición) manda inlineImages (logo+flor) Y el adjunto .ics en la MISMA llamada a GmailApp.sendEmail");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Vera", "Chinchilla", "vera-fix@test.com", "8888-6012", "cedula", "1-6000-0012",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "vera-fix@test.com");
+  assert(!!confirmEmail, "se encuentra el correo de confirmación");
+  const inlineImages = confirmEmail.options.inlineImages;
+  assert(!!inlineImages && Object.keys(inlineImages).length === 2, "trae 2 imágenes embebidas (logo + flor) para nutrición");
+  assert(!!inlineImages.logo_pph && !!inlineImages.flor_pph, "las claves son logo_pph y flor_pph (coinciden con los cid: del HTML real)");
+  assert(confirmEmail.options.attachments && confirmEmail.options.attachments.length === 1, "el mismo envío igual trae el adjunto .ics — ambas opciones conviven en la misma llamada");
+})();
+
+// ── Test 66: FIX REAL (US-37) — pilates ES usa logo compartido + kettlebell ─────────────
+(function test66() {
+  console.log("Test 66: bookTimeslot (pilates ES) manda inlineImages (logo compartido + kettlebell)");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "pilates", isoInHours(13), "Wendy", "Cruz", "wendy-fix@test.com", "8888-6014", "cedula", "1-6000-0014",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "wendy-fix@test.com");
+  const inlineImages = confirmEmail.options.inlineImages;
+  assert(!!inlineImages.logo_pph && !!inlineImages.kettlebell_pph, "pilates ES usa el logo COMPARTIDO (logo_pph) + kettlebell_pph");
+  assert(!inlineImages.flor_pph, "pilates no trae la flor de nutrición");
+})();
+
+// ── Test 67: FIX REAL (US-37) — pilates EN usa su PROPIO logo (distinto del compartido) ──
+(function test67() {
+  console.log("Test 67: bookTimeslot (pilates EN) manda su propio logo_pilates_en_pph, no el logo_pph compartido");
+  const { sandbox } = freshCtx();
+  sandbox.bookTimeslot(
+    "pilates", isoInHours(13), "Xavier", "Bolanos", "xavier-fix@test.com", "8888-6015", "cedula", "1-6000-0015",
+    "1990-01-01", "en", "virtual", "America/Costa_Rica"
+  );
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "xavier-fix@test.com");
+  const inlineImages = confirmEmail.options.inlineImages;
+  assert(!!inlineImages.logo_pilates_en_pph && !!inlineImages.kettlebell_pph, "pilates EN usa logo_pilates_en_pph (propio) + kettlebell_pph");
+  assert(!inlineImages.logo_pph, "pilates EN NO usa el logo_pph compartido (divergencia preexistente documentada, no un bug de este fix)");
+})();
+
+// ── Test 68: si falla la carga de imágenes, el correo se envía igual (degradación) ──────
+(function test68() {
+  console.log("Test 68: un fallo al cargar las imágenes embebidas no impide el envío del correo de confirmación (ni pierde el adjunto .ics)");
+  const { sandbox } = freshCtx();
+  sandbox.HtmlService.createHtmlOutputFromFile = () => {
+    throw new Error("Mock: archivo asset_*.html no encontrado");
+  };
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "initial", isoInHours(72), "Yolanda", "Pizarro", "yolanda-fix@test.com", "8888-6016", "cedula", "1-6000-0016",
+      "1990-01-01", "es", "presencial", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === null, "bookTimeslot no lanza ningún error pese al fallo de HtmlService.createHtmlOutputFromFile");
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "yolanda-fix@test.com");
+  assert(!!confirmEmail, "el correo de confirmación se envía igual");
+  assert(Object.keys(confirmEmail.options.inlineImages || {}).length === 0, "se envía SIN imágenes embebidas cuando falla su carga (degradación con gracia)");
+  assert(confirmEmail.options.attachments && confirmEmail.options.attachments.length === 1, "el adjunto .ics NO se pierde por el fallo de las imágenes — son independientes");
 })();
 
 console.log(`\n${passed} pasaron, ${failed} fallaron`);

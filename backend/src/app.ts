@@ -2102,7 +2102,7 @@ function bookTimeslot(
   try {
     const idioma: "es" | "en" = language === "en" ? "en" : "es";
     const linkReagendar = `${WEB_APP_URL}?token=${token}`;
-    const { subject, htmlBody, icsAttachment } = renderConfirmationEmail({
+    const { subject, htmlBody, icsAttachment, inlineImages } = renderConfirmationEmail({
       tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
       nombre,
@@ -2116,7 +2116,30 @@ function bookTimeslot(
       correo: email,
       icsSequence: 0,
     });
-    GmailApp.sendEmail(email, subject, "", { htmlBody, attachments: icsAttachment ? [icsAttachment] : [] });
+    // ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — log INMEDIATAMENTE ANTES de la llamada real a
+    // GmailApp.sendEmail(), en el punto exacto donde se arma options.attachments (no donde ya
+    // se construye el blob, más arriba en renderConfirmationEmail) — para descartar que algún
+    // paso entre la construcción del blob y el envío real esté vaciando/reconstruyendo el
+    // array. Confirma cuántos attachments trae options en el momento exacto del envío, y el
+    // contentType/tamaño en bytes del primero, si existe.
+    const attachmentsForSend = icsAttachment ? [icsAttachment] : [];
+    logDebugUS37(
+      `[DIAGNÓSTICO] bookTimeslot: a punto de llamar GmailApp.sendEmail (token ${token}) — ` +
+      `attachments.length=${attachmentsForSend.length}` +
+      (attachmentsForSend[0]
+        ? `, [0].contentType="${attachmentsForSend[0].getContentType()}", [0].name="${attachmentsForSend[0].getName()}", [0].bytes=${attachmentsForSend[0].getBytes().length}`
+        : "")
+    );
+    // US-37 — FIX REAL (causa raíz confirmada con PRUEBA-A/PRUEBA-B, ya removidas): el logo y
+    // la flor/kettlebell embebidos como src="data:image/png;base64,..." directo en el HTML
+    // hacían que Gmail descartara SILENCIOSAMENTE el adjunto real (attachments). Ahora se
+    // pasan como inlineImages (referenciadas por cid: en las 4 plantillas), en la MISMA
+    // llamada que attachments — combinación oficialmente soportada por Apps Script.
+    GmailApp.sendEmail(email, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages });
+    // Verifica contra Gmail mismo (no contra nuestras variables) que el mensaje YA ENTREGADO
+    // trae el .ics — se deja activo (no se agregan correos extra, solo busca/lee) para poder
+    // confirmar el fix con la próxima reserva real sin depender de "Mostrar original" a mano.
+    verifySentEmailAttachmentsViaGmail(email, subject, token, "bookTimeslot");
   } catch (e) {
     Logger.log(`bookTimeslot: fallo al enviar correo de confirmación a ${email} (token ${token}): ${(e as Error).message}`);
   }
@@ -2711,7 +2734,7 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   try {
     const idioma: "es" | "en" = booking.language === "en" ? "en" : "es";
     const esVirtualCita = booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual";
-    const { subject, htmlBody, icsAttachment } = renderConfirmationEmail({
+    const { subject, htmlBody, icsAttachment, inlineImages } = renderConfirmationEmail({
       tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
       nombre: booking.nombre,
@@ -2730,7 +2753,19 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
       // comentario de icsSequence en renderConfirmationEmail).
       icsSequence: numeroReagendamiento,
     });
-    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, attachments: icsAttachment ? [icsAttachment] : [] });
+    // ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — mismo log que bookTimeslot, ver ese comentario.
+    const attachmentsForSend = icsAttachment ? [icsAttachment] : [];
+    logDebugUS37(
+      `[DIAGNÓSTICO] rescheduleBooking: a punto de llamar GmailApp.sendEmail (token ${token}) — ` +
+      `attachments.length=${attachmentsForSend.length}` +
+      (attachmentsForSend[0]
+        ? `, [0].contentType="${attachmentsForSend[0].getContentType()}", [0].name="${attachmentsForSend[0].getName()}", [0].bytes=${attachmentsForSend[0].getBytes().length}`
+        : "")
+    );
+    // US-37 — mismo fix real que bookTimeslot: inlineImages en la MISMA llamada que attachments.
+    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages });
+    // Verifica contra Gmail mismo que el mensaje YA ENTREGADO trae el .ics (se deja activo).
+    verifySentEmailAttachmentsViaGmail(booking.correo, subject, token, "rescheduleBooking");
   } catch (e) {
     Logger.log(`rescheduleBooking: fallo al enviar correo de reagendamiento a ${booking.correo} (token ${token}): ${(e as Error).message}`);
   }
@@ -2924,6 +2959,50 @@ function formatHoraDisplay(instant: Date, zona: string = TIME_ZONE): string {
   return Utilities.formatDate(instant, zona, "HH:mm");
 }
 
+// US-37 — FIX REAL (causa raíz confirmada con reservas reales + diagnóstico exhaustivo, ver
+// CLAUDE.md): el logo/flor/kettlebell embebidos como src="data:image/png;base64,..." directo
+// en el HTML hacían que Gmail descartara SILENCIOSAMENTE el adjunto .ics real del correo
+// (PRUEBA-A: el mismo .ics con un HTML sin imágenes SÍ llegaba perfecto). El mecanismo oficial
+// de Apps Script para combinar imágenes embebidas y adjuntos reales en el MISMO envío es
+// options.inlineImages (Record<cid, Blob>) + <img src="cid:..."> en el HTML, junto con
+// options.attachments — nunca data: URIs si el correo también lleva adjuntos.
+//
+// Cada archivo asset_*.html (backend/templates/) contiene SOLO el string base64 de una imagen
+// (ni una etiqueta HTML real) — se lee con el mismo mecanismo que las plantillas de correo
+// (HtmlService.createHtmlOutputFromFile().getContent()), que a Apps Script no le importa que
+// el contenido no sea HTML de verdad, y se decodifica a bytes reales con
+// Utilities.base64Decode() para construir el Blob.
+function loadInlineImageBlob(assetFile: string, cidName: string): GoogleAppsScript.Base.Blob {
+  const base64 = HtmlService.createHtmlOutputFromFile(assetFile).getContent();
+  const bytes = Utilities.base64Decode(base64);
+  return Utilities.newBlob(bytes, "image/png", `${cidName}.png`);
+}
+
+// Arma el mapa cid -> Blob que espera options.inlineImages de GmailApp.sendEmail(), según qué
+// imágenes referencia CADA plantilla de confirmación real (ver <img src="cid:..."> en cada
+// archivo): nutrición usa logo+flor, pilates usa logo+kettlebell. NOTA encontrada al extraer
+// los assets (preexistente a US-37, no introducida acá): el logo de la plantilla de pilates EN
+// NO es el mismo archivo que el logo compartido por las otras 3 plantillas — asset propio
+// (logo_pilates_en_pph), no un bug de este fix.
+function buildInlineImagesForTemplate(isPilates: boolean, idioma: "es" | "en"): Record<string, GoogleAppsScript.Base.Blob> {
+  if (!isPilates) {
+    return {
+      logo_pph: loadInlineImageBlob("asset_logo_pph", "logo_pph"),
+      flor_pph: loadInlineImageBlob("asset_flor_pph", "flor_pph"),
+    };
+  }
+  if (idioma === "en") {
+    return {
+      logo_pilates_en_pph: loadInlineImageBlob("asset_logo_pilates_en_pph", "logo_pilates_en_pph"),
+      kettlebell_pph: loadInlineImageBlob("asset_kettlebell_pph", "kettlebell_pph"),
+    };
+  }
+  return {
+    logo_pph: loadInlineImageBlob("asset_logo_pph", "logo_pph"),
+    kettlebell_pph: loadInlineImageBlob("asset_kettlebell_pph", "kettlebell_pph"),
+  };
+}
+
 // ⚠️ REGRESIÓN CONOCIDA (2 veces: US-11 inicial y 21 jul): cuando Gabriela entrega una
 // versión NUEVA de una plantilla y se reemplaza el archivo completo, cualquier variable que
 // deba imprimirse SIN escapar HTML (como "direccion", que trae <br>) puede volver a quedar
@@ -2969,7 +3048,15 @@ function renderConfirmationEmail(params: {
   // existente (US-42, incrementRescheduleCounterOnBookingRow) — no hace falta un contador
   // nuevo. Default 0 para no romper bookTimeslot/testSendConfirmationEmails, que no lo pasan.
   icsSequence?: number;
-}): { subject: string; htmlBody: string; icsAttachment: GoogleAppsScript.Base.Blob | null } {
+}): {
+  subject: string;
+  htmlBody: string;
+  icsAttachment: GoogleAppsScript.Base.Blob | null;
+  // US-37 — imágenes embebidas (logo/flor/kettlebell) para options.inlineImages de
+  // GmailApp.sendEmail(), en la MISMA llamada que icsAttachment (ver comentario de
+  // buildInlineImagesForTemplate). Nunca null/opcional: siempre hay logo, al menos.
+  inlineImages: Record<string, GoogleAppsScript.Base.Blob>;
+} {
   const isPilates = params.tipoCita === "pilates";
   const tipoAccion = params.tipoAccion || "confirmacion";
   const servicio = isPilates ? "pilates" : "nutricion";
@@ -3058,31 +3145,76 @@ function renderConfirmationEmail(params: {
       organizerEmail: getOrganizerEmailForTipoCita(params.tipoCita),
       attendeeEmail: params.correo,
     });
-    // ⚠️ BUG REAL encontrado (confirmado con una reserva real, token 6e49dd86-...): en Apps
-    // Script REAL (a diferencia del mock del harness, que no valida el content-type en
-    // absoluto), Utilities.newBlob(data, contentType, name) rechaza un contentType con
-    // parámetros extra separados por ';' — el `"text/calendar; method=REQUEST; charset=UTF-8"`
-    // original lanzaba una excepción real ahí mismo, atrapada silenciosamente por el catch de
-    // abajo (que solo logueaba `.message`, insuficiente para verlo). Corregido creando el blob
-    // con un content-type LIMPIO (sin parámetros) y, en un segundo paso con SU PROPIO
-    // try/catch, intentando enriquecerlo vía setContentType() para que Outlook detecte la
-    // invitación de un vistazo — si setContentType también lo rechaza, el blob ya construido
-    // con el tipo limpio se adjunta igual: el cliente de calendario de todas formas reconoce
-    // METHOD:REQUEST leyendo el CONTENIDO del .ics (eso es lo que exige RFC 5546), el
-    // parámetro en el header Content-Type es solo una ayuda opcional para algunos clientes.
+    // ⚠️ DIAGNÓSTICO TEMPORAL EN CURSO (US-37) — NO es el estado final de este código.
+    // Confirmado con Debug_US37 en una reserva real (token 1f8ad410-...): el blob SÍ se
+    // construye bien ("adjunto .ics construido OK, 680 bytes"), pero "Mostrar original" en
+    // Gmail no trae NINGUNA parte Content-Type: text/calendar en el MIME final — el correo
+    // sale, pero sin el adjunto de verdad, pese a que options.attachments se arma con el
+    // mismo objeto (ver bookTimeslot/rescheduleBooking, sin ningún paso intermedio que lo
+    // reconstruya). El bug está aislado entre "el blob existe" y "GmailApp.sendEmail arma el
+    // MIME final" — por eso esta ronda hace una prueba de control: el blob que se ADJUNTA de
+    // verdad se deja con un content-type LIMPIO ("text/calendar", sin "; method=REQUEST;
+    // charset=UTF-8"), mientras se sigue intentando (y logueando, sin afectar lo que se
+    // adjunta) enriquecerlo, para poder comparar. Si el adjunto limpio SÍ aparece en el MIME
+    // real y el enriquecido no, confirma que GmailApp.sendEmail (o el pipeline de envío de
+    // Gmail) descarta/reescribe un content-type con parámetros extra sin lanzar ningún error.
     icsAttachment = Utilities.newBlob(icsContent, "text/calendar", "invite.ics");
     try {
-      icsAttachment = icsAttachment.setContentType("text/calendar; method=REQUEST; charset=UTF-8");
-    } catch (contentTypeError) {
-      Logger.log(
-        `renderConfirmationEmail: setContentType con parámetros extra fue rechazado (token ${params.token}) — se adjunta igual con content-type limpio "text/calendar": ${describeError(contentTypeError)}`
+      // ⚠️ Blob.setContentType() MUTA el blob EN EL LUGAR y devuelve la MISMA instancia (no
+      // una copia) — confirmado por el propio harness al escribir este diagnóstico: llamarlo
+      // sobre `icsAttachment` directamente lo ensuciaba con los parámetros extra aunque el
+      // resultado no se reasignara. Por eso la prueba de control usa una instancia SEPARADA
+      // (`diagnosticBlob`, construida aparte con los mismos datos) — así `icsAttachment`
+      // queda garantizado sin tocar, sea cual sea el comportamiento real de setContentType().
+      const diagnosticBlob = Utilities.newBlob(icsContent, "text/calendar", "invite.ics");
+      const enriched = diagnosticBlob.setContentType("text/calendar; method=REQUEST; charset=UTF-8");
+      logDebugUS37(
+        `[DIAGNÓSTICO] renderConfirmationEmail: setContentType con parámetros extra SÍ funcionó sin error (token ${params.token}) — content-type resultante="${enriched.getContentType()}". Por ahora se sigue adjuntando la versión LIMPIA (instancia separada, nunca tocada) de todas formas (prueba de control US-37).`
       );
+    } catch (contentTypeError) {
+      // Logger.log() (Stackdriver "clásico") y console.log() (Cloud Logging) NO aparecían en
+      // el panel de Ejecuciones para ejecuciones reales disparadas por el Web App (confirmado
+      // en 2 reservas reales distintas) — limitación real del entorno, no de este código. Se
+      // agrega ADEMÁS logDebugUS37() (escribe en el Sheet "Debug_US37"), que sí sabemos que
+      // funciona sin demora en este proyecto. Los 3 mecanismos quedan, no se reemplazan entre
+      // sí: Logger.log/console.log siguen sirviendo al correr manualmente desde el editor.
+      const setContentTypeMsg = `renderConfirmationEmail: setContentType con parámetros extra fue rechazado (token ${params.token}, tipoAccion=${tipoAccion}) — se adjunta igual con content-type limpio "text/calendar": ${describeError(contentTypeError)}`;
+      Logger.log(setContentTypeMsg);
+      console.log(setContentTypeMsg);
+      logDebugUS37(setContentTypeMsg);
     }
+    // Camino FELIZ: confirma que este bloque SÍ se alcanzó y el blob SÍ se construyó (con o
+    // sin el content-type enriquecido). Si "Debug_US37" queda completamente vacía después de
+    // una reserva real, el problema es que el código ni siquiera llega hasta acá — algo más
+    // raro (una excepción ANTES de este bloque, o que la versión con este fix nunca llegó a
+    // desplegarse) — no un error silencioso dentro de este try/catch.
+    const okMsg = `renderConfirmationEmail: adjunto .ics construido OK (token ${params.token}, tipoAccion=${tipoAccion}), ${icsContent.length} bytes, content-type final del blob a ADJUNTAR="${icsAttachment.getContentType()}"`;
+    Logger.log(okMsg);
+    console.log(okMsg);
+    logDebugUS37(okMsg);
   } catch (e) {
-    Logger.log(`renderConfirmationEmail: fallo al construir el adjunto .ics (token ${params.token}): ${describeError(e)}`);
+    const icsBuildMsg = `renderConfirmationEmail: fallo al construir el adjunto .ics (token ${params.token}, tipoAccion=${tipoAccion}): ${describeError(e)}`;
+    Logger.log(icsBuildMsg);
+    console.log(icsBuildMsg);
+    logDebugUS37(icsBuildMsg);
   }
 
-  return { subject, htmlBody: template.evaluate().getContent(), icsAttachment };
+  // US-37 — carga las imágenes embebidas correctas para ESTE tipo de cita/idioma (ver
+  // buildInlineImagesForTemplate). Mismo criterio de resiliencia que el adjunto .ics: un
+  // fallo ACÁ (ej. un archivo asset_*.html faltante/corrupto) nunca debe impedir que salga el
+  // correo de confirmación completo — degrada a "sin imágenes" (el HTML igual queda válido,
+  // solo con los <img src="cid:..."> rotos) en vez de perder el correo entero.
+  let inlineImages: Record<string, GoogleAppsScript.Base.Blob> = {};
+  try {
+    inlineImages = buildInlineImagesForTemplate(isPilates, params.idioma);
+  } catch (e) {
+    const inlineImagesMsg = `renderConfirmationEmail: fallo al cargar las imágenes embebidas (token ${params.token}, tipoAccion=${tipoAccion}): ${describeError(e)}`;
+    Logger.log(inlineImagesMsg);
+    console.log(inlineImagesMsg);
+    logDebugUS37(inlineImagesMsg);
+  }
+
+  return { subject, htmlBody: template.evaluate().getContent(), icsAttachment, inlineImages };
 }
 
 // Correo al CLIENTE cuando cancela su cita/clase desde la página visual de gestión (US-31) —
@@ -3345,6 +3477,98 @@ function describeError(e: unknown): string {
   return `message="${message}" | toString="${asString}" | stack=${stack}`;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════════
+// US-37 — Diagnóstico TEMPORAL en Sheets del adjunto .ics real
+// Agregado tras confirmar que Logger.log()/console.log() no aparecen en el panel de
+// Ejecuciones para ejecuciones reales disparadas por el Web App (a diferencia de correr
+// manualmente desde el editor) — limitación real del entorno, no un bug de este código.
+// Escribir en un Sheet es un mecanismo que YA sabemos que funciona sin demora en este
+// proyecto (toda la app se basa en eso). Es temporal: una vez diagnosticado el problema real,
+// decidir si esta hoja se deja de forma permanente o se quita junto con las llamadas a
+// logDebugUS37() en renderConfirmationEmail().
+// ═══════════════════════════════════════════════════════════════════════════════════
+
+const DEBUG_US37_SHEET_NAME = "Debug_US37";
+
+// A diferencia de getSheet() (que exige que la pestaña YA exista), esta función la crea con
+// sus encabezados si todavía no existe — así no hace falta ninguna migración manual desde el
+// editor antes de que el logging empiece a funcionar en producción real.
+function getOrCreateDebugUS37Sheet(): GoogleAppsScript.Spreadsheet.Sheet {
+  const spreadsheetId = PropertiesService.getScriptProperties().getProperty("SPREADSHEET_ID");
+  if (!spreadsheetId) {
+    throw new Error("SPREADSHEET_ID no configurado. Ejecutar initializeSheets() primero.");
+  }
+  const spreadsheet = SpreadsheetApp.openById(spreadsheetId);
+  let sheet = spreadsheet.getSheetByName(DEBUG_US37_SHEET_NAME);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(DEBUG_US37_SHEET_NAME);
+    sheet.getRange(1, 1, 1, 2).setValues([["timestamp", "mensaje"]]);
+    sheet.getRange(1, 1, 1, 2).setFontWeight("bold");
+  }
+  return sheet;
+}
+
+// Escribe una fila de diagnóstico (timestamp en TIME_ZONE + mensaje). Su propio try/catch: un
+// fallo ACÁ (por ejemplo, si algún día se revoca el acceso al spreadsheet) nunca debe
+// interrumpir el flujo real de agendar/reagendar — es solo una herramienta de diagnóstico
+// temporal, no puede convertirse en un punto de falla nuevo.
+function logDebugUS37(mensaje: string): void {
+  try {
+    const sheet = getOrCreateDebugUS37Sheet();
+    const timestamp = Utilities.formatDate(new Date(), TIME_ZONE, "yyyy-MM-dd HH:mm:ss");
+    sheet.appendRow([timestamp, mensaje]);
+    SpreadsheetApp.flush();
+  } catch (e) {
+    Logger.log(`logDebugUS37: no se pudo escribir en "${DEBUG_US37_SHEET_NAME}": ${(e as Error).message}`);
+  }
+}
+
+// ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — a diferencia de todo el logging anterior (que solo
+// reporta lo que NUESTRO código construyó/le pasó a GmailApp.sendEmail), esto le pregunta a
+// GMAIL MISMO si el mensaje YA ENTREGADO tiene el adjunto, buscándolo con GmailApp.search() y
+// llamando a .getAttachments() sobre el mensaje real. Sirve para distinguir dos causas muy
+// distintas de "el cliente no ve el adjunto": (a) GmailApp.sendEmail nunca lo adjuntó de
+// verdad (bug en el envío), o (b) si Gmail SÍ lo adjuntó pero "Mostrar original" no lo
+// despliega (bug de visualización/exportación del MIME, no del envío). Propio try/catch:
+// nunca debe interrumpir el flujo real de agendar/reagendar. Utilities.sleep() agrega ~2s a
+// la respuesta real del cliente mientras dura este diagnóstico — aceptado temporalmente, hay
+// que quitar esto junto con el resto del bloque de diagnóstico una vez resuelto el bug real.
+function verifySentEmailAttachmentsViaGmail(recipient: string, subject: string, token: string, origen: string): void {
+  try {
+    Utilities.sleep(2000);
+    const threads = GmailApp.search(`to:${recipient}`, 0, 5);
+    let foundMessage: GoogleAppsScript.Gmail.GmailMessage | null = null;
+    for (const thread of threads) {
+      const messages = thread.getMessages();
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].getSubject() === subject) {
+          foundMessage = messages[i];
+          break;
+        }
+      }
+      if (foundMessage) break;
+    }
+
+    if (!foundMessage) {
+      logDebugUS37(
+        `[DIAGNÓSTICO-POSTENVÍO] ${origen}: no se encontró vía GmailApp.search el mensaje recién enviado a ${recipient} con subject="${subject}" (token ${token}) — puede ser demora de indexado de Gmail, no necesariamente ausencia del correo.`
+      );
+      return;
+    }
+
+    const realAttachments = foundMessage.getAttachments();
+    const detalle = realAttachments
+      .map((a, i) => `[${i}].name="${a.getName()}" [${i}].contentType="${a.getContentType()}" [${i}].size=${a.getSize()}`)
+      .join(" | ");
+    logDebugUS37(
+      `[DIAGNÓSTICO-POSTENVÍO] ${origen}: Gmail reporta ${realAttachments.length} adjunto(s) en el mensaje YA ENTREGADO a ${recipient} (token ${token}, subject="${subject}")` +
+      (detalle ? ` — ${detalle}` : "")
+    );
+  } catch (e) {
+    logDebugUS37(`[DIAGNÓSTICO-POSTENVÍO] ${origen}: fallo al verificar el mensaje real vía GmailApp.search (token ${token}): ${describeError(e)}`);
+  }
+}
+
 // Correo de Dani/instructora a usar como ORGANIZER de la invitación REQUEST adjunta al correo
 // de confirmación (ver renderConfirmationEmail). Decisión explícita (US-37): SÍ se incluye
 // ORGANIZER, aunque eso significa que si el cliente hace clic en "Aceptar/Rechazar" en su
@@ -3436,11 +3660,12 @@ function testSendConfirmationEmails(): void {
   // no un bug: para probar ese botón de verdad hace falta un token real (ver
   // testSendConfirmationEmails vs. una prueba end-to-end contra una cita agendada de verdad).
   casos.forEach((caso) => {
-    const { subject, htmlBody, icsAttachment } = renderConfirmationEmail(caso);
+    const { subject, htmlBody, icsAttachment, inlineImages } = renderConfirmationEmail(caso);
     destinatariosPrueba.forEach((destinatarioPrueba) => {
       GmailApp.sendEmail(destinatarioPrueba, `[TEST US-11/US-37] ${subject}`, "", {
         htmlBody,
         attachments: icsAttachment ? [icsAttachment] : [],
+        inlineImages,
       });
     });
     Logger.log(`Enviado a ${destinatariosPrueba.join(", ")}: ${caso.tipoCita}/${caso.idioma}/esVirtual=${caso.esVirtual}/icsAttachment=${!!icsAttachment}`);
