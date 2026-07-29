@@ -30,6 +30,7 @@ import { es as esLocale } from "date-fns/locale";
 import { formatInTimeZone } from "date-fns-tz";
 import {
   ArrowLeft,
+  Check,
   ChevronLeft,
   ChevronRight,
   Loader2,
@@ -38,7 +39,9 @@ import {
 import * as React from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useTimezoneDropdown } from "./timezone-dropdown";
+import { Separator } from "@/components/ui/separator";
 import logoUrl from "@/assets/logo.png";
+import florBgUrl from "@/assets/flor-bg.png";
 
 declare global {
   interface Window {
@@ -76,6 +79,10 @@ const STRINGS = {
     loading: "Cargando...",
     thankYou: "¡Gracias!",
     thankYouBody: "Tu cita ha sido agendada exitosamente.",
+    appointmentTypeLabel: "Tipo de cita",
+    dateLabel: "Fecha",
+    timeLabel: "Hora",
+    tagline: "Comé mejor. Rendí mejor. Viví mejor.",
     previousMonth: "Mes anterior",
     nextMonth: "Mes siguiente",
     errors: {
@@ -129,6 +136,10 @@ const STRINGS = {
     loading: "Loading...",
     thankYou: "Thank You!",
     thankYouBody: "Your appointment has been booked successfully.",
+    appointmentTypeLabel: "Appointment type",
+    dateLabel: "Date",
+    timeLabel: "Time",
+    tagline: "Eat better. Perform better. Live better.",
     previousMonth: "Previous month",
     nextMonth: "Next month",
     errors: {
@@ -366,17 +377,65 @@ export function CalendarPicker() {
 
   if (selectedTimeSlot && bookingStatus === "success") {
     return (
-      <Card className="sm:w-[600px] p-4 mx-auto min-h-[400px] flex flex-col justify-center space-y-4">
-        <h1>{t.thankYou}</h1>
-        <h2>{t.thankYouBody}</h2>
-        <div className="font-bold font-mono">
-          {formatInTimeZone(
-            selectedTimeSlot!,
-            timezone,
-            "MMMM d, yyyy h:mm a",
-            dateFnsLocale
-          )}
-        </div>
+      <Card className="sm:w-[600px] mx-auto min-h-[400px] relative overflow-hidden">
+        <img
+          src={florBgUrl}
+          alt=""
+          aria-hidden="true"
+          className="absolute -top-4 -left-4 w-32 sm:w-36 opacity-[0.16] pointer-events-none select-none"
+        />
+        <CardContent className="relative flex flex-col items-center text-center p-8 sm:p-10">
+          <img
+            src={logoUrl}
+            alt="Plant Powered by Dani"
+            className="w-32 mb-6"
+          />
+          <div className="bg-primary rounded-full w-14 h-14 flex items-center justify-center mb-5">
+            <Check className="text-accent w-6 h-6" strokeWidth={2.5} />
+          </div>
+          <h1 className="text-2xl mb-3">{t.thankYou}</h1>
+          <p className="text-sm text-muted-foreground mb-6 leading-relaxed">
+            {t.thankYouBody}
+          </p>
+          <div className="flex flex-wrap justify-center gap-x-7 gap-y-4 border border-border rounded-lg px-6 py-4 mb-6">
+            <div className="text-left">
+              <span className="block text-[10px] tracking-wider uppercase text-muted-foreground font-bold mb-1">
+                {t.appointmentTypeLabel}
+              </span>
+              <span className="text-sm font-bold text-foreground">
+                {title}
+              </span>
+            </div>
+            <div className="text-left">
+              <span className="block text-[10px] tracking-wider uppercase text-muted-foreground font-bold mb-1">
+                {t.dateLabel}
+              </span>
+              <span className="text-sm font-bold text-foreground">
+                {formatInTimeZone(
+                  selectedTimeSlot!,
+                  timezone,
+                  uiLanguage === "es" ? "d 'de' MMMM 'de' yyyy" : "MMMM d, yyyy",
+                  dateFnsLocale
+                )}
+              </span>
+            </div>
+            <div className="text-left">
+              <span className="block text-[10px] tracking-wider uppercase text-muted-foreground font-bold mb-1">
+                {t.timeLabel}
+              </span>
+              <span className="text-sm font-bold text-foreground">
+                {formatInTimeZone(
+                  selectedTimeSlot!,
+                  timezone,
+                  "h:mm a",
+                  dateFnsLocale
+                )}
+              </span>
+            </div>
+          </div>
+          <Separator className="mb-4" />
+          <p className="text-xs text-secondary font-medium">{t.tagline}</p>
+        </CardContent>
       </Card>
     );
   }
