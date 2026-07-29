@@ -7,6 +7,14 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { OkDialog } from "@/components/ui/ok-dialog";
@@ -32,6 +40,7 @@ import {
   ArrowLeft,
   CalendarDays,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Loader2,
@@ -39,6 +48,7 @@ import {
 } from "lucide-react";
 import * as React from "react";
 import { useEffect, useMemo, useState } from "react";
+import type { DropdownProps } from "react-day-picker";
 import { useTimezoneDropdown } from "./timezone-dropdown";
 import { Separator } from "@/components/ui/separator";
 import logoUrl from "@/assets/logo.png";
@@ -860,6 +870,72 @@ function parseBirthdateValue(value: string): Date | undefined {
   return new Date(year, month - 1, day);
 }
 
+// Reemplaza el <select> nativo que usa react-day-picker para los dropdowns de mes/año
+// (captionLayout="dropdown") — un <select> nativo pinta su propio menú con el tema del
+// sistema operativo (ej. oscuro), imposible de estilizar con CSS. Mismo patrón Popover +
+// Command que ya usa LanguageDropdown/TimezoneDropdown en este archivo. react-day-picker
+// ya calcula qué opciones deshabilitar (fuera de startMonth/endMonth) — solo se respeta
+// `option.disabled` tal cual llega, no se duplica esa lógica aquí.
+function CalendarDropdown({
+  options,
+  value,
+  onChange,
+  disabled,
+  "aria-label": ariaLabel,
+}: DropdownProps) {
+  const [open, setOpen] = useState(false);
+  const selected = options?.find((option) => option.value === value);
+
+  const handleSelect = (optionValue: number) => {
+    onChange?.({
+      target: { value: String(optionValue) },
+    } as React.ChangeEvent<HTMLSelectElement>);
+    setOpen(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={disabled}
+          aria-label={ariaLabel}
+          className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-2 py-1 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {selected?.label}
+          <ChevronDown className="h-3.5 w-3.5 opacity-50" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[140px] p-0" align="start">
+        <Command>
+          <CommandInput className="h-9" />
+          <CommandList>
+            <CommandEmpty>—</CommandEmpty>
+            <CommandGroup>
+              {options?.map((option) => (
+                <CommandItem
+                  key={option.value}
+                  value={option.label}
+                  disabled={option.disabled}
+                  onSelect={() => handleSelect(option.value)}
+                >
+                  {option.label}
+                  <Check
+                    className={cn(
+                      "ml-auto h-4 w-4",
+                      option.value === value ? "opacity-100" : "opacity-0"
+                    )}
+                  />
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function ContactForm({
   handleSubmit,
   type,
@@ -1037,13 +1113,10 @@ function ContactForm({
               endMonth={maxBirthdateDate}
               captionLayout="dropdown"
               disabled={isBirthdateDayDisabled}
+              components={{ Dropdown: CalendarDropdown }}
               classNames={{
                 month_caption: "flex justify-center pb-2",
                 dropdowns: "flex items-center gap-2",
-                dropdown_root: "relative inline-flex items-center",
-                dropdown: "absolute inset-0 z-10 cursor-pointer opacity-0",
-                caption_label:
-                  "inline-flex items-center gap-1 rounded-md border border-input px-2 py-1 text-sm font-medium pointer-events-none",
               }}
               {...(uiLanguage === "es" ? { locale: esLocale } : {})}
             />
