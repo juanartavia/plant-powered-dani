@@ -1518,5 +1518,32 @@ function getUrlParam(url, name) {
   assert(confirmEmail.options.attachments && confirmEmail.options.attachments.length === 0, "se envía SIN adjunto cuando falla la construcción del .ics, en vez de bloquear el correo completo");
 })();
 
+// ── Test 59: si setContentType (parámetros extra) falla, el adjunto SE ENVÍA IGUAL con el
+//    content-type limpio — no se pierde el .ics completo por ese segundo paso, solo opcional ──
+(function test59() {
+  console.log("Test 59: un fallo de blob.setContentType() (parámetros extra) NO tira el adjunto — se adjunta con content-type limpio");
+  const { sandbox } = freshCtx();
+  const realNewBlob = sandbox.Utilities.newBlob;
+  sandbox.Utilities.newBlob = (data, contentType, name) => {
+    const blob = realNewBlob(data, contentType, name);
+    blob.setContentType = () => {
+      throw new Error("Mock: real Apps Script rechaza contentType con parámetros extra");
+    };
+    return blob;
+  };
+
+  sandbox.bookTimeslot(
+    "initial", isoInHours(72), "Nora", "Solis", "nora-ics@test.com", "8888-6006", "cedula", "1-6000-0006",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "nora-ics@test.com");
+  assert(!!confirmEmail, "el correo de confirmación se envía igual");
+  const attachments = (confirmEmail.options && confirmEmail.options.attachments) || [];
+  assert(attachments.length === 1, "el adjunto SÍ se manda (no se pierde por el fallo de setContentType)");
+  assert(attachments[0].getContentType() === "text/calendar", "queda con el content-type limpio (sin los parámetros extra que el 2do paso no pudo aplicar)");
+  assert(attachments[0].getDataAsString().indexOf("METHOD:REQUEST") >= 0, "el contenido del .ics igual declara METHOD:REQUEST (lo que realmente exige RFC 5546, no el header)");
+})();
+
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
 process.exit(failed > 0 ? 1 : 0);

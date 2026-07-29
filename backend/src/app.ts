@@ -3058,15 +3058,28 @@ function renderConfirmationEmail(params: {
       organizerEmail: getOrganizerEmailForTipoCita(params.tipoCita),
       attendeeEmail: params.correo,
     });
-    // Content-Type con method=REQUEST explícito (no solo en el propio VCALENDAR) — práctica
-    // estándar para que clientes como Outlook detecten el adjunto como invitación de
-    // calendario de un vistazo, sin tener que abrir el archivo. Ver investigación de US-37 en
-    // CLAUDE.md: la documentación oficial de GmailApp no cubre esto explícitamente, pero
-    // Utilities.newBlob acepta cualquier string de Content-Type y GmailApp.sendEmail reenvía
-    // el de cada adjunto tal cual.
-    icsAttachment = Utilities.newBlob(icsContent, "text/calendar; method=REQUEST; charset=UTF-8", "invite.ics");
+    // ⚠️ BUG REAL encontrado (confirmado con una reserva real, token 6e49dd86-...): en Apps
+    // Script REAL (a diferencia del mock del harness, que no valida el content-type en
+    // absoluto), Utilities.newBlob(data, contentType, name) rechaza un contentType con
+    // parámetros extra separados por ';' — el `"text/calendar; method=REQUEST; charset=UTF-8"`
+    // original lanzaba una excepción real ahí mismo, atrapada silenciosamente por el catch de
+    // abajo (que solo logueaba `.message`, insuficiente para verlo). Corregido creando el blob
+    // con un content-type LIMPIO (sin parámetros) y, en un segundo paso con SU PROPIO
+    // try/catch, intentando enriquecerlo vía setContentType() para que Outlook detecte la
+    // invitación de un vistazo — si setContentType también lo rechaza, el blob ya construido
+    // con el tipo limpio se adjunta igual: el cliente de calendario de todas formas reconoce
+    // METHOD:REQUEST leyendo el CONTENIDO del .ics (eso es lo que exige RFC 5546), el
+    // parámetro en el header Content-Type es solo una ayuda opcional para algunos clientes.
+    icsAttachment = Utilities.newBlob(icsContent, "text/calendar", "invite.ics");
+    try {
+      icsAttachment = icsAttachment.setContentType("text/calendar; method=REQUEST; charset=UTF-8");
+    } catch (contentTypeError) {
+      Logger.log(
+        `renderConfirmationEmail: setContentType con parámetros extra fue rechazado (token ${params.token}) — se adjunta igual con content-type limpio "text/calendar": ${describeError(contentTypeError)}`
+      );
+    }
   } catch (e) {
-    Logger.log(`renderConfirmationEmail: fallo al construir el adjunto .ics (token ${params.token}): ${(e as Error).message}`);
+    Logger.log(`renderConfirmationEmail: fallo al construir el adjunto .ics (token ${params.token}): ${describeError(e)}`);
   }
 
   return { subject, htmlBody: template.evaluate().getContent(), icsAttachment };
@@ -3314,6 +3327,22 @@ function buildBookingIcsContent(params: {
     organizerEmail: params.organizerEmail,
     attendeeEmail: params.attendeeEmail,
   });
+}
+
+// Arma un mensaje de log lo más completo posible a partir de un valor atrapado en un catch —
+// no todos los errores reales de Apps Script son instancias de Error con `.message` útil (a
+// veces `.message` viene vacío pero `.toString()` sí trae el detalle real, y a veces ni
+// siquiera es un Error). Agregado durante el diagnóstico del bug real de US-37: el catch de
+// "degradación con gracia" alrededor del adjunto .ics solo logueaba `.message`, y eso dejaba
+// invisible el error real (Utilities.newBlob rechazando un content-type con parámetros extra,
+// ver buildIcsAttachment más abajo) hasta que se confirmó con una reserva real + el panel de
+// Ejecuciones del editor.
+function describeError(e: unknown): string {
+  const err = e as Error;
+  const message = err && err.message ? err.message : "(sin message)";
+  const asString = err && typeof err.toString === "function" ? err.toString() : String(e);
+  const stack = err && err.stack ? err.stack : "(sin stack)";
+  return `message="${message}" | toString="${asString}" | stack=${stack}`;
 }
 
 // Correo de Dani/instructora a usar como ORGANIZER de la invitación REQUEST adjunta al correo

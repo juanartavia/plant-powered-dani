@@ -297,11 +297,27 @@ function createMockContext() {
       // ya arma el texto real del .ics en JS puro (no depende de ningún API de Apps Script), así
       // que este mock solo necesita representar el "objeto Blob" para que
       // GmailApp.sendEmail({attachments: [...]}) tenga algo que registrar.
-      newBlob: (data, contentType, name) => ({
-        getDataAsString: () => data,
-        getContentType: () => contentType,
-        getName: () => name,
-      }),
+      //
+      // setContentType() es mutable y devuelve el propio blob (mismo patrón que la clase Blob
+      // real) — agregado tras el bug real de US-37: Apps Script real rechaza un contentType
+      // con parámetros extra (';') en el constructor de newBlob, así que el código real ahora
+      // crea el blob con un tipo limpio y lo enriquece después vía setContentType(). El mock
+      // NO reproduce ese rechazo (sigue siendo un blind spot documentado, igual que
+      // insertCheckboxes/createTemplateFromFile) — solo necesita soportar la llamada para que
+      // los tests puedan verificar el content-type FINAL tras el segundo paso.
+      newBlob: (data, contentType, name) => {
+        const blob = {
+          _contentType: contentType,
+          getDataAsString: () => data,
+          getContentType: () => blob._contentType,
+          getName: () => name,
+          setContentType: (newContentType) => {
+            blob._contentType = newContentType;
+            return blob;
+          },
+        };
+        return blob;
+      },
     },
     PropertiesService: {
       getScriptProperties: () => scriptProperties,
