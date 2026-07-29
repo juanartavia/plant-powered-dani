@@ -37,7 +37,7 @@ import {
   Send,
 } from "lucide-react";
 import * as React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTimezoneDropdown } from "./timezone-dropdown";
 import { Separator } from "@/components/ui/separator";
 import logoUrl from "@/assets/logo.png";
@@ -872,6 +872,23 @@ function ContactForm({
   const tErrors = STRINGS[uiLanguage].errors;
   const maxBirthdate = useMemo(() => getMaxBirthdate(), []);
   const [ageError, setAgeError] = useState<string | null>(null);
+  const birthdateRef = useRef<HTMLInputElement>(null);
+
+  // El input nativo type="date" solo abre el overlay del calendario si se le
+  // acierta al ícono pequeño de la esquina — el resto del campo (label, borde,
+  // padding) solo mueve el foco/segmento. showPicker() amplía esa área a todo
+  // el campo, pero no existe en iOS Safari (ninguna versión) — por eso es una
+  // mejora progresiva sobre el focus() nativo, nunca el único mecanismo.
+  const openBirthdatePicker = () => {
+    const el = birthdateRef.current;
+    if (!el) return;
+    el.focus();
+    try {
+      el.showPicker?.();
+    } catch {
+      // no soportado (ej. iOS Safari) — el focus() ya activa el selector nativo del OS
+    }
+  };
 
   const validateBirthdate = (value: string) => {
     if (!value) {
@@ -962,9 +979,10 @@ function ContactForm({
           defaultValue={defaultValues?.numeroId ?? ""}
         />
       </div>
-      <div className="space-y-2">
+      <div className="space-y-2" onClick={openBirthdatePicker}>
         <Label htmlFor="birthdate">{t.birthdate}</Label>
         <Input
+          ref={birthdateRef}
           id="birthdate"
           name="birthdate"
           type="date"
