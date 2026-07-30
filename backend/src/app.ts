@@ -68,6 +68,95 @@ function setupPilatesTestCalendar(): void {
   Logger.log(`Calendario "Pilates - Testing" creado. ID: ${calendar.getId()}`);
 }
 
+// Calendario donde la INSTRUCTORA marca qué clases de pilates va a ofrecer (US-43) — de
+// SOLO LECTURA para el sistema, nunca se escribe ahí. Es un calendario DISTINTO de
+// PILATES_CALENDAR_ID (getPilatesCalendarId, arriba): ese es el calendario OPERATIVO donde
+// el sistema mismo crea el evento real cuando un cliente agenda una clase (sigue funcionando
+// exactamente igual que antes de US-43, sin ningún cambio). Este ("Disponibilidad -
+// Pilates") es la fuente de qué horarios existen para ofrecer — reemplaza el hardcodeo fijo
+// de "sábados 10am" (PILATES_DAY_OF_WEEK/PILATES_START_HOUR, ya removidas) por clases reales
+// que la instructora marca a mano, regulares o especiales, sin tocar código.
+//
+// Ya creado y guardado en Script Properties para testing — no crear de nuevo, no fusionar
+// con PILATES_CALENDAR_ID. En producción, guardar ahí el ID del calendario real que la
+// instructora use para este propósito (mismo mecanismo de Script Properties que el resto del
+// proyecto).
+function getPilatesAvailabilityCalendarId(): string {
+  const id = PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+  if (!id) {
+    throw new Error(
+      "PILATES_AVAILABILITY_CALENDAR_ID no configurado en Script Properties. Debe apuntar al " +
+      "calendario \"Disponibilidad - Pilates\" donde la instructora marca las clases que va a " +
+      "ofrecer — no confundir con PILATES_CALENDAR_ID (calendario operativo de eventos reales, " +
+      "ver getPilatesCalendarId)."
+    );
+  }
+  return id;
+}
+
+// Una clase de pilates ofrecida por la instructora, leída directamente del calendario de
+// disponibilidad (US-43). fecha/hora ya en TIME_ZONE, mismo formato que el resto del Sheet.
+interface PilatesClassSlot {
+  fecha: string; // yyyy-MM-dd
+  hora: string; // HH:mm
+  durationMinutes: number;
+  eventId: string; // ID del evento en PILATES_AVAILABILITY_CALENDAR_ID — nunca confundir con
+                    // el event_id de Cupos_Pilates (columnas E/F), que es del calendario
+                    // OPERATIVO (ver disponibilidad_event_id, columna G, para el dedup de sync).
+  meetLink: string; // vacío si la instructora no agregó Meet al crear el evento
+}
+
+// Lee las clases de pilates que la instructora marcó como disponibles en
+// PILATES_AVAILABILITY_CALENDAR_ID, dentro de la misma ventana máxima que el resto del
+// proyecto (DAYS_IN_ADVANCE). Es la única función que debe leer ese calendario — nunca se
+// escribe ahí. Usada tanto por fetchAvailability (disponibilidad en vivo para el portal, sin
+// depender de que el sync ya haya corrido) como por syncPilatesClassesToCuposSheet (para
+// reflejar las clases en el Sheet).
+function getPilatesAvailabilityEvents(): PilatesClassSlot[] {
+  const calendarId = getPilatesAvailabilityCalendarId();
+  const now = new Date();
+  const end = new Date(now.getTime() + DAYS_IN_ADVANCE * 24 * 60 * 60 * 1000);
+
+  const response = Calendar.Events!.list(calendarId, {
+    timeMin: now.toISOString(),
+    timeMax: end.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+
+  const items = response.items || [];
+  const slots: PilatesClassSlot[] = [];
+  for (const event of items) {
+    // Se ignoran eventos de día completo (sin dateTime, solo date) — no representan un
+    // horario real de clase.
+    if (!event.start || !event.start.dateTime || !event.end || !event.end.dateTime || !event.id) continue;
+
+    const start = new Date(event.start.dateTime);
+    const eventEnd = new Date(event.end.dateTime);
+
+    // Si la instructora agregó una videollamada de Google Meet al crear el evento en su
+    // propio Calendar, se reutiliza ese link. CalendarApp básico no expone conferenceData de
+    // forma confiable — por eso esta función usa el servicio avanzado (Calendar.Events.list,
+    // ya habilitado en appsscript.json), igual que el resto del proyecto para Meet
+    // (createCalendarEventWithMeet). Si el evento no tiene conferenceData compatible, queda
+    // vacío y el flujo de reserva (bookPilatesCalendarEvent/joinPilatesSlot) genera su propio
+    // Meet como ya hace hoy en el calendario OPERATIVO — son dos Meet independientes a
+    // propósito, uno para uso interno de la instructora y otro para el cliente.
+    const meetLink = ((event.conferenceData && event.conferenceData.entryPoints) || [])
+      .filter((ep) => ep.entryPointType === "video")
+      .map((ep) => ep.uri || "")[0] || "";
+
+    slots.push({
+      fecha: Utilities.formatDate(start, TIME_ZONE, "yyyy-MM-dd"),
+      hora: Utilities.formatDate(start, TIME_ZONE, "HH:mm"),
+      durationMinutes: Math.round((eventEnd.getTime() - start.getTime()) / 60000),
+      eventId: event.id,
+      meetLink,
+    });
+  }
+  return slots;
+}
+
 // Zona horaria base del negocio. Todos los eventos se crean en hora de Costa Rica.
 // Los clientes ven los horarios en su propia zona horaria (manejado en el frontend).
 const TIME_ZONE = "America/Costa_Rica";
@@ -108,13 +197,6 @@ const WORKHOURS = {
 // Confirmado con Dani en reunión del 2 jul 2026.
 const DAYS_IN_ADVANCE = 56;
 
-// Pilates: único horario habilitado hoy es sábado (6) a las 10:00 AM (hora TIME_ZONE).
-// Confirmado en Preguntas_Reunion_02-07-2026 (P16/P21) y minuta 02_07_26 — posibilidad de
-// agregar más horarios en el futuro, pero hoy es solo este. No confundir con WORKDAYS/
-// WORKHOURS (genéricos, compartidos con nutrición) — esta restricción aplica solo a pilates.
-const PILATES_DAY_OF_WEEK = 6; // sábado
-const PILATES_START_HOUR = 10;
-
 // Ventana mínima de anticipación para agendar una cita: no se puede reservar un slot
 // que empiece en menos de 48 horas desde el momento actual. Confirmada en la reunión
 // del 2 jul 2026 (documento de preguntas, P3). Distinta de CANCELLATION_HOURS (24 hrs),
@@ -123,10 +205,11 @@ const MIN_BOOKING_HOURS = 48;
 
 // Ventana mínima de anticipación específica de pilates (demo 17 jul, pedido de Dani):
 // a diferencia de MIN_BOOKING_HOURS (48hrs, nutrición), pilates se puede reservar con
-// solo 12 horas de anticipación. Mismo patrón que PILATES_DAY_OF_WEEK/PILATES_START_HOUR
-// arriba — restricción específica de type === "pilates", nunca reemplaza la constante
-// global de nutrición. Aplicada en fetchAvailability(), bookTimeslot() y rescheduleBooking()
-// (validación del NUEVO horario).
+// solo 12 horas de anticipación. Restricción específica de type === "pilates", nunca
+// reemplaza la constante global de nutrición. Aplicada en fetchAvailability(), bookTimeslot()
+// y rescheduleBooking() (validación del NUEVO horario). Sigue vigente tras US-43 — el
+// horario fijo de "sábados 10am" (antes PILATES_DAY_OF_WEEK/PILATES_START_HOUR) desapareció,
+// pero la ventana mínima de anticipación es una regla de negocio aparte que no cambió.
 const PILATES_MIN_BOOKING_HOURS = 12;
 
 // Ventana mínima de anticipación para reagendar/cancelar una cita YA existente sin
@@ -318,6 +401,25 @@ function fetchAvailability(type: string): {
     new Date().getTime() + minBookingHours * 60 * 60 * 1000
   );
 
+  // US-43: pilates ya no tiene un horario fijo (antes: siempre sábados 10am — ver el
+  // historial de PILATES_DAY_OF_WEEK/PILATES_START_HOUR en CLAUDE.md, ya removidas). La
+  // disponibilidad real sale de las clases que la instructora marcó en el calendario
+  // "Disponibilidad - Pilates" (getPilatesAvailabilityEvents), filtradas por cupo real
+  // calculado en vivo (getAvailableCapacityForClass — cuenta inscripciones activas en
+  // "Pilates", nunca depende de que syncPilatesClassesToCuposSheet ya haya corrido). No usa
+  // Freebusy/WORKDAYS/WORKHOURS/CALENDARS en absoluto — eso es exclusivo del flujo de
+  // nutrición, más abajo.
+  if (type === "pilates") {
+    const timeslots: string[] = [];
+    for (const slot of getPilatesAvailabilityEvents()) {
+      const start = parseSheetDateTime(slot.fecha, slot.hora);
+      if (start.getTime() <= minBookingTime.getTime()) continue;
+      if (getAvailableCapacityForClass(slot.fecha, slot.hora) <= 0) continue;
+      timeslots.push(start.toISOString());
+    }
+    return { timeslots, durationMinutes: duration };
+  }
+
   const end = new Date(
     Date.UTC(
       now.getUTCFullYear(),
@@ -341,19 +443,6 @@ function fetchAvailability(type: string): {
     }));
   }).reduce((acc, curr) => acc.concat(curr), []);
 
-  // Pilates es grupal: un slot no debe ocultarse solo porque ya existe un evento de
-  // Calendar ahí (eso pasaría con el primer inscrito). La disponibilidad real depende
-  // del cupo restante en Cupos_Pilates, no del conflict-check de Calendar.
-  const cuposMap: Record<string, number> = {};
-  if (type === "pilates") {
-    const cuposData = getSheet("Cupos_Pilates").getDataRange().getValues();
-    for (let i = 1; i < cuposData.length; i++) {
-      const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
-      const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
-      cuposMap[`${rowFecha}_${rowHora}`] = Number(cuposData[i][2]) || 0;
-    }
-  }
-
   const timeslots = [];
   for (
     let t = nearestTimeslot.getTime();
@@ -372,15 +461,7 @@ function fetchAvailability(type: string): {
     if (startTZ.getHours() >= WORKHOURS.end) continue;
     if (WORKDAYS.indexOf(startTZ.getDay()) < 0) continue;
 
-    if (type === "pilates") {
-      if (startTZ.getDay() !== PILATES_DAY_OF_WEEK) continue;
-      if (startTZ.getHours() !== PILATES_START_HOUR || startTZ.getMinutes() !== 0) continue;
-
-      const fecha = Utilities.formatDate(start, TIME_ZONE, "yyyy-MM-dd");
-      const hora = Utilities.formatDate(start, TIME_ZONE, "HH:mm");
-      const inscritos = cuposMap[`${fecha}_${hora}`] || 0;
-      if (inscritos >= MAX_PILATES_PARTICIPANTS) continue;
-    } else if (events.some((event: { start: Date; end: Date }) => event.start < end && event.end > start)) {
+    if (events.some((event: { start: Date; end: Date }) => event.start < end && event.end > start)) {
       continue;
     }
 
@@ -412,11 +493,31 @@ const SHEET_SCHEMAS: Record<string, string[]> = {
     "estado", "fecha_inscripcion", "recordatorio_enviado", "show_no_show",
     "cancelaciones_tardias",
   ],
-  // event_id/meet_link agregadas en US-10 (ver addEventIdColumnToCuposPilates) — columnas E y F.
+  // event_id/meet_link agregadas en US-10 (ver addEventIdColumnToCuposPilates) — columnas E y
+  // F, SIEMPRE del calendario OPERATIVO (PILATES_CALENDAR_ID): el evento real que se crea
+  // cuando un cliente agenda, nunca el evento de disponibilidad de la instructora.
   // No forman parte del spreadsheet creado por initializeSheets() (ya ejecutada, nota 11);
   // se agregan al spreadsheet existente igual que "Clientes" en addClientesSheet().
+  //
+  // US-43: "inscritos" (columna C) deja de ser la fuente de verdad del cupo — pasa a ser un
+  // valor CACHEADO/informativo únicamente, para que la instructora lo vea de un vistazo en el
+  // Sheet (ver refreshCuposPilatesInscritosCache). La fuente de verdad real es el conteo en
+  // vivo de inscripciones activas en "Pilates" (ver getAvailableCapacityForClass). Se decidió
+  // MANTENER la columna en vez de eliminarla: ya existe, ya la ve la instructora, y el costo
+  // de mantenerla como caché es un solo setValue() extra por operación — más simple que
+  // quitarla y explicar su ausencia.
+  // "max_participantes" (columna D) puede quedar VACÍA — significa "usar el default de
+  // MAX_PILATES_PARTICIPANTS (5)", ver getAvailableCapacityForClass.
+  // "disponibilidad_event_id" (columna G, US-43, ver addDisponibilidadEventIdColumnToCuposPilates)
+  // guarda el ID del evento del calendario "Disponibilidad - Pilates" que originó esta fila —
+  // es la clave que syncPilatesClassesToCuposSheet usa para no duplicar filas. Deliberadamente
+  // SEPARADA de "event_id" (columna E): mezclarlas rompería bookPilatesCalendarEvent/
+  // joinPilatesSlot, que ya usan "event_id" para el evento OPERATIVO real (ver comentario de
+  // arriba) — confundir ambos calendarios haría que esas funciones intenten leer/mover un
+  // evento en el calendario equivocado.
   "Cupos_Pilates": [
     "fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link",
+    "disponibilidad_event_id",
   ],
 };
 
@@ -912,6 +1013,11 @@ function addClientesSheet(): void {
 // guarda a nivel de slot y no por inscripción individual.
 const CUPOS_PILATES_EVENT_ID_COL = 5;
 const CUPOS_PILATES_MEET_LINK_COL = 6;
+// Columna (1-based, US-43) donde syncPilatesClassesToCuposSheet guarda el ID del evento del
+// calendario "Disponibilidad - Pilates" que originó esta fila — SOLO para dedup del sync,
+// deliberadamente separada de CUPOS_PILATES_EVENT_ID_COL (ver comentario largo en
+// SHEET_SCHEMAS["Cupos_Pilates"] arriba, sección "US-43").
+const CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL = 7;
 
 // Columnas (1-based) de la pestaña "Nutrición" usadas por cancelBooking/rescheduleBooking
 // (US-06) para localizar y mover/eliminar el evento de Calendar real de una cita, y para
@@ -1100,6 +1206,26 @@ function addEventIdColumnToCuposPilates(): void {
   sheet.getRange(1, CUPOS_PILATES_MEET_LINK_COL).setValue("meet_link").setFontWeight("bold");
 
   Logger.log('Columnas "event_id" y "meet_link" agregadas a Cupos_Pilates.');
+}
+
+// Agrega la columna "disponibilidad_event_id" (US-43) a la pestaña "Cupos_Pilates" YA
+// existente, en la posición CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL (columna G, justo
+// después de "meet_link"), sin volver a ejecutar initializeSheets() (nota 11). Deliberadamente
+// NUEVA y separada de "event_id"/"meet_link" — ver el comentario largo de esa decisión en
+// SHEET_SCHEMAS["Cupos_Pilates"]. No-op seguro si ya existe. Ejecutar manualmente UNA SOLA VEZ
+// desde el editor de Apps Script, ANTES de correr syncPilatesClassesToCuposSheet() o instalar
+// su trigger (installPilatesAvailabilitySyncTrigger).
+function addDisponibilidadEventIdColumnToCuposPilates(): void {
+  const sheet = getSheet("Cupos_Pilates");
+  const existingHeader = String(sheet.getRange(1, CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL).getValue());
+
+  if (existingHeader === "disponibilidad_event_id") {
+    Logger.log('La columna "disponibilidad_event_id" ya existe en Cupos_Pilates. No se hizo ningún cambio.');
+    return;
+  }
+
+  sheet.getRange(1, CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL).setValue("disponibilidad_event_id").setFontWeight("bold");
+  Logger.log('Columna "disponibilidad_event_id" agregada a Cupos_Pilates.');
 }
 
 // Retorna la pestaña (Sheet) correspondiente al nombre dado, a partir del spreadsheet
@@ -1542,6 +1668,199 @@ function ensureCuposPilatesPlainTextFormat(sheet: GoogleAppsScript.Spreadsheet.S
   sheet.getRange(2, 1, numRows, 2).setNumberFormat("@");
 }
 
+// Busca la fila (1-based) de Cupos_Pilates para una fecha_clase+hora_clase exactas, a partir
+// de una lectura ya hecha con getDataRange().getValues() (evita releer el Sheet en cada
+// llamada cuando el caller ya tiene los datos en mano). Devuelve -1 si no existe ninguna fila
+// para ese slot todavía — puede pasar si syncPilatesClassesToCuposSheet no ha corrido para esa
+// clase en particular, o si nunca se ejecutó (ver getAvailableCapacityForClass, que trata ese
+// caso con el default de MAX_PILATES_PARTICIPANTS).
+function findCuposPilatesRow(cuposData: unknown[][], fecha: string, hora: string): number {
+  for (let i = 1; i < cuposData.length; i++) {
+    const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
+    const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
+    if (rowFecha === fecha && rowHora === hora) return i + 1;
+  }
+  return -1;
+}
+
+// US-43 — Cuenta las inscripciones ACTIVAS (estado 'Agendada' o 'Reagendada') en la pestaña
+// "Pilates" para una fecha_clase+hora_clase exactas. Esta es la fuente de verdad real del
+// cupo — nunca la columna cacheada "inscritos" de Cupos_Pilates (ver
+// getAvailableCapacityForClass). Filas 'Cancelada'/'Error_Calendar' no cuentan: el cupo que
+// dejan queda disponible de inmediato, sin necesitar ningún rollback manual del contador.
+function countActivePilatesRegistrations(fecha: string, hora: string): number {
+  const pilatesSheet = getSheet("Pilates");
+  const lastRow = pilatesSheet.getLastRow();
+  if (lastRow < 2) return 0;
+
+  const values = pilatesSheet.getRange(2, 1, lastRow - 1, pilatesSheet.getLastColumn()).getValues();
+  let count = 0;
+  for (const row of values) {
+    const rowFecha = normalizeSheetDateCell(row[PILATES_FECHA_COL - 1], "yyyy-MM-dd");
+    const rowHora = normalizeSheetDateCell(row[PILATES_HORA_COL - 1], "HH:mm");
+    const estado = String(row[PILATES_ESTADO_COL - 1]);
+    if (rowFecha === fecha && rowHora === hora && (estado === "Agendada" || estado === "Reagendada")) {
+      count++;
+    }
+  }
+  return count;
+}
+
+// US-43 — Cupo disponible real de una clase de pilates: max_participantes (columna D de
+// Cupos_Pilates; MAX_PILATES_PARTICIPANTS si la celda está vacía o no es un número) menos las
+// inscripciones activas contadas EN VIVO en "Pilates" (countActivePilatesRegistrations).
+// Nunca negativo. Esta es la ÚNICA función que debe usarse para decidir si una clase tiene
+// cupo — reemplaza la lectura directa de la columna "inscritos" que usaban
+// appendBookingToSheet/joinPilatesSlot/fetchAvailability antes de US-43. Funciona incluso si
+// Cupos_Pilates todavía no tiene fila para este slot (usa el default de 5), para que el
+// portal nunca dependa de que syncPilatesClassesToCuposSheet ya haya corrido.
+function getAvailableCapacityForClass(fecha: string, hora: string): number {
+  const cuposSheet = getSheet("Cupos_Pilates");
+  const cuposData = cuposSheet.getDataRange().getValues();
+  const rowNumber = findCuposPilatesRow(cuposData, fecha, hora);
+
+  let maxParticipantes = MAX_PILATES_PARTICIPANTS;
+  if (rowNumber > 0) {
+    const cellValue = cuposData[rowNumber - 1][3];
+    const parsed = Number(cellValue);
+    if (cellValue !== "" && cellValue !== null && !isNaN(parsed)) {
+      maxParticipantes = parsed;
+    }
+  }
+
+  const activos = countActivePilatesRegistrations(fecha, hora);
+  return Math.max(maxParticipantes - activos, 0);
+}
+
+// US-43 — Actualiza la columna "inscritos" (cacheada/informativa, ver comentario de
+// SHEET_SCHEMAS["Cupos_Pilates"]) de Cupos_Pilates con el conteo real y actual de
+// inscripciones activas, para que la instructora vea un número correcto de un vistazo en el
+// Sheet. No hace nada si todavía no existe una fila para este slot (nada que actualizar). Se
+// llama después de cada operación que cambia el cupo de un slot (reservar/cancelar/reagendar/
+// revertir por error de Calendar) — nunca decide disponibilidad por sí misma, eso lo hace
+// siempre getAvailableCapacityForClass.
+function refreshCuposPilatesInscritosCache(fecha: string, hora: string): void {
+  const cuposSheet = getSheet("Cupos_Pilates");
+  const cuposData = cuposSheet.getDataRange().getValues();
+  const rowNumber = findCuposPilatesRow(cuposData, fecha, hora);
+  if (rowNumber < 0) return;
+
+  const activos = countActivePilatesRegistrations(fecha, hora);
+  cuposSheet.getRange(rowNumber, 3).setValue(activos);
+}
+
+// US-43 — Sincroniza las clases marcadas por la instructora en el calendario de
+// disponibilidad (getPilatesAvailabilityEvents) hacia Cupos_Pilates, creando una fila nueva
+// por cada clase que todavía no tenga una (buscando por "disponibilidad_event_id", columna G
+// — nunca por fecha/hora, para tolerar que la instructora mueva una clase de horario sin que
+// eso genere una fila duplicada). NUNCA pisa una fila ya existente: max_participantes queda
+// intacto si Dani/la instructora ya lo editó a mano, y el event_id/meet_link OPERATIVOS
+// (columnas E/F) tampoco se tocan. Idempotente — puede correr repetidas veces (instalado como
+// trigger de tiempo, ver installPilatesAvailabilitySyncTrigger) sin duplicar filas ni perder
+// ediciones manuales.
+//
+// Nota: fetchAvailability/getAvailableCapacityForClass NUNCA dependen de que este sync ya
+// haya corrido (leen el calendario y aplican el default de MAX_PILATES_PARTICIPANTS
+// directamente) — este trigger es solo para que la fila de Cupos_Pilates exista de antemano,
+// dándole a la instructora un lugar para ajustar max_participantes antes de la primera reserva.
+//
+// ⚠️ BUG REAL confirmado contra el Sheet de testing real (30 jul): la primera versión de esta
+// función llamaba cuposSheet.getLastRow() inmediatamente después de cada appendRow(), varias
+// veces seguidas DENTRO del mismo loop y sin flush entre medio — mismo anti-patrón ya
+// documentado dos veces antes en este proyecto (ver addServicioColumnsToClientes/
+// recoverLostClientRows más arriba, y el comentario de FIX 1 en appendBookingToSheet sobre
+// releer el Sheet en la misma ejecución sin flush). Confirmado en real: de 8 clases nuevas
+// detectadas (una recurrencia semanal), el log reportó "8 creadas" pero varias escrituras de
+// fecha/hora/disponibilidad_event_id terminaron ATERRIZANDO SOBRE filas VIEJAS ya existentes
+// (de pruebas anteriores a US-43, cuando pilates tenía horario fijo de sábados 10am) en vez
+// de sobre las filas recién agregadas por appendRow() — dejando esas filas viejas con una
+// mezcla de fecha/hora nueva y datos viejos (incluido un "5" fantasma en max_participantes:
+// esta función NUNCA escribe esa columna, es dato viejo de la fila preexistente sobre la que
+// el bug aterrizó). El harness no puede detectar este tipo de bug — el mock de
+// appendRow()/getLastRow() es un array de JS síncrono, siempre consistente; el problema es
+// específico de Apps Script/Sheets real.
+//
+// Fix: nextRow se calcula UNA sola vez (cuposData.length + 1, ya conocido de la lectura de
+// arriba) y se incrementa LOCALMENTE por cada fila creada — jamás se vuelve a preguntar a
+// Sheets con getLastRow() dentro del loop, eliminando la dependencia de que esa lectura esté
+// sincronizada con escrituras aún no confirmadas en la misma ejecución.
+function syncPilatesClassesToCuposSheet(): void {
+  const slots = getPilatesAvailabilityEvents();
+  if (slots.length === 0) {
+    Logger.log("syncPilatesClassesToCuposSheet: no hay clases en el calendario de disponibilidad dentro de la ventana.");
+    return;
+  }
+
+  // Lock de script (mismo criterio que el resto de escritores de Cupos_Pilates en el
+  // proyecto — appendBookingToSheet/joinPilatesSlot/leavePilatesSlot): sin esto, una
+  // sincronización y una reserva casi simultáneas podrían pisarse la lectura de
+  // existingEventIds/nextRow.
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const cuposSheet = getSheet("Cupos_Pilates");
+    ensureCuposPilatesPlainTextFormat(cuposSheet);
+    const cuposData = cuposSheet.getDataRange().getValues();
+
+    // Record<string, boolean> en vez de Set (target ES5, sin soporte de Set — mismo criterio
+    // que cuposMap/otros mapas de lookup del proyecto).
+    const existingEventIds: Record<string, boolean> = {};
+    for (let i = 1; i < cuposData.length; i++) {
+      const eventId = String(cuposData[i][CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL - 1] || "");
+      if (eventId) existingEventIds[eventId] = true;
+    }
+
+    let nextRow = cuposData.length + 1;
+    let creadas = 0;
+    for (const slot of slots) {
+      if (existingEventIds[slot.eventId]) continue;
+
+      const rowNumber = nextRow;
+      // max_participantes (columna D) queda VACÍO a propósito — getAvailableCapacityForClass
+      // usa MAX_PILATES_PARTICIPANTS (5) como default cuando está vacía, y así la instructora
+      // puede ajustar el máximo por clase (una clase especial con menos cupo, por ejemplo) sin
+      // que el sync la sobreescriba en corridas futuras. event_id/meet_link (columnas E/F,
+      // OPERATIVOS) quedan vacíos: se llenan después, en la PRIMERA reserva real de este slot
+      // (bookPilatesCalendarEvent), no en el sync.
+      cuposSheet.appendRow(["", "", "", "", "", "", ""]);
+      const dateRange = cuposSheet.getRange(rowNumber, 1, 1, 2);
+      dateRange.setNumberFormat("@");
+      dateRange.setValues([[slot.fecha, slot.hora]]);
+      cuposSheet.getRange(rowNumber, CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL).setValue(slot.eventId);
+
+      nextRow++;
+      existingEventIds[slot.eventId] = true;
+      creadas++;
+    }
+
+    if (creadas > 0) {
+      SpreadsheetApp.flush();
+    }
+    Logger.log(`syncPilatesClassesToCuposSheet: ${creadas} fila(s) nueva(s) creada(s) de ${slots.length} clase(s) detectada(s) en el calendario de disponibilidad.`);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Instalación manual del trigger de tiempo (US-43) — ejecutar UNA SOLA VEZ desde el editor de
+// Apps Script, igual que installRemindersTrigger()/setupPilatesTestCalendar(). Corre
+// syncPilatesClassesToCuposSheet cada hora; revisa primero los triggers ya instalados
+// (ScriptApp.getProjectTriggers()) para no duplicar el trigger si esta función se corre dos
+// veces por accidente. Ejecutar addDisponibilidadEventIdColumnToCuposPilates() ANTES de
+// instalar este trigger.
+function installPilatesAvailabilitySyncTrigger(): void {
+  const existing = ScriptApp.getProjectTriggers().some(
+    (trigger) => trigger.getHandlerFunction() === "syncPilatesClassesToCuposSheet"
+  );
+  if (existing) {
+    Logger.log('Ya existe un trigger para "syncPilatesClassesToCuposSheet". No se creó ninguno nuevo.');
+    return;
+  }
+
+  ScriptApp.newTrigger("syncPilatesClassesToCuposSheet").timeBased().everyHours(1).create();
+  Logger.log('Trigger de tiempo instalado: "syncPilatesClassesToCuposSheet" corre cada hora.');
+}
+
 interface BookingData {
   timeslot: string; // ISO string del inicio de la cita, en UTC
   nombre: string;
@@ -1574,40 +1893,39 @@ function appendBookingToSheet(type: string, data: BookingData): string {
   const timestamp = Utilities.formatDate(new Date(), TIME_ZONE, "yyyy-MM-dd HH:mm:ss");
 
   if (type === "pilates") {
-    // Lock de script: sin esto, dos inscripciones simultáneas podrían leer el mismo
-    // conteo de "inscritos" y ambas pasar la validación de cupo, superando el máximo.
+    // Lock de script: sin esto, dos inscripciones simultáneas podrían leer el mismo cupo
+    // disponible y ambas pasar la validación, superando el máximo. US-43: el cupo se
+    // re-verifica DENTRO del lock contra getAvailableCapacityForClass (fuente de verdad real
+    // — inscripciones activas contadas en vivo en "Pilates"), nunca contra un contador
+    // cacheado como antes.
     const lock = LockService.getScriptLock();
     lock.waitLock(10000);
     try {
       const cuposSheet = getSheet("Cupos_Pilates");
       ensureCuposPilatesPlainTextFormat(cuposSheet);
-      const cuposData = cuposSheet.getDataRange().getValues();
 
-      let rowNumber = -1; // fila 1-based en el sheet (0 = no existe todavía)
-      let inscritos = 0;
-      let maxParticipantes = MAX_PILATES_PARTICIPANTS;
-
-      for (let i = 1; i < cuposData.length; i++) {
-        const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
-        const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
-        if (rowFecha === fecha && rowHora === hora) {
-          rowNumber = i + 1;
-          inscritos = Number(cuposData[i][2]) || 0;
-          maxParticipantes = Number(cuposData[i][3]) || MAX_PILATES_PARTICIPANTS;
-          break;
-        }
-      }
-
-      if (inscritos >= maxParticipantes) {
+      if (getAvailableCapacityForClass(fecha, hora) <= 0) {
         throw new Error("CLASE_LLENA");
       }
 
-      if (rowNumber > 0) {
-        cuposSheet.getRange(rowNumber, 3).setValue(inscritos + 1);
-      } else {
-        // event_id/meet_link (columnas E/F) se llenan después, en bookPilatesCalendarEvent,
-        // cuando se crea el único evento de Calendar compartido por este slot (US-10).
-        cuposSheet.appendRow([fecha, hora, 1, MAX_PILATES_PARTICIPANTS, "", ""]);
+      const cuposData = cuposSheet.getDataRange().getValues();
+      if (findCuposPilatesRow(cuposData, fecha, hora) < 0) {
+        // No debería pasar en el flujo normal (fetchAvailability solo ofrece clases que ya
+        // tienen fila en Cupos_Pilates, ver syncPilatesClassesToCuposSheet) — se deja como
+        // red de seguridad, igual que el comportamiento anterior a US-43. max_participantes
+        // (columna D) y disponibilidad_event_id (columna G) quedan vacíos: sin el evento de
+        // disponibilidad real, no hay nada que registrar ahí; getAvailableCapacityForClass
+        // sigue funcionando igual con el default de MAX_PILATES_PARTICIPANTS.
+        //
+        // NO usar getLastRow() para localizar la fila recién creada — ver el bug real
+        // documentado en syncPilatesClassesToCuposSheet (mismo anti-patrón, aquí de bajo
+        // riesgo por ser un solo appendRow(), pero mejor no repetirlo). cuposData.length + 1
+        // ya es la fila correcta, calculada de la misma lectura de arriba.
+        const newRowNumber = cuposData.length + 1;
+        cuposSheet.appendRow(["", "", "", "", "", "", ""]);
+        const dateRange = cuposSheet.getRange(newRowNumber, 1, 1, 2);
+        dateRange.setNumberFormat("@");
+        dateRange.setValues([[fecha, hora]]);
       }
 
       // Fix real (US-14, 21 jul; corregido de nuevo 21 jul tras confirmar en Sheet real que
@@ -1655,6 +1973,8 @@ function appendBookingToSheet(type: string, data: BookingData): string {
         pilatesDateRange.setNumberFormat("@");
         pilatesDateRange.setValues([[fecha, hora]]);
       }
+      // Cache informativa (US-43) — la fila recién escrita arriba ya cuenta como activa.
+      refreshCuposPilatesInscritosCache(fecha, hora);
     } finally {
       lock.releaseLock();
     }
@@ -1760,25 +2080,18 @@ function updateNutricionCalendarInfo(token: string, eventId: string, meetLink: s
   if (meetLink) sheet.getRange(row, NUTRICION_MEET_LINK_COL).setValue(meetLink);
 }
 
-// Revierte el incremento de cupo hecho por appendBookingToSheet para un slot de pilates
-// cuando el paso de Calendar posterior falla (FIX 1, US-10) — sin este rollback, un cupo
-// fallido dejaría el contador de inscritos más alto que la cantidad de personas realmente
-// agregadas al evento de Calendar, bloqueando injustamente el último cupo real disponible.
+// Refresca la cache de "inscritos" de un slot de pilates cuando el paso de Calendar
+// posterior a appendBookingToSheet falla (FIX 1, US-10). Desde US-43 esto ya NO revierte
+// ningún cupo real: markBookingRowError (llamada justo antes, ver el catch de bookTimeslot)
+// ya marcó la fila como 'Error_Calendar', y countActivePilatesRegistrations solo cuenta
+// 'Agendada'/'Reagendada' — el cupo se libera automáticamente, sin necesitar ningún
+// decremento manual. Esta función solo actualiza el número que ve la instructora en el Sheet
+// para que no quede desactualizado (ver refreshCuposPilatesInscritosCache).
 function rollbackPilatesCupo(fecha: string, hora: string): void {
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
-    const cuposSheet = getSheet("Cupos_Pilates");
-    const cuposData = cuposSheet.getDataRange().getValues();
-    for (let i = 1; i < cuposData.length; i++) {
-      const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
-      const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
-      if (rowFecha === fecha && rowHora === hora) {
-        const inscritos = Number(cuposData[i][2]) || 0;
-        cuposSheet.getRange(i + 1, 3).setValue(Math.max(inscritos - 1, 0));
-        break;
-      }
-    }
+    refreshCuposPilatesInscritosCache(fecha, hora);
   } finally {
     lock.releaseLock();
   }
@@ -2317,13 +2630,15 @@ function cancelNutricionCalendarEvent(token: string): void {
   }
 }
 
-// Saca a un cliente de un slot grupal de pilates ya reservado: decrementa "inscritos" en
-// Cupos_Pilates y, según cuántos queden, o bien remueve solo a ese invitado del evento
-// compartido (addGuest/patch, quedan otros inscritos) o elimina el evento por completo y
-// limpia event_id/meet_link (era el único inscrito). Usada tanto por cancelBooking (pilates)
-// como por rescheduleBooking (pilates, para salir del slot viejo). Mismo LockService que
-// protege el contador de cupos en el resto del sistema (US-05/US-10), para que una salida y
-// una entrada casi simultáneas al mismo slot no corrompan el conteo.
+// Saca a un cliente de un slot grupal de pilates ya reservado: según cuántas inscripciones
+// activas queden (contadas en vivo, US-43 — ver countActivePilatesRegistrations), o bien
+// remueve solo a ese invitado del evento compartido (addGuest/patch, quedan otros inscritos)
+// o elimina el evento por completo y limpia event_id/meet_link (era el único inscrito).
+// Usada tanto por cancelBooking (pilates) como por rescheduleBooking (pilates, para salir del
+// slot viejo). El llamador debe haber marcado el estado de la fila del cliente (Cancelada/
+// movida de fecha) ANTES de llamar esta función, para que el conteo ya refleje su salida.
+// Mismo LockService que protege el resto del sistema (US-05/US-10), para que una salida y una
+// entrada casi simultáneas al mismo slot no corrompan el evento compartido de Calendar.
 function leavePilatesSlot(fecha: string, hora: string, email: string): void {
   const calendarId = getPilatesCalendarId();
   const lock = LockService.getScriptLock();
@@ -2332,31 +2647,19 @@ function leavePilatesSlot(fecha: string, hora: string, email: string): void {
     const cuposSheet = getSheet("Cupos_Pilates");
     ensureCuposPilatesPlainTextFormat(cuposSheet);
     const cuposData = cuposSheet.getDataRange().getValues();
-
-    let rowNumber = -1;
-    let inscritos = 0;
-    let eventId = "";
-    for (let i = 1; i < cuposData.length; i++) {
-      const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
-      const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
-      if (rowFecha === fecha && rowHora === hora) {
-        rowNumber = i + 1;
-        inscritos = Number(cuposData[i][2]) || 0;
-        eventId = String(cuposData[i][CUPOS_PILATES_EVENT_ID_COL - 1] || "");
-        break;
-      }
-    }
+    const rowNumber = findCuposPilatesRow(cuposData, fecha, hora);
 
     if (rowNumber < 0) {
       Logger.log(`leavePilatesSlot: fila de Cupos_Pilates no encontrada para ${fecha} ${hora} — nada que revertir.`);
       return;
     }
 
-    const nuevoInscritos = Math.max(inscritos - 1, 0);
-    cuposSheet.getRange(rowNumber, 3).setValue(nuevoInscritos);
+    const eventId = String(cuposData[rowNumber - 1][CUPOS_PILATES_EVENT_ID_COL - 1] || "");
+    const quedanActivos = countActivePilatesRegistrations(fecha, hora);
+    cuposSheet.getRange(rowNumber, 3).setValue(quedanActivos);
 
     if (eventId) {
-      if (nuevoInscritos <= 0) {
+      if (quedanActivos <= 0) {
         try {
           Calendar.Events!.remove(calendarId, eventId, { sendUpdates: "all" });
         } catch (e) {
@@ -2389,12 +2692,19 @@ function leavePilatesSlot(fecha: string, hora: string, email: string): void {
 }
 
 // Inscribe a un cliente en un slot grupal de pilates, respetando el cupo (lanza
-// Error("CLASE_LLENA") si ya está lleno) y reutilizando el mismo patrón de "crear evento
-// compartido en la primera inscripción, unirse con addGuest/patch en las siguientes" que
-// bookPilatesCalendarEvent/appendBookingToSheet (US-10). Usada por rescheduleBooking para
-// mover un cliente de pilates a un slot NUEVO — el flujo de agendamiento inicial (bookTimeslot)
-// sigue usando su propia implementación sin tocar, para no arriesgar el comportamiento ya
-// validado en testing real de US-10.
+// Error("CLASE_LLENA") si ya está lleno, re-verificado DENTRO del lock contra
+// getAvailableCapacityForClass — US-43, misma fuente de verdad que appendBookingToSheet) y
+// reutilizando el mismo patrón de "crear evento compartido en la primera inscripción, unirse
+// con addGuest/patch en las siguientes" que bookPilatesCalendarEvent/appendBookingToSheet
+// (US-10). Usada por rescheduleBooking para mover un cliente de pilates a un slot NUEVO — el
+// flujo de agendamiento inicial (bookTimeslot) sigue usando su propia implementación sin
+// tocar, para no arriesgar el comportamiento ya validado en testing real de US-10.
+//
+// ⚠️ Importante para el llamador (rescheduleBooking): esta función se llama ANTES de mover la
+// fila del cliente en "Pilates" al nuevo horario — a propósito, así el chequeo de cupo de
+// arriba nunca cuenta al propio cliente en el slot nuevo. La cache de "inscritos" del slot
+// nuevo NO se actualiza aquí: debe refrescarse (refreshCuposPilatesInscritosCache) recién
+// DESPUÉS de que el llamador actualice esa fila, para que el conteo sea correcto.
 function joinPilatesSlot(
   fecha: string,
   hora: string,
@@ -2413,38 +2723,31 @@ function joinPilatesSlot(
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
+    if (getAvailableCapacityForClass(fecha, hora) <= 0) {
+      throw new Error("CLASE_LLENA");
+    }
+
     const cuposSheet = getSheet("Cupos_Pilates");
     ensureCuposPilatesPlainTextFormat(cuposSheet);
     const cuposData = cuposSheet.getDataRange().getValues();
-
-    let rowNumber = -1;
-    let inscritos = 0;
-    let maxParticipantes = MAX_PILATES_PARTICIPANTS;
-    let eventId = "";
-    for (let i = 1; i < cuposData.length; i++) {
-      const rowFecha = normalizeSheetDateCell(cuposData[i][0], "yyyy-MM-dd");
-      const rowHora = normalizeSheetDateCell(cuposData[i][1], "HH:mm");
-      if (rowFecha === fecha && rowHora === hora) {
-        rowNumber = i + 1;
-        inscritos = Number(cuposData[i][2]) || 0;
-        maxParticipantes = Number(cuposData[i][3]) || MAX_PILATES_PARTICIPANTS;
-        eventId = String(cuposData[i][CUPOS_PILATES_EVENT_ID_COL - 1] || "");
-        break;
-      }
-    }
-
-    if (inscritos >= maxParticipantes) {
-      throw new Error("CLASE_LLENA");
-    }
+    let rowNumber = findCuposPilatesRow(cuposData, fecha, hora);
+    const eventId = rowNumber > 0 ? String(cuposData[rowNumber - 1][CUPOS_PILATES_EVENT_ID_COL - 1] || "") : "";
 
     const startTime = parseSheetDateTime(fecha, hora);
     const endTime = new Date(startTime.getTime() + getDurationForType("pilates") * 60000);
 
-    if (rowNumber > 0) {
-      cuposSheet.getRange(rowNumber, 3).setValue(inscritos + 1);
-    } else {
-      rowNumber = cuposSheet.getLastRow() + 1;
-      cuposSheet.appendRow([fecha, hora, 1, MAX_PILATES_PARTICIPANTS, "", ""]);
+    if (rowNumber < 0) {
+      // No debería pasar en el flujo normal (ver comentario equivalente en
+      // appendBookingToSheet) — red de seguridad.
+      //
+      // NO usar getLastRow() para localizar la fila recién creada — ver el bug real
+      // documentado en syncPilatesClassesToCuposSheet. cuposData.length + 1 ya es la fila
+      // correcta, calculada de la misma lectura de arriba.
+      rowNumber = cuposData.length + 1;
+      cuposSheet.appendRow(["", "", "", "", "", "", ""]);
+      const dateRange = cuposSheet.getRange(rowNumber, 1, 1, 2);
+      dateRange.setNumberFormat("@");
+      dateRange.setValues([[fecha, hora]]);
     }
     SpreadsheetApp.flush();
 
@@ -2508,6 +2811,8 @@ function cancelBooking(token: string): { lateCancellation: boolean } {
   SpreadsheetApp.flush();
 
   if (booking.sheetName === "Pilates") {
+    // estado ya quedó 'Cancelada' arriba, ANTES de esta llamada — leavePilatesSlot cuenta
+    // inscripciones activas en vivo (US-43) y ya no ve a este cliente como activo.
     leavePilatesSlot(booking.fecha, booking.hora, booking.correo);
   } else {
     cancelNutricionCalendarEvent(booking.token);
@@ -2618,19 +2923,28 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   if (booking.sheetName === "Pilates") {
     // Entra al slot nuevo ANTES de salir del viejo: si el nuevo slot está lleno
     // (CLASE_LLENA), la excepción se propaga y el cliente conserva su cupo original en
-    // vez de quedarse sin ninguna clase.
+    // vez de quedarse sin ninguna clase. En este punto la fila del cliente en "Pilates"
+    // TODAVÍA muestra el horario viejo — joinPilatesSlot verifica el cupo del slot nuevo sin
+    // contar a este cliente ahí (correcto, todavía no se movió).
     joinPilatesSlot(
       newFecha, newHora,
       booking.nombre, booking.apellido, booking.correo, booking.telefono, booking.tipoId, booking.numeroId, booking.birthdate, booking.language
     );
-    leavePilatesSlot(booking.fecha, booking.hora, booking.correo);
 
+    // US-43: la fila se mueve al horario nuevo ANTES de leavePilatesSlot (a diferencia del
+    // orden anterior a US-43) — leavePilatesSlot ahora cuenta inscripciones activas EN VIVO
+    // desde "Pilates" (countActivePilatesRegistrations), así que necesita que esta fila ya
+    // refleje el horario nuevo para no seguir contando a este cliente en el slot viejo que
+    // está a punto de abandonar.
     const sheet = getSheet("Pilates");
     sheet.getRange(booking.row, PILATES_FECHA_COL).setValue(newFecha);
     sheet.getRange(booking.row, PILATES_HORA_COL).setValue(newHora);
     sheet.getRange(booking.row, PILATES_ZONA_HORARIA_COL).setValue(clientTimezone);
     sheet.getRange(booking.row, PILATES_ESTADO_COL).setValue("Reagendada");
     SpreadsheetApp.flush();
+
+    leavePilatesSlot(booking.fecha, booking.hora, booking.correo);
+    refreshCuposPilatesInscritosCache(newFecha, newHora);
   } else {
     // Mismo patrón de LockService que bookNutricionCalendarEvent (US-09): conflict-check y
     // creación/movimiento del evento deben ser atómicos frente a otra reserva casi simultánea

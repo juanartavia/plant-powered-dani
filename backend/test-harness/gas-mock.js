@@ -197,6 +197,35 @@ class MockSpreadsheet {
   }
 }
 
+// Soporte MÍNIMO de expansión de recurrencia para el mock de Calendar.Events.list (US-43,
+// caso real esperado: la instructora crea la clase regular como evento "se repite cada
+// semana" en vez de un evento nuevo a mano cada semana). Solo entiende
+// "RRULE:FREQ=WEEKLY" (+ INTERVAL/COUNT/UNTIL opcionales) — NO es un parser RFC 5545
+// completo (sin BYDAY, sin FREQ=DAILY/MONTHLY, sin EXDATE, etc.). Cualquier patrón de
+// recurrencia más complejo que este sigue siendo un punto ciego del mock: la expansión real
+// la hace el API de Calendar (Calendar.Events.list con singleEvents:true, ya seteado en
+// getPilatesAvailabilityEvents), y solo se puede confirmar de verdad contra Calendar real.
+function parseWeeklyRecurrence(recurrence) {
+  if (!recurrence || !recurrence.length) return null;
+  const rule = recurrence.find((r) => /^RRULE:/.test(r));
+  if (!rule) return null;
+
+  const parts = {};
+  rule.replace("RRULE:", "").split(";").forEach((kv) => {
+    const [k, v] = kv.split("=");
+    parts[k] = v;
+  });
+  if (parts.FREQ !== "WEEKLY") return null; // solo semanal, ver comentario arriba
+
+  return {
+    interval: Number(parts.INTERVAL) || 1,
+    count: parts.COUNT ? Number(parts.COUNT) : null,
+    until: parts.UNTIL
+      ? new Date(`${parts.UNTIL.slice(0, 4)}-${parts.UNTIL.slice(4, 6)}-${parts.UNTIL.slice(6, 8)}T23:59:59Z`)
+      : null,
+  };
+}
+
 function createMockContext() {
   const spreadsheet = new MockSpreadsheet();
 
@@ -222,7 +251,7 @@ function createMockContext() {
     // arriba en NUTRICION_HEADERS. Mismo caso: ninguna de las dos pestañas la tenía antes.
     "contador_reagendamientos",
   ];
-  const CUPOS_HEADERS = ["fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link"];
+  const CUPOS_HEADERS = ["fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link", "disponibilidad_event_id"];
   const CLIENTES_HEADERS = ["correo", "nombre", "apellido", "telefono", "tipo_id", "numero_id", "fecha_nacimiento", "idioma", "cancelaciones_tardias", "requiere_pago"];
 
   spreadsheet.sheets["Nutrición"] = new MockSheet("Nutrición", NUTRICION_HEADERS);
@@ -234,6 +263,10 @@ function createMockContext() {
     _props: {
       SPREADSHEET_ID: "mock-spreadsheet-id",
       PILATES_CALENDAR_ID: "mock-pilates-calendar-id",
+      // US-43: calendario de disponibilidad, DISTINTO de PILATES_CALENDAR_ID (ver comentario
+      // de getPilatesAvailabilityCalendarId en app.ts) — los tests siembran clases ahí
+      // llamando sandbox.Calendar.Events.insert(resource, "mock-pilates-availability-calendar-id").
+      PILATES_AVAILABILITY_CALENDAR_ID: "mock-pilates-availability-calendar-id",
       // US-33: destinatarios de la alerta de cancelación tardía. A propósito son 3 valores
       // DISTINTOS entre sí, a diferencia del entorno de testing real (donde las 3 propiedades
       // apuntan a plantpoweredani.testing@gmail.com por no haber cuentas separadas): así los
@@ -283,6 +316,62 @@ function createMockContext() {
       const key = `${calendarId}::${eventId}`;
       if (!events[key]) throw new Error(`Mock: evento ${eventId} no encontrado en ${calendarId}`);
       delete events[key];
+    },
+    // US-43: getPilatesAvailabilityEvents() lee el calendario de disponibilidad con
+    // Calendar.Events.list(calendarId, { singleEvents: true, ... }) — los tests siembran
+    // eventos ahí con el mismo .insert() de arriba (calendarId =
+    // PILATES_AVAILABILITY_CALENDAR_ID), así este mock no necesita ningún mecanismo de
+    // siembra separado. Filtra por calendarId y por timeMin/timeMax (solo eventos con
+    // start.dateTime, igual que el código real).
+    //
+    // Si el evento guardado tiene "recurrence" (ver parseWeeklyRecurrence arriba), se expande
+    // en instancias individuales AQUÍ, en list-time — igual que hace Calendar real cuando se
+    // pide singleEvents:true (la expansión nunca ocurre al hacer insert()). Cada instancia
+    // recibe su propio id sintético (mismo esquema que usa Calendar real:
+    // "<masterId>_<inicioBasicoISO>") y su propio start/end — el resto de la clase real
+    // getPilatesAvailabilityEvents() no distingue una instancia expandida de un evento suelto.
+    list(calendarId, options) {
+      const timeMin = options && options.timeMin ? new Date(options.timeMin) : null;
+      const timeMax = options && options.timeMax ? new Date(options.timeMax) : null;
+      const prefix = `${calendarId}::`;
+      const inWindow = (d) => (!timeMin || d >= timeMin) && (!timeMax || d <= timeMax);
+
+      const items = [];
+      Object.keys(events)
+        .filter((key) => key.indexOf(prefix) === 0)
+        .forEach((key) => {
+          const ev = events[key];
+          if (!ev.start || !ev.start.dateTime || !ev.end || !ev.end.dateTime) return;
+
+          const recurrence = parseWeeklyRecurrence(ev.recurrence);
+          if (!recurrence) {
+            if (inWindow(new Date(ev.start.dateTime))) items.push(ev);
+            return;
+          }
+
+          const masterStart = new Date(ev.start.dateTime);
+          const durationMs = new Date(ev.end.dateTime).getTime() - masterStart.getTime();
+          const stepMs = recurrence.interval * 7 * 24 * 3600000;
+          for (let n = 0, guard = 0; guard < 520; n++, guard++) {
+            if (recurrence.count !== null && n >= recurrence.count) break;
+            const instanceStart = new Date(masterStart.getTime() + n * stepMs);
+            if (recurrence.until && instanceStart > recurrence.until) break;
+            if (timeMax && instanceStart > timeMax) break; // cota real (ver getPilatesAvailabilityEvents): siempre trae timeMax
+            if (inWindow(instanceStart)) {
+              const instanceEnd = new Date(instanceStart.getTime() + durationMs);
+              const instanceId = `${ev.id}_${instanceStart.toISOString().replace(/[-:]/g, "").replace(/\.\d\d\dZ$/, "Z")}`;
+              items.push(Object.assign({}, ev, {
+                id: instanceId,
+                recurrence: undefined,
+                start: { dateTime: instanceStart.toISOString() },
+                end: { dateTime: instanceEnd.toISOString() },
+              }));
+            }
+          }
+        });
+
+      items.sort((a, b) => new Date(a.start.dateTime).getTime() - new Date(b.start.dateTime).getTime());
+      return { items };
     },
   };
 

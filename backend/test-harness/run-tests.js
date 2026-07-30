@@ -95,6 +95,15 @@ function findTokenRow(sheet, token) {
   return -1;
 }
 
+// Busca la fila (1-based) de Cupos_Pilates por fecha_clase+hora_clase exactas (US-43) —
+// equivalente de prueba de findCuposPilatesRow en app.ts.
+function findRowByFechaHora(cuposSheet, fecha, hora) {
+  for (let i = 1; i < cuposSheet.data.length; i++) {
+    if (cuposSheet.data[i][0] === fecha && cuposSheet.data[i][1] === hora) return i + 1;
+  }
+  return -1;
+}
+
 // ── Test 1: reagendar DENTRO de la ventana de 24hrs → éxito ────────────────────────────
 (function test1() {
   console.log("Test 1: reagendar dentro de la ventana (éxito)");
@@ -1712,6 +1721,255 @@ function getUrlParam(url, name) {
   assert(!!confirmEmail, "el correo de confirmación se envía igual");
   assert(Object.keys(confirmEmail.options.inlineImages || {}).length === 0, "se envía SIN imágenes embebidas cuando falla su carga (degradación con gracia)");
   assert(confirmEmail.options.attachments && confirmEmail.options.attachments.length === 1, "el adjunto .ics NO se pierde por el fallo de las imágenes — son independientes");
+})();
+
+// ── Test 69: getAvailableCapacityForClass — default de 5 sin fila en Cupos_Pilates ──────
+(function test69() {
+  console.log("Test 69: getAvailableCapacityForClass usa el default de MAX_PILATES_PARTICIPANTS (5) sin fila en Cupos_Pilates");
+  const { sandbox } = freshCtx();
+  const cap = sandbox.getAvailableCapacityForClass("2099-01-04", "10:00");
+  assert(cap === 5, "cupo disponible es 5 cuando no existe ninguna fila para ese slot todavía");
+})();
+
+// ── Test 70: max_participantes=2 (US-43) — 2 clientes agendan, el 3ro falla CLASE_LLENA ──
+(function test70() {
+  console.log("Test 70: US-43 — max_participantes=2 en Cupos_Pilates, el 3er cliente no puede agendar");
+  const { sandbox } = freshCtx();
+  const ts = isoInHours(72);
+  const fecha = formatDate(new Date(ts), "America/Costa_Rica", "yyyy-MM-dd");
+  const hora = formatDate(new Date(ts), "America/Costa_Rica", "HH:mm");
+
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  // Simula una fila ya sincronizada (syncPilatesClassesToCuposSheet) con cupo reducido a 2,
+  // como si la instructora hubiese editado max_participantes a mano para una clase especial.
+  cuposSheet.appendRow([fecha, hora, "", 2, "", "", "mock-disponibilidad-event-70"]);
+
+  assert(sandbox.getAvailableCapacityForClass(fecha, hora) === 2, "cupo inicial es 2 (max_participantes de la fila)");
+
+  sandbox.bookTimeslot(
+    "pilates", ts, "Ana", "Solano", "ana-cupo70@test.com", "8888-7001", "cedula", "1-7000-0001",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  assert(sandbox.getAvailableCapacityForClass(fecha, hora) === 1, "cupo baja a 1 tras el 1er agendamiento");
+
+  sandbox.bookTimeslot(
+    "pilates", ts, "Beto", "Salas", "beto-cupo70@test.com", "8888-7002", "cedula", "1-7000-0002",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  assert(sandbox.getAvailableCapacityForClass(fecha, hora) === 0, "cupo llega a 0 tras el 2do agendamiento");
+
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "pilates", ts, "Carla", "Mora", "carla-cupo70@test.com", "8888-7003", "cedula", "1-7000-0003",
+      "1990-01-01", "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "CLASE_LLENA", "el 3er cliente no puede agendar — CLASE_LLENA");
+
+  const cachedInscritos = cuposSheet.getRange(findRowByFechaHora(cuposSheet, fecha, hora), 3, 1, 1).getValue();
+  assert(cachedInscritos === 2, "la columna cacheada 'inscritos' refleja 2 (nunca se incrementó con el intento fallido)");
+})();
+
+// ── Test 71: cancelar libera el cupo — el slot vuelve a estar disponible (US-43) ────────
+(function test71() {
+  console.log("Test 71: US-43 — cancelar una reserva libera el cupo real, no solo un contador cacheado");
+  const { sandbox } = freshCtx();
+  const ts = isoInHours(72);
+  const fecha = formatDate(new Date(ts), "America/Costa_Rica", "yyyy-MM-dd");
+  const hora = formatDate(new Date(ts), "America/Costa_Rica", "HH:mm");
+
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  cuposSheet.appendRow([fecha, hora, "", 1, "", "", "mock-disponibilidad-event-71"]);
+
+  const token = sandbox.bookTimeslot(
+    "pilates", ts, "Dario", "Leon", "dario-cupo71@test.com", "8888-7101", "cedula", "1-7100-0001",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  assert(sandbox.getAvailableCapacityForClass(fecha, hora) === 0, "el único cupo (max=1) queda ocupado");
+
+  sandbox.cancelBooking(token);
+  assert(sandbox.getAvailableCapacityForClass(fecha, hora) === 1, "cancelar libera el cupo de inmediato (conteo en vivo desde 'Pilates', no un rollback manual)");
+
+  const returnedToken = sandbox.bookTimeslot(
+    "pilates", ts, "Elena", "Prado", "elena-cupo71@test.com", "8888-7102", "cedula", "1-7100-0002",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  assert(!!returnedToken, "otro cliente puede tomar el cupo que quedó libre tras la cancelación");
+})();
+
+// ── Test 72: reagendar hacia una clase llena se bloquea con CLASE_LLENA (US-43) ─────────
+(function test72() {
+  console.log("Test 72: US-43 — reagendar pilates hacia una clase llena se bloquea, el cliente conserva su cita original");
+  const { sandbox } = freshCtx();
+  const tsOrigen = isoInHours(72);
+  const tsDestino = isoInHours(120);
+  const fechaDestino = formatDate(new Date(tsDestino), "America/Costa_Rica", "yyyy-MM-dd");
+  const horaDestino = formatDate(new Date(tsDestino), "America/Costa_Rica", "HH:mm");
+
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  cuposSheet.appendRow([fechaDestino, horaDestino, "", 1, "", "", "mock-disponibilidad-event-72"]);
+  // Otro cliente ya ocupa el único cupo del slot destino.
+  sandbox.bookTimeslot(
+    "pilates", tsDestino, "Fabiola", "Rios", "fabiola-cupo72@test.com", "8888-7201", "cedula", "1-7200-0001",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+
+  const tokenOrigen = sandbox.bookTimeslot(
+    "pilates", tsOrigen, "Gerardo", "Nuñez", "gerardo-cupo72@test.com", "8888-7202", "cedula", "1-7200-0002",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+
+  let threw = null;
+  try {
+    sandbox.rescheduleBooking(tokenOrigen, tsDestino, "America/Costa_Rica");
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "CLASE_LLENA", "rescheduleBooking bloquea con CLASE_LLENA cuando el slot destino está lleno");
+
+  const pilSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Pilates");
+  const rowOrigen = findTokenRow(pilSheet, tokenOrigen);
+  assert(pilSheet.getRange(rowOrigen, 13, 1, 1).getValue() === "Agendada", "la cita original NO cambia de estado — el cliente conserva su clase");
+  assert(
+    pilSheet.getRange(rowOrigen, 9, 1, 1).getValue() === formatDate(new Date(tsOrigen), "", "yyyy-MM-dd"),
+    "la cita original conserva su fecha_clase original"
+  );
+})();
+
+// ── Test 73: fetchAvailability("pilates") sale del calendario de disponibilidad (US-43) ──
+(function test73() {
+  console.log("Test 73: fetchAvailability('pilates') lee el calendario de disponibilidad y excluye clases sin cupo");
+  const { sandbox } = freshCtx();
+  const availabilityCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+
+  // Redondeado al minuto: fecha_clase/hora_clase (US-05) solo guardan precisión de minuto
+  // (ver appendBookingToSheet/parseSheetDateTime) — sin este redondeo, el ISO reconstruido
+  // por fetchAvailability a partir de fecha/hora nunca calzaría exacto contra el ISO original
+  // (que sí trae segundos/milisegundos de Date.now()).
+  const tsLibre = new Date(Math.floor(new Date(isoInHours(200)).getTime() / 60000) * 60000).toISOString();
+  const tsLlena = new Date(Math.floor(new Date(isoInHours(300)).getTime() / 60000) * 60000).toISOString();
+  const fechaLibre = formatDate(new Date(tsLibre), "America/Costa_Rica", "yyyy-MM-dd");
+  const horaLibre = formatDate(new Date(tsLibre), "America/Costa_Rica", "HH:mm");
+  const fechaLlena = formatDate(new Date(tsLlena), "America/Costa_Rica", "yyyy-MM-dd");
+  const horaLlena = formatDate(new Date(tsLlena), "America/Costa_Rica", "HH:mm");
+
+  // La instructora marcó 2 clases en su calendario de disponibilidad.
+  sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates", start: { dateTime: new Date(tsLibre).toISOString() }, end: { dateTime: new Date(new Date(tsLibre).getTime() + 3600000).toISOString() } },
+    availabilityCalId
+  );
+  sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates (especial, cupo reducido)", start: { dateTime: new Date(tsLlena).toISOString() }, end: { dateTime: new Date(new Date(tsLlena).getTime() + 3600000).toISOString() } },
+    availabilityCalId
+  );
+
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  cuposSheet.appendRow([fechaLlena, horaLlena, "", 1, "", "", "mock-disponibilidad-event-73"]);
+  sandbox.bookTimeslot(
+    "pilates", tsLlena, "Hilda", "Campos", "hilda-cupo73@test.com", "8888-7301", "cedula", "1-7300-0001",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+
+  const { timeslots, durationMinutes } = sandbox.fetchAvailability("pilates");
+  const isoLibre = new Date(tsLibre).toISOString();
+  const isoLlena = new Date(tsLlena).toISOString();
+  assert(durationMinutes === 60, "durationMinutes sigue siendo 60 (getDurationForType('pilates'))");
+  assert(timeslots.indexOf(isoLibre) >= 0, "la clase con cupo disponible SÍ aparece en fetchAvailability");
+  assert(timeslots.indexOf(isoLlena) < 0, "la clase con cupo=0 NO aparece en fetchAvailability — no depende de sábados/10am hardcodeado");
+})();
+
+// ── Test 74: syncPilatesClassesToCuposSheet — idempotente, no pisa max_participantes ────
+(function test74() {
+  console.log("Test 74: syncPilatesClassesToCuposSheet crea filas nuevas sin duplicar y sin pisar ediciones manuales");
+  const { sandbox } = freshCtx();
+  const availabilityCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+  const ts = isoInHours(150);
+  const fecha = formatDate(new Date(ts), "America/Costa_Rica", "yyyy-MM-dd");
+  const hora = formatDate(new Date(ts), "America/Costa_Rica", "HH:mm");
+
+  const inserted = sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates", start: { dateTime: new Date(ts).toISOString() }, end: { dateTime: new Date(new Date(ts).getTime() + 3600000).toISOString() } },
+    availabilityCalId
+  );
+
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  const rowsBefore = cuposSheet.data.length;
+
+  sandbox.syncPilatesClassesToCuposSheet();
+  assert(cuposSheet.data.length === rowsBefore + 1, "1ra corrida crea exactamente 1 fila nueva para la clase sembrada");
+
+  const row = findRowByFechaHora(cuposSheet, fecha, hora);
+  assert(row > 0, "la fila creada tiene la fecha/hora correctas");
+  assert(cuposSheet.getRange(row, 7, 1, 1).getValue() === inserted.id, "guarda el event_id del calendario de disponibilidad en la columna G (disponibilidad_event_id)");
+  assert(cuposSheet.getRange(row, 5, 1, 1).getValue() === "", "NO toca event_id (columna E, operativo) — sigue vacío hasta la primera reserva real");
+
+  // La instructora edita a mano el cupo de esta clase.
+  cuposSheet.getRange(row, 4, 1, 1).setValue(3);
+
+  sandbox.syncPilatesClassesToCuposSheet();
+  assert(cuposSheet.data.length === rowsBefore + 1, "2da corrida NO duplica la fila (misma disponibilidad_event_id)");
+  assert(cuposSheet.getRange(row, 4, 1, 1).getValue() === 3, "2da corrida NO pisa max_participantes editado a mano");
+})();
+
+// ── Test 75: evento RECURRENTE semanal ("se repite cada semana") se expande en varias ──
+// clases independientes, no en una sola (US-43, caso realista: la instructora marca la
+// clase regular como recurrente en vez de crear un evento nuevo a mano cada semana).
+//
+// ⚠️ Lo que este test SÍ prueba: que getPilatesAvailabilityEvents()/syncPilatesClassesToCuposSheet
+// tratan cada instancia devuelta por Calendar.Events.list() como un slot independiente (con
+// su propio event_id, fecha/hora) — el código de app.ts no distingue una instancia expandida
+// de un evento suelto, así que esto ya cubre esa parte real.
+// ⚠️ Lo que este test NO prueba: que Calendar real expanda la recurrencia exactamente así —
+// eso es responsabilidad documentada del API de Calendar (singleEvents:true, ver
+// getPilatesAvailabilityEvents) y del soporte MÍNIMO de RRULE agregado a gas-mock.js para
+// esta prueba (solo FREQ=WEEKLY, ver parseWeeklyRecurrence) — sigue siendo un punto ciego
+// del harness para patrones de recurrencia más complejos, solo confirmable contra Calendar
+// real con una clase recurrente de verdad.
+(function test75() {
+  console.log("Test 75: un evento recurrente semanal se expande en múltiples clases independientes, no en una sola");
+  const { sandbox } = freshCtx();
+  const availabilityCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+  const masterStart = new Date(isoInHours(72)); // "la clase de siempre", empieza en ~3 días
+
+  // Recurrencia SEMANAL indefinida (sin COUNT ni UNTIL) — el caso más realista: la
+  // instructora la crea una vez y "se repite cada semana" para siempre, no por N semanas.
+  sandbox.Calendar.Events.insert(
+    {
+      summary: "Clase de Pilates (recurrente)",
+      start: { dateTime: masterStart.toISOString() },
+      end: { dateTime: new Date(masterStart.getTime() + 3600000).toISOString() },
+      recurrence: ["RRULE:FREQ=WEEKLY"],
+    },
+    availabilityCalId
+  );
+
+  const slots = sandbox.getPilatesAvailabilityEvents();
+  assert(slots.length > 1, "el evento recurrente se expande en MÁS de 1 clase (no se lee solo el evento 'maestro')");
+
+  // Todas las instancias deben caer exactamente cada 7 días, a la misma hora del día.
+  const sortedFechas = slots.map((s) => s.fecha).slice().sort();
+  const horas = new Set(slots.map((s) => s.hora));
+  assert(horas.size === 1, "todas las instancias expandidas conservan la misma hora del día");
+  let sieteEnSiete = true;
+  for (let i = 1; i < sortedFechas.length; i++) {
+    const diffDays = (new Date(`${sortedFechas[i]}T00:00:00Z`).getTime() - new Date(`${sortedFechas[i - 1]}T00:00:00Z`).getTime()) / (24 * 3600000);
+    if (diffDays !== 7) sieteEnSiete = false;
+  }
+  assert(sieteEnSiete, "las instancias expandidas están espaciadas exactamente 7 días entre sí");
+
+  // syncPilatesClassesToCuposSheet debe crear una fila POR INSTANCIA, no 1 sola fila para
+  // toda la recurrencia — cada instancia tiene su propio disponibilidad_event_id sintético.
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  const rowsBefore = cuposSheet.data.length;
+  sandbox.syncPilatesClassesToCuposSheet();
+  assert(cuposSheet.data.length === rowsBefore + slots.length, "sync crea 1 fila de Cupos_Pilates por CADA instancia expandida");
+
+  // Y el portal debe poder agendar en más de una de esas fechas — no una sola disponible.
+  const { timeslots } = sandbox.fetchAvailability("pilates");
+  assert(timeslots.length === slots.length, "fetchAvailability('pilates') ofrece TODAS las instancias expandidas, no solo la primera");
 })();
 
 console.log(`\n${passed} pasaron, ${failed} fallaron`);

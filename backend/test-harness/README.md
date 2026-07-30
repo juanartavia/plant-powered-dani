@@ -27,3 +27,31 @@ calendario" (formato UTC básico/extendido, ubicación física/virtual), el endp
 `?action=ics` (token válido/inválido/cancelado, y que refleja la fecha NUEVA tras un
 reagendamiento) y la invitación .ics real (METHOD:REQUEST) adjunta al correo de
 confirmación, incluyendo degradación con gracia si falla su construcción.
+
+**US-43 (cupos de pilates vía calendario de disponibilidad):** `gas-mock.js` agrega
+`Calendar.Events.list` (reutiliza el mismo store en memoria de `.insert`, filtrando por
+calendarId/timeMin/timeMax) y el Script Property `PILATES_AVAILABILITY_CALENDAR_ID`, para
+poder sembrar clases de prueba con `sandbox.Calendar.Events.insert(resource,
+availabilityCalendarId)` sin necesitar ningún mecanismo de siembra separado. Los tests 69-74
+cubren: `getAvailableCapacityForClass` (default de 5 sin fila, y con `max_participantes`
+editado a mano), `CLASE_LLENA` al agendar y al reagendar hacia una clase llena (la cita
+original nunca cambia si el reagendamiento se bloquea), que cancelar libera el cupo de
+inmediato (conteo en vivo desde "Pilates", no un rollback manual de un contador), que
+`fetchAvailability("pilates")` ya no depende de sábados/10am hardcodeado sino del calendario
+de disponibilidad + cupo real, y que `syncPilatesClassesToCuposSheet` es idempotente (no
+duplica filas en corridas repetidas) y nunca pisa `max_participantes` ya editado a mano.
+Blind spot conocido: el mock de `Calendar.Events.list` no reproduce ningún límite de
+paginación (`pageToken`) del API real — irrelevante hoy dado el volumen bajo de clases, pero
+a tener en cuenta si el número de clases de disponibilidad creciera mucho.
+
+**Recurrencia (Test 75):** `Calendar.Events.list` del mock ahora expande eventos con
+`recurrence: ["RRULE:FREQ=WEEKLY..."]` en instancias individuales, en list-time — igual que
+hace Calendar real cuando se pide `singleEvents:true` (que `getPilatesAvailabilityEvents()`
+ya envía). Soporte MÍNIMO a propósito: solo `FREQ=WEEKLY` (+ `INTERVAL`/`COUNT`/`UNTIL`
+opcionales, ver `parseWeeklyRecurrence` en `gas-mock.js`) — no es un parser RFC 5545 completo
+(sin `BYDAY`, sin `FREQ=DAILY/MONTHLY`, sin `EXDATE`). Test 75 confirma que el código de
+`app.ts` trata cada instancia expandida como un slot independiente (su propio
+`disponibilidad_event_id`, su propia fila en `Cupos_Pilates`, su propio timeslot en
+`fetchAvailability`) — **lo que NO confirma** es que Calendar real expanda la recurrencia
+exactamente así; eso es responsabilidad documentada del API y solo se puede validar contra
+Calendar real con una clase recurrente de verdad (parte del checklist de deploy de US-43).
