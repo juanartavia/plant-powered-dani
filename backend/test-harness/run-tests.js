@@ -104,6 +104,20 @@ function findRowByFechaHora(cuposSheet, fecha, hora) {
   return -1;
 }
 
+// Extrae la duración real (minutos) de un contenido .ics a partir de DTSTART/DTEND (mismo
+// formato yyyyMMdd'T'HHmmss'Z' que arma buildIcsContent) — usado por las pruebas de US-45
+// para confirmar que el .ics (adjunto al correo o descargado vía ?action=ics) refleja la
+// duración REAL de la clase de pilates, no un fijo de 60 min.
+function icsDurationMinutes(icsContent) {
+  const parseStamp = (s) => Date.UTC(
+    Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)),
+    Number(s.slice(9, 11)), Number(s.slice(11, 13)), Number(s.slice(13, 15))
+  );
+  const dtstart = (icsContent.match(/DTSTART:(\S+)/) || [])[1];
+  const dtend = (icsContent.match(/DTEND:(\S+)/) || [])[1];
+  return (parseStamp(dtend) - parseStamp(dtstart)) / 60000;
+}
+
 // ── Test 1: reagendar DENTRO de la ventana de 24hrs → éxito ────────────────────────────
 (function test1() {
   console.log("Test 1: reagendar dentro de la ventana (éxito)");
@@ -1288,6 +1302,7 @@ function getUrlParam(url, name) {
     apptInstant,
     esVirtual: false,
     token: "tok-45",
+    durationMinutes: 60,
   });
   assert(getUrlParam(links.addCalGoogleLink, "dates") === "20260810T150000Z/20260810T160000Z", "Google: dates en UTC básico (yyyyMMdd'T'HHmmss'Z'), duración de 60min (initial)");
   assert(getUrlParam(links.addCalOutlookLink, "startdt") === "2026-08-10T15:00:00Z", "Outlook: startdt en UTC extendido (yyyy-MM-dd'T'HH:mm:ss'Z'), NO en hora local");
@@ -1311,6 +1326,7 @@ function getUrlParam(url, name) {
     esVirtual: true,
     meetLink: "https://meet.google.com/abc-defg-hij",
     token: "tok-46",
+    durationMinutes: 45,
   });
   const location = getUrlParam(links.addCalGoogleLink, "location");
   assert(location === "Google Meet: https://meet.google.com/abc-defg-hij", "virtual: la ubicación es el link de Meet, no la dirección física del consultorio");
@@ -1330,9 +1346,10 @@ function getUrlParam(url, name) {
     esVirtual: true,
     meetLink: "https://meet.google.com/pilates-slot",
     token: "tok-47",
+    durationMinutes: 60,
   });
   assert(getUrlParam(links.addCalGoogleLink, "text") === "Clase de pilates — Plant Powered by Dani", "pilates: título distinto al de una cita de nutrición");
-  assert(getUrlParam(links.addCalGoogleLink, "dates") === "20260815T160000Z/20260815T170000Z", "pilates dura 60min");
+  assert(getUrlParam(links.addCalGoogleLink, "dates") === "20260815T160000Z/20260815T170000Z", "pilates dura 60min (durationMinutes pasado explícitamente por el caller, US-45)");
 })();
 
 // ── Test 48: buildBookingIcsContent — método PUBLISH (endpoint de descarga) ─────────────
@@ -1349,6 +1366,7 @@ function getUrlParam(url, name) {
     esVirtual: false,
     method: "PUBLISH",
     sequence: 0,
+    durationMinutes: 60,
   });
   assert(ics.indexOf("BEGIN:VCALENDAR") === 0, "arranca con BEGIN:VCALENDAR");
   assert(ics.indexOf("METHOD:PUBLISH") >= 0, "declara METHOD:PUBLISH");
@@ -1376,6 +1394,7 @@ function getUrlParam(url, name) {
     sequence: 2,
     organizerEmail: "dani@test.com",
     attendeeEmail: "cliente@test.com",
+    durationMinutes: 60,
   });
   assert(ics.indexOf("METHOD:REQUEST") >= 0, "declara METHOD:REQUEST");
   assert(ics.indexOf("SEQUENCE:2") >= 0, "SEQUENCE refleja el parámetro (2, ej. un 2do reagendamiento)");
@@ -1970,6 +1989,178 @@ function getUrlParam(url, name) {
   // Y el portal debe poder agendar en más de una de esas fechas — no una sola disponible.
   const { timeslots } = sandbox.fetchAvailability("pilates");
   assert(timeslots.length === slots.length, "fetchAvailability('pilates') ofrece TODAS las instancias expandidas, no solo la primera");
+})();
+
+// ── Test 76: US-45 — clase de pilates de 45 min: ya NO se trata como si durara 60 min ───
+(function test76() {
+  console.log("Test 76: US-45 — clase de pilates de 45 min: fetchAvailability, hora de fin real y .ics reflejan 45 min, no 60 fijos");
+  const { sandbox } = freshCtx();
+  const availabilityCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+  const pilatesCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_CALENDAR_ID");
+
+  const ts = new Date(Math.floor(new Date(isoInHours(200)).getTime() / 60000) * 60000).toISOString();
+  const fecha = formatDate(new Date(ts), "America/Costa_Rica", "yyyy-MM-dd");
+  const hora = formatDate(new Date(ts), "America/Costa_Rica", "HH:mm");
+
+  // La instructora marca una clase ESPECIAL de 45 min (no la duración regular de 60).
+  sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates (especial, 45 min)", start: { dateTime: ts }, end: { dateTime: new Date(new Date(ts).getTime() + 45 * 60000).toISOString() } },
+    availabilityCalId
+  );
+
+  // El trigger horario ya corrió (mismo flujo real del checklist de deploy) — puebla
+  // Cupos_Pilates con duracion_minutos=45 para este slot ANTES de que nadie reserve.
+  sandbox.syncPilatesClassesToCuposSheet();
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  const cuposRow = findRowByFechaHora(cuposSheet, fecha, hora);
+  assert(cuposRow > 0, "el sync crea la fila de Cupos_Pilates para la clase de 45 min");
+  assert(cuposSheet.getRange(cuposRow, 8, 1, 1).getValue() === 45, "duracion_minutos (columna H) queda en 45, calculada de fin-inicio del evento real, no 60 fijos");
+
+  const { timeslots, slotDurations } = sandbox.fetchAvailability("pilates");
+  const iso = new Date(ts).toISOString();
+  assert(timeslots.indexOf(iso) >= 0, "fetchAvailability ofrece la clase de 45 min");
+  assert(slotDurations[iso] === 45, "slotDurations trae 45 para este slot específico — el frontend puede mostrar '45 min', no un '60 min' fijo");
+
+  sandbox.bookTimeslot(
+    "pilates", ts, "Marta", "Solis", "marta-45min@test.com", "8888-7601", "cedula", "1-7600-0001",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+
+  const eventId = cuposSheet.getRange(cuposRow, 5, 1, 1).getValue();
+  assert(!!eventId, "la reserva crea el evento OPERATIVO en Cupos_Pilates (columna E, event_id)");
+  const operativeEvent = sandbox.Calendar.Events.get(pilatesCalId, eventId);
+  const operativeDurationMin = (new Date(operativeEvent.end.dateTime).getTime() - new Date(operativeEvent.start.dateTime).getTime()) / 60000;
+  assert(operativeDurationMin === 45, "la reserva calcula la hora de fin del evento OPERATIVO con 45 min reales, no 60 min fijos");
+
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "marta-45min@test.com");
+  assert(!!confirmEmail, "se envía el correo de confirmación");
+  const attachments = (confirmEmail.options && confirmEmail.options.attachments) || [];
+  assert(attachments.length === 1, "el correo trae el adjunto .ics");
+  assert(icsDurationMinutes(attachments[0].getDataAsString()) === 45, "el .ics adjunto al correo de confirmación (DTEND-DTSTART) refleja 45 min, no 60 fijos");
+})();
+
+// ── Test 77: US-45 — una clase de pilates REGULAR de 60 min sigue funcionando igual ─────
+(function test77() {
+  console.log("Test 77: US-45 (regresión) — una clase de pilates de 60 min (la regular) se sigue reservando exactamente igual que antes de esta tarjeta");
+  const { sandbox } = freshCtx();
+  const availabilityCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+  const pilatesCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_CALENDAR_ID");
+
+  const ts = new Date(Math.floor(new Date(isoInHours(200)).getTime() / 60000) * 60000).toISOString();
+  const fecha = formatDate(new Date(ts), "America/Costa_Rica", "yyyy-MM-dd");
+  const hora = formatDate(new Date(ts), "America/Costa_Rica", "HH:mm");
+
+  sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates", start: { dateTime: ts }, end: { dateTime: new Date(new Date(ts).getTime() + 60 * 60000).toISOString() } },
+    availabilityCalId
+  );
+  sandbox.syncPilatesClassesToCuposSheet();
+
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  const cuposRow = findRowByFechaHora(cuposSheet, fecha, hora);
+  assert(cuposSheet.getRange(cuposRow, 8, 1, 1).getValue() === 60, "duracion_minutos (columna H) queda en 60 para la clase regular");
+
+  const { slotDurations } = sandbox.fetchAvailability("pilates");
+  assert(slotDurations[new Date(ts).toISOString()] === 60, "slotDurations trae 60 para la clase regular");
+
+  sandbox.bookTimeslot(
+    "pilates", ts, "Elena", "Ruiz", "elena-60min@test.com", "8888-7602", "cedula", "1-7600-0002",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+
+  const eventId = cuposSheet.getRange(cuposRow, 5, 1, 1).getValue();
+  const operativeEvent = sandbox.Calendar.Events.get(pilatesCalId, eventId);
+  const operativeDurationMin = (new Date(operativeEvent.end.dateTime).getTime() - new Date(operativeEvent.start.dateTime).getTime()) / 60000;
+  assert(operativeDurationMin === 60, "el evento OPERATIVO sigue durando 60 min para la clase regular");
+
+  const sent = sandbox.__sentEmails || [];
+  const confirmEmail = sent.find((e) => e.to === "elena-60min@test.com");
+  const attachments = (confirmEmail.options && confirmEmail.options.attachments) || [];
+  assert(icsDurationMinutes(attachments[0].getDataAsString()) === 60, "el .ics adjunto sigue reflejando 60 min para la clase regular");
+})();
+
+// ── Test 78: US-45 — rescheduleBooking (pilates) toma la duración de la clase DESTINO ───
+(function test78() {
+  console.log("Test 78: US-45 — reagendar pilates de 60min→45min y de 45min→60min usa SIEMPRE la duración de la clase DESTINO, no la de la cita original");
+  const { sandbox } = freshCtx();
+  const availabilityCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+  const pilatesCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_CALENDAR_ID");
+
+  const round = (iso) => new Date(Math.floor(new Date(iso).getTime() / 60000) * 60000).toISOString();
+  const tsA = round(isoInHours(200)); // clase A: 60 min
+  const tsB = round(isoInHours(250)); // clase B: 45 min
+  const fechaB = formatDate(new Date(tsB), "America/Costa_Rica", "yyyy-MM-dd");
+  const horaB = formatDate(new Date(tsB), "America/Costa_Rica", "HH:mm");
+  const fechaA = formatDate(new Date(tsA), "America/Costa_Rica", "yyyy-MM-dd");
+  const horaA = formatDate(new Date(tsA), "America/Costa_Rica", "HH:mm");
+
+  sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates (A, 60min)", start: { dateTime: tsA }, end: { dateTime: new Date(new Date(tsA).getTime() + 60 * 60000).toISOString() } },
+    availabilityCalId
+  );
+  sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates (B, 45min)", start: { dateTime: tsB }, end: { dateTime: new Date(new Date(tsB).getTime() + 45 * 60000).toISOString() } },
+    availabilityCalId
+  );
+  sandbox.syncPilatesClassesToCuposSheet();
+
+  const cuposSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Cupos_Pilates");
+  const rowA = findRowByFechaHora(cuposSheet, fechaA, horaA);
+  const rowB = findRowByFechaHora(cuposSheet, fechaB, horaB);
+
+  const token = sandbox.bookTimeslot(
+    "pilates", tsA, "Gina", "Perez", "gina-reschedule@test.com", "8888-7603", "cedula", "1-7600-0003",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+
+  // 60 min (A) → 45 min (B): la cita destino debe quedar en 45 min, no heredar los 60 de A.
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, tsB, "America/Costa_Rica");
+  const eventIdB = cuposSheet.getRange(rowB, 5, 1, 1).getValue();
+  assert(!!eventIdB, "el reagendamiento crea/usa el evento OPERATIVO de la clase B");
+  const eventB = sandbox.Calendar.Events.get(pilatesCalId, eventIdB);
+  const durB = (new Date(eventB.end.dateTime).getTime() - new Date(eventB.start.dateTime).getTime()) / 60000;
+  assert(durB === 45, "60min→45min: el evento OPERATIVO tras reagendar dura 45 min (duración de la clase DESTINO), no 60");
+  const sentReagendarB = (sandbox.__sentEmails || []).find((e) => e.to === "gina-reschedule@test.com");
+  const icsB = ((sentReagendarB.options && sentReagendarB.options.attachments) || [])[0].getDataAsString();
+  assert(icsDurationMinutes(icsB) === 45, "60min→45min: el .ics del correo de reagendamiento refleja 45 min");
+
+  // 45 min (B) → 60 min (A), de vuelta: confirma el caso simétrico, no solo un sentido.
+  sandbox.__sentEmails = [];
+  sandbox.rescheduleBooking(token, tsA, "America/Costa_Rica");
+  const eventIdA = cuposSheet.getRange(rowA, 5, 1, 1).getValue();
+  assert(!!eventIdA, "el segundo reagendamiento crea/usa el evento OPERATIVO de la clase A");
+  const eventA = sandbox.Calendar.Events.get(pilatesCalId, eventIdA);
+  const durA = (new Date(eventA.end.dateTime).getTime() - new Date(eventA.start.dateTime).getTime()) / 60000;
+  assert(durA === 60, "45min→60min (vuelta): el evento OPERATIVO tras reagendar dura 60 min (duración de la clase DESTINO), no 45");
+  const sentReagendarA = (sandbox.__sentEmails || []).find((e) => e.to === "gina-reschedule@test.com");
+  const icsA = ((sentReagendarA.options && sentReagendarA.options.attachments) || [])[0].getDataAsString();
+  assert(icsDurationMinutes(icsA) === 60, "45min→60min (vuelta): el .ics del correo de reagendamiento refleja 60 min");
+})();
+
+// ── Test 79: US-45 — installPilatesAvailabilitySyncTrigger pasa de cada hora a cada 5 min ──
+// sin dejar el trigger viejo corriendo en paralelo con el nuevo.
+(function test79() {
+  console.log("Test 79: installPilatesAvailabilitySyncTrigger — everyMinutes(5), y borra cualquier trigger viejo antes de instalar el nuevo (nunca deja 2 en paralelo)");
+  const { sandbox } = freshCtx();
+
+  // Simula el estado real ANTES de esta tarjeta: un trigger de cada hora ya instalado desde
+  // US-43 (exactamente lo que tiene hoy el proyecto de testing real).
+  sandbox.ScriptApp.newTrigger("syncPilatesClassesToCuposSheet").timeBased().everyHours(1).create();
+  assert(sandbox.ScriptApp.getProjectTriggers().length === 1, "arranca con 1 solo trigger (el viejo de cada hora, simulando el estado real pre-US-45)");
+
+  sandbox.installPilatesAvailabilitySyncTrigger();
+  let triggers = sandbox.ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === "syncPilatesClassesToCuposSheet");
+  assert(triggers.length === 1, "después de reinstalar, sigue habiendo EXACTAMENTE 1 trigger — el viejo de cada hora no quedó corriendo en paralelo");
+  assert(triggers[0]._period === "everyMinutes(5)", "el trigger que queda instalado es de cada 5 minutos, no cada hora");
+
+  // Volver a correrla (p. ej. por error, o para confirmar que es segura de re-ejecutar) NO
+  // debe duplicar el trigger de 5 minutos tampoco.
+  sandbox.installPilatesAvailabilitySyncTrigger();
+  triggers = sandbox.ScriptApp.getProjectTriggers().filter((t) => t.getHandlerFunction() === "syncPilatesClassesToCuposSheet");
+  assert(triggers.length === 1, "correr la función una 2da vez sigue dejando exactamente 1 trigger, nunca 2+");
+  assert(triggers[0]._period === "everyMinutes(5)", "sigue siendo el de 5 minutos tras la 2da corrida");
 })();
 
 console.log(`\n${passed} pasaron, ${failed} fallaron`);

@@ -251,7 +251,10 @@ function createMockContext() {
     // arriba en NUTRICION_HEADERS. Mismo caso: ninguna de las dos pestañas la tenía antes.
     "contador_reagendamientos",
   ];
-  const CUPOS_HEADERS = ["fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link", "disponibilidad_event_id"];
+  // "duracion_minutos" (col 8) agregada en US-45 — refleja el estado del Sheet real DESPUÉS
+  // de correr addDuracionMinutosColumnToCuposPilates() (migración manual, ver app.ts), mismo
+  // criterio que "disponibilidad_event_id" (col 7, US-43) arriba.
+  const CUPOS_HEADERS = ["fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link", "disponibilidad_event_id", "duracion_minutos"];
   const CLIENTES_HEADERS = ["correo", "nombre", "apellido", "telefono", "tipo_id", "numero_id", "fecha_nacimiento", "idioma", "cancelaciones_tardias", "requiere_pago"];
 
   spreadsheet.sheets["Nutrición"] = new MockSheet("Nutrición", NUTRICION_HEADERS);
@@ -496,15 +499,32 @@ function createMockContext() {
     // Mock de US-14: getProjectTriggers()/newTrigger() para installRemindersTrigger — no
     // testeado línea por línea en el harness (se ejecuta manualmente en el editor real), pero
     // se deja el mock mínimo para que no truene si algún test llega a invocarla.
+    // deleteTrigger()/everyMinutes() agregados en US-45 para installPilatesAvailabilitySyncTrigger
+    // (que ahora borra el/los trigger(s) viejo(s) antes de instalar el de 5 minutos, ver Test 79)
+    // — cada trigger creado guarda su período (_period) para que los tests puedan verificar
+    // CUÁL frecuencia quedó instalada, no solo que "algún" trigger existe.
     ScriptApp: {
       getService: () => ({ getUrl: () => "https://mock-script-url.example/exec" }),
       getProjectTriggers: () => sandbox.__triggers || [],
+      deleteTrigger: (trigger) => {
+        sandbox.__triggers = (sandbox.__triggers || []).filter((t) => t !== trigger);
+      },
       newTrigger: (handlerFunction) => ({
         timeBased: () => ({
-          everyHours: () => ({
+          everyHours: (n) => ({
             create: () => {
               sandbox.__triggers = sandbox.__triggers || [];
-              sandbox.__triggers.push({ getHandlerFunction: () => handlerFunction });
+              const trigger = { getHandlerFunction: () => handlerFunction, _period: `everyHours(${n})` };
+              sandbox.__triggers.push(trigger);
+              return trigger;
+            },
+          }),
+          everyMinutes: (n) => ({
+            create: () => {
+              sandbox.__triggers = sandbox.__triggers || [];
+              const trigger = { getHandlerFunction: () => handlerFunction, _period: `everyMinutes(${n})` };
+              sandbox.__triggers.push(trigger);
+              return trigger;
             },
           }),
         }),

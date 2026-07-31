@@ -4,6 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 export function useGoogleTimeslots(type: string) {
   const [availableGoogleSlots, setAvailableGoogleSlots] = useState<Date[]>([]);
   const [durationMinutes, setDurationMinutes] = useState(30);
+  // US-45 — duración real por slot de pilates (ISO string -> minutos), undefined/vacío para
+  // nutrición (duración uniforme por tipo, no lo necesita — ver `durationMinutes` arriba).
+  const [slotDurations, setSlotDurations] = useState<Record<string, number>>({});
   const [error, setError] = useState<Error | null>(null);
   const [status, setStatus] = useState<
     "idle" | "pending" | "success" | "error"
@@ -27,14 +30,17 @@ export function useGoogleTimeslots(type: string) {
         .withSuccessHandler(function ({
           timeslots,
           durationMinutes,
+          slotDurations,
         }: {
           timeslots: string[];
           durationMinutes: number;
+          slotDurations?: Record<string, number>;
         }) {
           setAvailableGoogleSlots(
             timeslots.map((timeslot) => new Date(timeslot))
           );
           setDurationMinutes(durationMinutes);
+          setSlotDurations(slotDurations ?? {});
           setStatus("success");
         })
         .withFailureHandler(function (err: Error) {
@@ -49,5 +55,5 @@ export function useGoogleTimeslots(type: string) {
     }
   }, [type, refreshIndex]);
 
-  return [availableGoogleSlots, durationMinutes, status, error, reset, refetch] as const;
+  return [availableGoogleSlots, durationMinutes, slotDurations, status, error, reset, refetch] as const;
 }

@@ -73,7 +73,9 @@ const STRINGS = {
       initial:     "Consulta Inicial (60 min)",
       followup:    "Cita de Seguimiento (45 min)",
       measurement: "Solo Medición (15 min)",
-      pilates:     "Clase de Pilates (60 min)",
+      // Sin duración fija (US-45): la clase de pilates ya no siempre dura 60 min — el "(X min)"
+      // se arma dinámicamente según la clase específica, ver `title` en CalendarPicker.
+      pilates:     "Clase de Pilates",
     } as Record<string, string>,
     defaultTitle: "Sistema de Citas",
     yourTimezone: "Tu zona horaria",
@@ -131,7 +133,9 @@ const STRINGS = {
       initial:     "Initial Consultation (60 min)",
       followup:    "Follow-up Appointment (45 min)",
       measurement: "Measurement Only (15 min)",
-      pilates:     "Pilates Class (60 min)",
+      // No fixed duration (US-45): pilates classes no longer always run 60 min — the "(X min)"
+      // is built dynamically per specific class, see `title` in CalendarPicker.
+      pilates:     "Pilates Class",
     } as Record<string, string>,
     defaultTitle: "Appointment Scheduler",
     yourTimezone: "Your Timezone",
@@ -235,7 +239,6 @@ export function CalendarPicker() {
   const appointmentType = window.APPOINTMENT_TYPE ?? "";
   const [uiLanguage, setUiLanguage] = useState<UiLanguage>("es");
   const t = STRINGS[uiLanguage];
-  const title = t.appointmentTitles[appointmentType] ?? t.defaultTitle;
   const dateFnsLocale = uiLanguage === "es" ? { locale: esLocale } : undefined;
 
   const [TimezoneDropdown, timezone] = useTimezoneDropdown();
@@ -243,6 +246,12 @@ export function CalendarPicker() {
   const [selectedTimeSlot, setSelectedTimeSlot] = useState<Date | undefined>(
     undefined
   );
+  // US-45 — duración (minutos) de la clase de pilates seleccionada, capturada junto con
+  // selectedTimeSlot (ver handleTimeSlotSelect). undefined mientras no hay slot elegido, o
+  // para tipos de cita distintos de pilates (que no la necesitan, ver `title` más abajo).
+  const [selectedTimeSlotDuration, setSelectedTimeSlotDuration] = useState<
+    number | undefined
+  >(undefined);
   const [currentMonth, setCurrentMonth] = useState<Date>(new Date());
   const [step, setStep] = useState<Step>("calendar");
 
@@ -256,7 +265,8 @@ export function CalendarPicker() {
 
   const [
     googleSlots,
-    ,
+    defaultDurationMinutes,
+    slotDurations,
     slotsStatus,
     timeslotError,
     resetGoogleTimeslot,
@@ -269,9 +279,21 @@ export function CalendarPicker() {
   const [upsertStatus, upsertError, upsertClientData, resetUpsertClient] =
     useUpsertClient();
 
+  // US-45 — para pilates, el título muestra la duración de la clase SELECCIONADA, no un
+  // default fijo: distintas clases pueden durar distinto (45 vs 60 min), así que un número
+  // antes de elegir fecha/hora sería engañoso. Sin selección todavía, se muestra solo "Clase
+  // de Pilates", sin ningún "(X min)" — recién aparece la duración real cuando
+  // selectedTimeSlotDuration deja de ser undefined (ver handleTimeSlotSelect). Nutrición no
+  // cambia: sigue con el texto fijo de STRINGS.appointmentTitles (duración uniforme por tipo).
+  const title = appointmentType === "pilates"
+    ? (selectedTimeSlotDuration !== undefined
+        ? `${t.appointmentTitles.pilates} (${selectedTimeSlotDuration} min)`
+        : t.appointmentTitles.pilates)
+    : (t.appointmentTitles[appointmentType] ?? t.defaultTitle);
+
   const availableSlots = useMemo(
-    () => new Timeslots(googleSlots, timezone),
-    [googleSlots, timezone]
+    () => new Timeslots(googleSlots, timezone, slotDurations, defaultDurationMinutes),
+    [googleSlots, timezone, slotDurations, defaultDurationMinutes]
   );
   const resetSelectedDate = () => setSelectedDate(undefined);
   useEffect(() => {
@@ -284,10 +306,12 @@ export function CalendarPicker() {
       setCurrentMonth(new Date(date.getFullYear(), date.getMonth()));
     }
     setSelectedTimeSlot(undefined);
+    setSelectedTimeSlotDuration(undefined);
   };
 
-  const handleTimeSlotSelect = (timeSlot: Date) => {
+  const handleTimeSlotSelect = (timeSlot: Date, durationMinutes: number) => {
     setSelectedTimeSlot(timeSlot);
+    setSelectedTimeSlotDuration(durationMinutes);
   };
 
   // Paso 1 (Calendario): selección tentativa, sin lock ni llamada al backend.
@@ -374,6 +398,7 @@ export function CalendarPicker() {
       // correo (clientEmail) y los datos ya ingresados (confirmedClient/confirmedModalidad,
       // usados como defaultValues) se preservan a propósito — no se limpian aquí.
       setSelectedTimeSlot(undefined);
+      setSelectedTimeSlotDuration(undefined);
       refetchGoogleTimeslots();
       setStep("calendar");
     }
@@ -765,7 +790,7 @@ export function CalendarTimeslotPicker({
   isDayDisabled: (date: Date) => boolean;
   availableSlots: Timeslots;
   selectedTimeSlot: Date | undefined;
-  handleTimeSlotSelect: (timeSlot: Date) => void;
+  handleTimeSlotSelect: (timeSlot: Date, durationMinutes: number) => void;
   uiLanguage: UiLanguage;
 }) {
   const t = STRINGS[uiLanguage];
@@ -808,16 +833,16 @@ export function CalendarTimeslotPicker({
               className="grid grid-cols-2 gap-4 pr-4"
               key={"" + selectedDate?.getTime()}
             >
-              {availableSlots.slotsForDate(selectedDate).map((timeslot, i) => (
+              {availableSlots.slotsForDate(selectedDate).map((slot, i) => (
                 <Button
-                  key={"" + selectedDate?.getTime() + timeslot + i}
+                  key={"" + selectedDate?.getTime() + slot.date + i}
                   variant={
-                    selectedTimeSlot === timeslot ? "default" : "outline"
+                    selectedTimeSlot === slot.date ? "default" : "outline"
                   }
-                  onClick={() => handleTimeSlotSelect(timeslot)}
+                  onClick={() => handleTimeSlotSelect(slot.date, slot.durationMinutes)}
                   className="w-full"
                 >
-                  {timeslot.toLocaleTimeString([], {
+                  {slot.date.toLocaleTimeString([], {
                     hour: "2-digit",
                     minute: "2-digit",
                   })}

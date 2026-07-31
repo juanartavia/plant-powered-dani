@@ -361,6 +361,14 @@ function serveIcsDownload(token: string): GoogleAppsScript.Content.TextOutput {
     ? findPilatesMeetLink(booking.fecha, booking.hora)
     : String(getSheet("Nutrición").getRange(booking.row, NUTRICION_MEET_LINK_COL).getValue() || "");
 
+  // US-45: duración real de la clase para pilates (leída de Cupos_Pilates), duración fija por
+  // tipo para nutrición — mismo criterio que renderConfirmationEmail/buildAddCalLinks, para
+  // que este .ics (regenerado en cada clic con los datos ACTUALES de la cita) refleje la
+  // duración correcta incluso si la clase original duraba distinto.
+  const durationMinutes = booking.type === "pilates"
+    ? getPilatesClassDurationMinutes(booking.fecha, booking.hora)
+    : getDurationForType(booking.type);
+
   const icsContent = buildBookingIcsContent({
     token: booking.token,
     tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
@@ -371,6 +379,7 @@ function serveIcsDownload(token: string): GoogleAppsScript.Content.TextOutput {
     meetLink,
     method: "PUBLISH",
     sequence: 0,
+    durationMinutes,
   });
 
   return ContentService.createTextOutput(icsContent).setMimeType(ContentService.MimeType.ICAL);
@@ -379,6 +388,12 @@ function serveIcsDownload(token: string): GoogleAppsScript.Content.TextOutput {
 function fetchAvailability(type: string): {
   timeslots: string[];
   durationMinutes: number;
+  // US-45 — duración real (minutos) de cada clase de pilates OFRECIDA, indexada por el mismo
+  // string ISO que aparece en `timeslots[]` — reemplaza el supuesto de que TODA clase de
+  // pilates dura los mismos 60 min fijos. Solo se llena para type==="pilates": nutrición ya
+  // tiene una duración uniforme por tipo de cita (ver `durationMinutes` arriba), así que el
+  // frontend no necesita este campo para esos tipos — queda undefined.
+  slotDurations?: Record<string, number>;
 } {
   // La duración del slot se determina dinámicamente según el tipo de cita,
   // en lugar de usar una constante global fija.
@@ -411,13 +426,21 @@ function fetchAvailability(type: string): {
   // nutrición, más abajo.
   if (type === "pilates") {
     const timeslots: string[] = [];
+    // US-45 — duración real por slot (ver comentario del tipo de retorno de esta función),
+    // tomada directamente del evento de Calendar (slot.durationMinutes, ya calculado por
+    // getPilatesAvailabilityEvents como fin-inicio) — no depende de que
+    // syncPilatesClassesToCuposSheet ya haya corrido, mismo criterio que el resto de este
+    // branch (getAvailableCapacityForClass).
+    const slotDurations: Record<string, number> = {};
     for (const slot of getPilatesAvailabilityEvents()) {
       const start = parseSheetDateTime(slot.fecha, slot.hora);
       if (start.getTime() <= minBookingTime.getTime()) continue;
       if (getAvailableCapacityForClass(slot.fecha, slot.hora) <= 0) continue;
-      timeslots.push(start.toISOString());
+      const iso = start.toISOString();
+      timeslots.push(iso);
+      slotDurations[iso] = slot.durationMinutes;
     }
-    return { timeslots, durationMinutes: duration };
+    return { timeslots, durationMinutes: duration, slotDurations };
   }
 
   const end = new Date(
@@ -515,9 +538,17 @@ const SHEET_SCHEMAS: Record<string, string[]> = {
   // joinPilatesSlot, que ya usan "event_id" para el evento OPERATIVO real (ver comentario de
   // arriba) — confundir ambos calendarios haría que esas funciones intenten leer/mover un
   // evento en el calendario equivocado.
+  // "duracion_minutos" (columna H, US-45, ver addDuracionMinutosColumnToCuposPilates) guarda
+  // la duración REAL (en minutos) de esta clase, calculada por syncPilatesClassesToCuposSheet
+  // a partir de la diferencia start/end del evento real en el calendario de disponibilidad —
+  // reemplaza el supuesto anterior de que TODA clase de pilates dura getDurationForType
+  // ("pilates") (60 min) fijos. Igual que max_participantes, puede quedar VACÍA (filas viejas,
+  // o creadas por el camino de "red de seguridad" de appendBookingToSheet/joinPilatesSlot sin
+  // haber pasado por el sync todavía) — se interpreta como el default de 60 min, ver
+  // getPilatesClassDurationMinutes.
   "Cupos_Pilates": [
     "fecha_clase", "hora_clase", "inscritos", "max_participantes", "event_id", "meet_link",
-    "disponibilidad_event_id",
+    "disponibilidad_event_id", "duracion_minutos",
   ],
 };
 
@@ -1018,6 +1049,10 @@ const CUPOS_PILATES_MEET_LINK_COL = 6;
 // deliberadamente separada de CUPOS_PILATES_EVENT_ID_COL (ver comentario largo en
 // SHEET_SCHEMAS["Cupos_Pilates"] arriba, sección "US-43").
 const CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL = 7;
+// Columna (1-based, US-45) donde syncPilatesClassesToCuposSheet guarda la duración real (en
+// minutos) de la clase, calculada del evento real en "Disponibilidad - Pilates" — ver
+// getPilatesClassDurationMinutes para la lectura con default de 60 min si está vacía.
+const CUPOS_PILATES_DURACION_MINUTOS_COL = 8;
 
 // Columnas (1-based) de la pestaña "Nutrición" usadas por cancelBooking/rescheduleBooking
 // (US-06) para localizar y mover/eliminar el evento de Calendar real de una cita, y para
@@ -1226,6 +1261,26 @@ function addDisponibilidadEventIdColumnToCuposPilates(): void {
 
   sheet.getRange(1, CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL).setValue("disponibilidad_event_id").setFontWeight("bold");
   Logger.log('Columna "disponibilidad_event_id" agregada a Cupos_Pilates.');
+}
+
+// Agrega la columna "duracion_minutos" (US-45) a la pestaña "Cupos_Pilates" YA existente, en
+// la posición CUPOS_PILATES_DURACION_MINUTOS_COL (columna H, justo después de
+// "disponibilidad_event_id"), sin volver a ejecutar initializeSheets() (nota 11) — mismo
+// patrón que addDisponibilidadEventIdColumnToCuposPilates(). No-op seguro si ya existe.
+// Ejecutar manualmente UNA SOLA VEZ desde el editor de Apps Script, ANTES de correr
+// syncPilatesClassesToCuposSheet() o instalar su trigger — igual que la migración de
+// "disponibilidad_event_id", que debe correr primero si todavía no se ejecutó.
+function addDuracionMinutosColumnToCuposPilates(): void {
+  const sheet = getSheet("Cupos_Pilates");
+  const existingHeader = String(sheet.getRange(1, CUPOS_PILATES_DURACION_MINUTOS_COL).getValue());
+
+  if (existingHeader === "duracion_minutos") {
+    Logger.log('La columna "duracion_minutos" ya existe en Cupos_Pilates. No se hizo ningún cambio.');
+    return;
+  }
+
+  sheet.getRange(1, CUPOS_PILATES_DURACION_MINUTOS_COL).setValue("duracion_minutos").setFontWeight("bold");
+  Logger.log('Columna "duracion_minutos" agregada a Cupos_Pilates.');
 }
 
 // Retorna la pestaña (Sheet) correspondiente al nombre dado, a partir del spreadsheet
@@ -1732,6 +1787,35 @@ function getAvailableCapacityForClass(fecha: string, hora: string): number {
   return Math.max(maxParticipantes - activos, 0);
 }
 
+// US-45 — Duración real (en minutos) de una clase de pilates específica: lee la columna
+// "duracion_minutos" (columna H de Cupos_Pilates, poblada por syncPilatesClassesToCuposSheet a
+// partir de la diferencia start/end del evento real en el calendario de disponibilidad — ver
+// PilatesClassSlot.durationMinutes). Mismo criterio de default con gracia que
+// getAvailableCapacityForClass usa para max_participantes: si la fila todavía no existe, o la
+// celda está vacía/no es un número válido (>0), cae al default de getDurationForType("pilates")
+// (60 min) — nunca debe bloquear una reserva por no tener este dato todavía (p. ej. si el sync
+// aún no ha corrido para este slot, o la fila la creó el camino de "red de seguridad" de
+// appendBookingToSheet/joinPilatesSlot, que deja esta columna vacía a propósito). Esta es la
+// ÚNICA función que debe usarse para conocer la duración de una clase de pilates YA agendada o
+// a punto de agendarse — reemplaza el uso de getDurationForType("pilates") en todo el flujo de
+// reserva/reagendamiento/.ics de pilates (nunca en nutrición, que sigue con duración fija por
+// tipo de cita).
+function getPilatesClassDurationMinutes(fecha: string, hora: string): number {
+  const cuposSheet = getSheet("Cupos_Pilates");
+  const cuposData = cuposSheet.getDataRange().getValues();
+  const rowNumber = findCuposPilatesRow(cuposData, fecha, hora);
+
+  if (rowNumber > 0) {
+    const cellValue = cuposData[rowNumber - 1][CUPOS_PILATES_DURACION_MINUTOS_COL - 1];
+    const parsed = Number(cellValue);
+    if (cellValue !== "" && cellValue !== null && !isNaN(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+
+  return getDurationForType("pilates");
+}
+
 // US-43 — Actualiza la columna "inscritos" (cacheada/informativa, ver comentario de
 // SHEET_SCHEMAS["Cupos_Pilates"]) de Cupos_Pilates con el conteo real y actual de
 // inscripciones activas, para que la instructora vea un número correcto de un vistazo en el
@@ -1822,11 +1906,14 @@ function syncPilatesClassesToCuposSheet(): void {
       // que el sync la sobreescriba en corridas futuras. event_id/meet_link (columnas E/F,
       // OPERATIVOS) quedan vacíos: se llenan después, en la PRIMERA reserva real de este slot
       // (bookPilatesCalendarEvent), no en el sync.
-      cuposSheet.appendRow(["", "", "", "", "", "", ""]);
+      cuposSheet.appendRow(["", "", "", "", "", "", "", ""]);
       const dateRange = cuposSheet.getRange(rowNumber, 1, 1, 2);
       dateRange.setNumberFormat("@");
       dateRange.setValues([[slot.fecha, slot.hora]]);
       cuposSheet.getRange(rowNumber, CUPOS_PILATES_DISPONIBILIDAD_EVENT_ID_COL).setValue(slot.eventId);
+      // US-45: duración real de ESTA clase (fin - inicio del evento real en el calendario de
+      // disponibilidad) — reemplaza el supuesto fijo de 60 min. Ver getPilatesClassDurationMinutes.
+      cuposSheet.getRange(rowNumber, CUPOS_PILATES_DURACION_MINUTOS_COL).setValue(slot.durationMinutes);
 
       nextRow++;
       existingEventIds[slot.eventId] = true;
@@ -1842,23 +1929,31 @@ function syncPilatesClassesToCuposSheet(): void {
   }
 }
 
-// Instalación manual del trigger de tiempo (US-43) — ejecutar UNA SOLA VEZ desde el editor de
-// Apps Script, igual que installRemindersTrigger()/setupPilatesTestCalendar(). Corre
-// syncPilatesClassesToCuposSheet cada hora; revisa primero los triggers ya instalados
-// (ScriptApp.getProjectTriggers()) para no duplicar el trigger si esta función se corre dos
-// veces por accidente. Ejecutar addDisponibilidadEventIdColumnToCuposPilates() ANTES de
-// instalar este trigger.
+// Instalación manual del trigger de tiempo (US-43, frecuencia ajustada a 5 min en US-45) —
+// ejecutar desde el editor de Apps Script, igual que installRemindersTrigger()/
+// setupPilatesTestCalendar(). Corre syncPilatesClassesToCuposSheet cada 5 minutos (antes cada
+// hora — la instructora pidió que una clase marcada en el calendario de disponibilidad
+// aparezca en el portal casi de inmediato, no hasta 1 hora después).
+//
+// A diferencia de la versión anterior a US-45 (que hacía no-op si ya existía un trigger),
+// esta función SIEMPRE borra primero cualquier trigger existente de
+// "syncPilatesClassesToCuposSheet" (ScriptApp.deleteTrigger) antes de instalar el nuevo de 5
+// minutos — sin esto, volver a correrla (p. ej. para pasar de cada hora a cada 5 minutos)
+// dejaría AMBOS triggers activos en paralelo, duplicando cada sincronización. Es seguro
+// volver a ejecutar esta función las veces que haga falta: siempre termina con exactamente 1
+// trigger instalado, nunca 0 ni 2+. Ejecutar addDisponibilidadEventIdColumnToCuposPilates()
+// ANTES de instalar este trigger si todavía no se corrió esa migración.
 function installPilatesAvailabilitySyncTrigger(): void {
-  const existing = ScriptApp.getProjectTriggers().some(
+  const existingTriggers = ScriptApp.getProjectTriggers().filter(
     (trigger) => trigger.getHandlerFunction() === "syncPilatesClassesToCuposSheet"
   );
-  if (existing) {
-    Logger.log('Ya existe un trigger para "syncPilatesClassesToCuposSheet". No se creó ninguno nuevo.');
-    return;
+  existingTriggers.forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+  if (existingTriggers.length > 0) {
+    Logger.log(`installPilatesAvailabilitySyncTrigger: se eliminó(aron) ${existingTriggers.length} trigger(s) existente(s) de "syncPilatesClassesToCuposSheet" antes de instalar el nuevo (evita que el viejo de cada hora corra en paralelo con el nuevo de 5 minutos).`);
   }
 
-  ScriptApp.newTrigger("syncPilatesClassesToCuposSheet").timeBased().everyHours(1).create();
-  Logger.log('Trigger de tiempo instalado: "syncPilatesClassesToCuposSheet" corre cada hora.');
+  ScriptApp.newTrigger("syncPilatesClassesToCuposSheet").timeBased().everyMinutes(5).create();
+  Logger.log('Trigger de tiempo instalado: "syncPilatesClassesToCuposSheet" corre cada 5 minutos.');
 }
 
 interface BookingData {
@@ -1913,16 +2008,17 @@ function appendBookingToSheet(type: string, data: BookingData): string {
         // No debería pasar en el flujo normal (fetchAvailability solo ofrece clases que ya
         // tienen fila en Cupos_Pilates, ver syncPilatesClassesToCuposSheet) — se deja como
         // red de seguridad, igual que el comportamiento anterior a US-43. max_participantes
-        // (columna D) y disponibilidad_event_id (columna G) quedan vacíos: sin el evento de
-        // disponibilidad real, no hay nada que registrar ahí; getAvailableCapacityForClass
-        // sigue funcionando igual con el default de MAX_PILATES_PARTICIPANTS.
+        // (columna D), disponibilidad_event_id (columna G) y duracion_minutos (columna H,
+        // US-45) quedan vacíos: sin el evento de disponibilidad real, no hay nada que
+        // registrar ahí; getAvailableCapacityForClass/getPilatesClassDurationMinutes siguen
+        // funcionando igual con sus defaults (MAX_PILATES_PARTICIPANTS / 60 min).
         //
         // NO usar getLastRow() para localizar la fila recién creada — ver el bug real
         // documentado en syncPilatesClassesToCuposSheet (mismo anti-patrón, aquí de bajo
         // riesgo por ser un solo appendRow(), pero mejor no repetirlo). cuposData.length + 1
         // ya es la fila correcta, calculada de la misma lectura de arriba.
         const newRowNumber = cuposData.length + 1;
-        cuposSheet.appendRow(["", "", "", "", "", "", ""]);
+        cuposSheet.appendRow(["", "", "", "", "", "", "", ""]);
         const dateRange = cuposSheet.getRange(newRowNumber, 1, 1, 2);
         dateRange.setNumberFormat("@");
         dateRange.setValues([[fecha, hora]]);
@@ -2335,12 +2431,23 @@ function bookTimeslot(
   // aquí en el flujo real, pero bookTimeslot() nunca debe confiar solo en eso.
   assertMinimumAge(birthdate);
   assertValidTipoId(tipoId);
-  // La duración del evento depende del tipo de cita, igual que en fetchAvailability.
-  const duration = getDurationForType(type);
   const startTime = new Date(timeslot);
   if (isNaN(startTime.getTime())) {
     throw new Error("Invalid start time");
   }
+  // La duración del evento depende del tipo de cita. Nutrición sigue usando la duración fija
+  // por tipo (getDurationForType), igual que en fetchAvailability. Pilates YA NO (US-45): usa
+  // la duración REAL de esta clase específica, leída de Cupos_Pilates (columna
+  // duracion_minutos, poblada por syncPilatesClassesToCuposSheet a partir del evento real en
+  // el calendario de disponibilidad) — antes de esta tarjeta, toda clase de pilates asumía 60
+  // min fijos sin importar la duración real marcada por la instructora. Ver
+  // getPilatesClassDurationMinutes.
+  const duration = type === "pilates"
+    ? getPilatesClassDurationMinutes(
+        Utilities.formatDate(startTime, TIME_ZONE, "yyyy-MM-dd"),
+        Utilities.formatDate(startTime, TIME_ZONE, "HH:mm")
+      )
+    : getDurationForType(type);
   const endTime = new Date(startTime.getTime());
   endTime.setUTCMinutes(startTime.getUTCMinutes() + duration);
 
@@ -2428,6 +2535,7 @@ function bookTimeslot(
       token,
       correo: email,
       icsSequence: 0,
+      durationMinutes: duration,
     });
     // ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — log INMEDIATAMENTE ANTES de la llamada real a
     // GmailApp.sendEmail(), en el punto exacto donde se arma options.attachments (no donde ya
@@ -2734,7 +2842,9 @@ function joinPilatesSlot(
     const eventId = rowNumber > 0 ? String(cuposData[rowNumber - 1][CUPOS_PILATES_EVENT_ID_COL - 1] || "") : "";
 
     const startTime = parseSheetDateTime(fecha, hora);
-    const endTime = new Date(startTime.getTime() + getDurationForType("pilates") * 60000);
+    // US-45: duración REAL de este slot específico (leída de Cupos_Pilates, columna
+    // duracion_minutos), no getDurationForType("pilates") fijo — ver getPilatesClassDurationMinutes.
+    const endTime = new Date(startTime.getTime() + getPilatesClassDurationMinutes(fecha, hora) * 60000);
 
     if (rowNumber < 0) {
       // No debería pasar en el flujo normal (ver comentario equivalente en
@@ -2744,7 +2854,7 @@ function joinPilatesSlot(
       // documentado en syncPilatesClassesToCuposSheet. cuposData.length + 1 ya es la fila
       // correcta, calculada de la misma lectura de arriba.
       rowNumber = cuposData.length + 1;
-      cuposSheet.appendRow(["", "", "", "", "", "", ""]);
+      cuposSheet.appendRow(["", "", "", "", "", "", "", ""]);
       const dateRange = cuposSheet.getRange(rowNumber, 1, 1, 2);
       dateRange.setNumberFormat("@");
       dateRange.setValues([[fecha, hora]]);
@@ -2915,10 +3025,17 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
     throw new Error("VENTANA_MINIMA_NO_CUMPLIDA");
   }
 
-  const duration = getDurationForType(booking.type);
-  const newEnd = new Date(newStart.getTime() + duration * 60000);
   const newFecha = Utilities.formatDate(newStart, TIME_ZONE, "yyyy-MM-dd");
   const newHora = Utilities.formatDate(newStart, TIME_ZONE, "HH:mm");
+  // La duración depende del tipo de cita. Nutrición sigue con duración fija por tipo
+  // (getDurationForType). Pilates (US-45): toma la duración de la clase DESTINO
+  // (newFecha/newHora, vía getPilatesClassDurationMinutes) — nunca la de la cita ORIGINAL que
+  // se está dejando atrás. Reagendar de una clase de 60 min hacia una de 45 min debe terminar
+  // reflejando 45 min, no 60 (y viceversa).
+  const duration = booking.type === "pilates"
+    ? getPilatesClassDurationMinutes(newFecha, newHora)
+    : getDurationForType(booking.type);
+  const newEnd = new Date(newStart.getTime() + duration * 60000);
 
   if (booking.sheetName === "Pilates") {
     // Entra al slot nuevo ANTES de salir del viejo: si el nuevo slot está lleno
@@ -3066,6 +3183,7 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
       // necesita para reconocer esta invitación como una actualización de la anterior (ver
       // comentario de icsSequence en renderConfirmationEmail).
       icsSequence: numeroReagendamiento,
+      durationMinutes: duration,
     });
     // ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — mismo log que bookTimeslot, ver ese comentario.
     const attachmentsForSend = icsAttachment ? [icsAttachment] : [];
@@ -3362,6 +3480,13 @@ function renderConfirmationEmail(params: {
   // existente (US-42, incrementRescheduleCounterOnBookingRow) — no hace falta un contador
   // nuevo. Default 0 para no romper bookTimeslot/testSendConfirmationEmails, que no lo pasan.
   icsSequence?: number;
+  // US-45 — duración REAL (minutos) de esta cita/clase. bookTimeslot/rescheduleBooking la
+  // resuelven antes de llamar acá (getDurationForType para nutrición, o
+  // getPilatesClassDurationMinutes para la clase específica de pilates) y la pasan tal cual —
+  // esta función NUNCA debe volver a asumir getDurationForType(tipoCita) por su cuenta para
+  // pilates. Default undefined (cae a getDurationForType(tipoCita) más abajo) para no romper
+  // testSendConfirmationEmails(), que no la pasa.
+  durationMinutes?: number;
 }): {
   subject: string;
   htmlBody: string;
@@ -3383,6 +3508,10 @@ function renderConfirmationEmail(params: {
   // lo muestran en la zona del CLIENTE.
   const apptInstant = parseSheetDateTime(params.fecha, params.hora);
   const displayZone = params.clientTimezone || TIME_ZONE;
+  // US-45 — resuelto UNA sola vez acá, reutilizado por buildAddCalLinks y el adjunto .ics más
+  // abajo, para que ambos coincidan siempre. Default a getDurationForType(tipoCita) cuando el
+  // caller no lo pasa (testSendConfirmationEmails) — nunca null/NaN.
+  const durationMinutes = params.durationMinutes ?? getDurationForType(params.tipoCita);
   // La plantilla de pilates ES todavía tiene la variable nombrada "nombre_apellido" en el
   // HTML (pilates EN y ambas de nutrición ya se renombraron a "nombre"), pero Gabriela
   // confirmó (21 jul) que la intención es la misma en las 4: mostrar SOLO el primer nombre.
@@ -3405,6 +3534,7 @@ function renderConfirmationEmail(params: {
     esVirtual: params.esVirtual,
     meetLink: params.meetLink,
     token: params.token,
+    durationMinutes,
   });
   template.addCalGoogleLink = addCalLinks.addCalGoogleLink;
   template.addCalOutlookLink = addCalLinks.addCalOutlookLink;
@@ -3458,6 +3588,7 @@ function renderConfirmationEmail(params: {
       sequence: Math.max(0, params.icsSequence || 0),
       organizerEmail: getOrganizerEmailForTipoCita(params.tipoCita),
       attendeeEmail: params.correo,
+      durationMinutes,
     });
     // ⚠️ DIAGNÓSTICO TEMPORAL EN CURSO (US-37) — NO es el estado final de este código.
     // Confirmado con Debug_US37 en una reserva real (token 1f8ad410-...): el blob SÍ se
@@ -3626,10 +3757,14 @@ function buildAddCalLinks(params: {
   esVirtual: boolean;
   meetLink?: string;
   token: string;
+  // US-45 — duración REAL (minutos) de esta cita/clase: para pilates ya no es un fijo
+  // getDurationForType("pilates"), sino la duración de la clase específica reservada (ver
+  // getPilatesClassDurationMinutes, resuelta por el caller — renderConfirmationEmail — antes
+  // de llegar acá). Nutrición sigue pasando su duración fija por tipo.
+  durationMinutes: number;
 }): { addCalGoogleLink: string; addCalOutlookLink: string; addCalYahooLink: string; addCalIcsLink: string } {
   const { summary, description, location } = buildEventContentParts(params);
-  const durationMinutes = getDurationForType(params.tipoCita);
-  const endInstant = new Date(params.apptInstant.getTime() + durationMinutes * 60000);
+  const endInstant = new Date(params.apptInstant.getTime() + params.durationMinutes * 60000);
 
   // Google/Yahoo usan el formato UTC "básico" (sin guiones/dos puntos); Outlook exige el
   // formato "extendido" (con guiones/dos puntos) — confirmado contra la documentación real del
@@ -3758,13 +3893,16 @@ function buildBookingIcsContent(params: {
   sequence: number;
   organizerEmail?: string;
   attendeeEmail?: string;
+  // US-45 — duración REAL (minutos) de esta cita/clase, resuelta por el caller (mismo criterio
+  // que buildAddCalLinks: para pilates, la duración de la clase específica, no un fijo de 60
+  // min — ver getPilatesClassDurationMinutes).
+  durationMinutes: number;
 }): string {
   const { summary, description, location } = buildEventContentParts(params);
-  const durationMinutes = getDurationForType(params.tipoCita);
   return buildIcsContent({
     uid: `${params.token}@plantpoweredbydani.com`,
     apptInstant: params.apptInstant,
-    durationMinutes,
+    durationMinutes: params.durationMinutes,
     summary,
     description,
     location,
