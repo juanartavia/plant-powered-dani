@@ -270,6 +270,12 @@ function createMockContext() {
       // de getPilatesAvailabilityCalendarId en app.ts) — los tests siembran clases ahí
       // llamando sandbox.Calendar.Events.insert(resource, "mock-pilates-availability-calendar-id").
       PILATES_AVAILABILITY_CALENDAR_ID: "mock-pilates-availability-calendar-id",
+      // US-44: calendario de bloques de disponibilidad de NUTRICIÓN, mismo patrón que
+      // PILATES_AVAILABILITY_CALENDAR_ID pero para el flujo de Dani/Ali — los tests siembran
+      // bloques ahí llamando sandbox.Calendar.Events.insert(resource, "mock-nutricion-availability-calendar-id").
+      // DISTINTO tanto de PILATES_AVAILABILITY_CALENDAR_ID como de la Script Property
+      // "CALENDARS" (calendario(s) OPERATIVO(s) de nutrición, ver getNutricionAvailabilityCalendarId en app.ts).
+      NUTRICION_AVAILABILITY_CALENDAR_ID: "mock-nutricion-availability-calendar-id",
       // US-33: destinatarios de la alerta de cancelación tardía. A propósito son 3 valores
       // DISTINTOS entre sí, a diferencia del entorno de testing real (donde las 3 propiedades
       // apuntan a plantpoweredani.testing@gmail.com por no haber cuentas separadas): así los

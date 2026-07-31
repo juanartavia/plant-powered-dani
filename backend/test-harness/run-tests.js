@@ -2163,5 +2163,117 @@ function getUrlParam(url, name) {
   assert(triggers[0]._period === "everyMinutes(5)", "sigue siendo el de 5 minutos tras la 2da corrida");
 })();
 
+// ── Test 80: US-44 — bloque parcial de disponibilidad de nutrición se talla en sub-slots ──
+// consecutivos, sin huecos, sin salirse del rango del bloque.
+(function test80() {
+  console.log("Test 80: US-44 — bloque parcial de 'Disponibilidad - Nutrición' se talla en sub-slots consecutivos, sin huecos, dentro del rango del bloque");
+  const { sandbox } = freshCtx();
+  const availCalId = sandbox.PropertiesService.getScriptProperties().getProperty("NUTRICION_AVAILABILITY_CALENDAR_ID");
+
+  // Bloque de 3 horas, empezando ~72hrs desde ahora (> MIN_BOOKING_HOURS=48), redondeado a la
+  // hora exacta para que los sub-slots de 60 min ('initial') calcen limpio.
+  const blockStart = new Date(Math.floor(new Date(isoInHours(72)).getTime() / 3600000) * 3600000);
+  const blockEnd = new Date(blockStart.getTime() + 3 * 3600000);
+  sandbox.Calendar.Events.insert(
+    { summary: "Disponible", start: { dateTime: blockStart.toISOString() }, end: { dateTime: blockEnd.toISOString() } },
+    availCalId
+  );
+
+  const { timeslots, durationMinutes } = sandbox.fetchAvailability("initial");
+  assert(durationMinutes === 60, "durationMinutes sigue siendo 60 para 'initial' (getDurationForType)");
+  assert(timeslots.length === 3, "un bloque de 3 horas produce exactamente 3 sub-slots de 60 min, sin huecos entre ellos");
+
+  [0, 1, 2].forEach((n) => {
+    const iso = new Date(blockStart.getTime() + n * 3600000).toISOString();
+    assert(timeslots.indexOf(iso) >= 0, `sub-slot esperado #${n + 1} del bloque aparece en fetchAvailability`);
+  });
+  const outOfRange = new Date(blockStart.getTime() + 3 * 3600000).toISOString();
+  assert(timeslots.indexOf(outOfRange) < 0, "no se ofrece un 4to sub-slot que empezaría justo en el fin del bloque (no cabría completo)");
+})();
+
+// ── Test 81: US-44 — sin ningún bloque marcado, no hay fallback a un horario por defecto ──
+(function test81() {
+  console.log("Test 81: US-44 — sin ningún bloque marcado en 'Disponibilidad - Nutrición', fetchAvailability no ofrece ningún slot (sin fallback a WORKDAYS/WORKHOURS)");
+  const { sandbox } = freshCtx();
+  const { timeslots } = sandbox.fetchAvailability("followup");
+  assert(timeslots.length === 0, "cero bloques marcados → cero slots ofrecidos, ningún día cae a un horario por defecto");
+})();
+
+// ── Test 82: US-44 — un sub-slot con conflicto real (Freebusy) queda excluido, el resto del ──
+// mismo bloque sigue disponible — mismo conflict-check de siempre, sin cambios (ver diseño).
+(function test82() {
+  console.log("Test 82: US-44 — sub-slot con una cita ya agendada (conflicto real vía Freebusy) queda excluido, sin afectar los demás sub-slots del bloque");
+  const { sandbox } = freshCtx();
+  const availCalId = sandbox.PropertiesService.getScriptProperties().getProperty("NUTRICION_AVAILABILITY_CALENDAR_ID");
+
+  const blockStart = new Date(Math.floor(new Date(isoInHours(72)).getTime() / 3600000) * 3600000);
+  const blockEnd = new Date(blockStart.getTime() + 3 * 3600000);
+  sandbox.Calendar.Events.insert(
+    { summary: "Disponible", start: { dateTime: blockStart.toISOString() }, end: { dateTime: blockEnd.toISOString() } },
+    availCalId
+  );
+
+  // El sub-slot del medio ya tiene una cita real — se simula el busy time que devolvería
+  // Calendar.Freebusy.query contra el calendario OPERATIVO ("primary", CALENDARS por defecto
+  // en testing, ver Test 1 y comentario de la constante `calendarId` más arriba en este archivo).
+  const busyStart = new Date(blockStart.getTime() + 3600000);
+  const busyEnd = new Date(busyStart.getTime() + 3600000);
+  sandbox.Calendar.Freebusy.query = () => ({
+    calendars: { primary: { busy: [{ start: busyStart.toISOString(), end: busyEnd.toISOString() }] } },
+  });
+
+  const { timeslots } = sandbox.fetchAvailability("initial");
+  assert(timeslots.length === 2, "el bloque sigue ofreciendo 2 de los 3 sub-slots — solo el que choca con la cita real queda excluido");
+  assert(timeslots.indexOf(busyStart.toISOString()) < 0, "el sub-slot que coincide con la cita existente NO aparece");
+  assert(timeslots.indexOf(blockStart.toISOString()) >= 0, "el primer sub-slot (sin conflicto) sigue apareciendo");
+  assert(timeslots.indexOf(new Date(blockStart.getTime() + 2 * 3600000).toISOString()) >= 0, "el tercer sub-slot (sin conflicto) sigue apareciendo");
+})();
+
+// ── Test 83: US-44 — bloque recurrente semanal se expande en instancias individuales dentro ──
+// de la ventana de 8 semanas (mismo patrón de prueba que Test 75 para pilates).
+(function test83() {
+  console.log("Test 83: US-44 — un bloque recurrente semanal de disponibilidad de nutrición se expande en instancias individuales dentro de la ventana de 8 semanas");
+  const { sandbox } = freshCtx();
+  const availCalId = sandbox.PropertiesService.getScriptProperties().getProperty("NUTRICION_AVAILABILITY_CALENDAR_ID");
+  const masterStart = new Date(Math.floor(new Date(isoInHours(72)).getTime() / 3600000) * 3600000);
+
+  sandbox.Calendar.Events.insert(
+    {
+      summary: "Disponibilidad recurrente",
+      start: { dateTime: masterStart.toISOString() },
+      // Bloque de 1 hora exacta por instancia → exactamente 1 sub-slot de 60 min por instancia,
+      // así timeslots.length se puede comparar 1:1 contra blocks.length.
+      end: { dateTime: new Date(masterStart.getTime() + 3600000).toISOString() },
+      recurrence: ["RRULE:FREQ=WEEKLY"],
+    },
+    availCalId
+  );
+
+  const blocks = sandbox.getNutricionAvailabilityBlocks();
+  assert(blocks.length > 1, "el bloque recurrente se expande en MÁS de 1 instancia (no se lee solo el evento 'maestro')");
+
+  const { timeslots } = sandbox.fetchAvailability("initial");
+  assert(timeslots.length === blocks.length, "fetchAvailability ofrece un sub-slot por CADA instancia expandida del bloque recurrente");
+})();
+
+// ── Test 84: US-44 — regresión: pilates no se ve afectado por el cambio de nutrición ──────
+(function test84() {
+  console.log("Test 84: US-44 — regresión: fetchAvailability('pilates') sigue funcionando igual, sin depender de bloques de 'Disponibilidad - Nutrición'");
+  const { sandbox } = freshCtx();
+  const pilatesAvailCalId = sandbox.PropertiesService.getScriptProperties().getProperty("PILATES_AVAILABILITY_CALENDAR_ID");
+  const ts = new Date(Math.floor(new Date(isoInHours(200)).getTime() / 60000) * 60000).toISOString();
+
+  sandbox.Calendar.Events.insert(
+    { summary: "Clase de Pilates", start: { dateTime: new Date(ts).toISOString() }, end: { dateTime: new Date(new Date(ts).getTime() + 3600000).toISOString() } },
+    pilatesAvailCalId
+  );
+
+  // A propósito NO se marca ningún bloque en NUTRICION_AVAILABILITY_CALENDAR_ID — pilates debe
+  // ofrecer su clase exactamente igual, sin ningún efecto cruzado del cambio de esta tarjeta.
+  const { timeslots, durationMinutes } = sandbox.fetchAvailability("pilates");
+  assert(durationMinutes === 60, "durationMinutes de pilates sin cambios");
+  assert(timeslots.indexOf(new Date(ts).toISOString()) >= 0, "fetchAvailability('pilates') sigue ofreciendo la clase marcada en su propio calendario de disponibilidad");
+})();
+
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
 process.exit(failed > 0 ? 1 : 0);

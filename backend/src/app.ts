@@ -94,6 +94,72 @@ function getPilatesAvailabilityCalendarId(): string {
   return id;
 }
 
+// Calendario donde Dani/Ali marcan los BLOQUES de tiempo abiertos para agendar nutrición
+// (US-44, mismo espíritu que PILATES_AVAILABILITY_CALENDAR_ID/US-43) — de SOLO LECTURA para el
+// sistema, nunca se escribe ahí. Es un calendario DISTINTO del operativo de nutrición: ese es
+// CALENDARS[0] (Script Property "CALENDARS", ver arriba), donde bookNutricionCalendarEvent/
+// cancelNutricionCalendarEvent/rescheduleBooking crean/mueven/borran el evento real de cada
+// cita — no confundir ni fusionar. A diferencia de pilates (clases discretas, cada evento de
+// disponibilidad = una clase completa), acá cada evento es un BLOQUE continuo que
+// fetchAvailability talla en sub-slots según la duración del tipo de cita (ver
+// getNutricionAvailabilityBlocks).
+//
+// Ya creado y guardado en Script Properties para testing — no crear de nuevo, no fusionar con
+// la Script Property "CALENDARS". En producción, guardar ahí el ID del calendario real
+// ("Disponibilidad - Nutrición") que Dani/Ali usen para este propósito.
+function getNutricionAvailabilityCalendarId(): string {
+  const id = PropertiesService.getScriptProperties().getProperty("NUTRICION_AVAILABILITY_CALENDAR_ID");
+  if (!id) {
+    throw new Error(
+      "NUTRICION_AVAILABILITY_CALENDAR_ID no configurado en Script Properties. Debe apuntar al " +
+      "calendario \"Disponibilidad - Nutrición\" donde Dani/Ali marcan los bloques de tiempo " +
+      "abiertos para agendar — no confundir con la Script Property \"CALENDARS\" (calendario(s) " +
+      "operativo(s), donde se crea el evento real de cada cita)."
+    );
+  }
+  return id;
+}
+
+// Un bloque de tiempo abierto para agendar nutrición, marcado por Dani/Ali en el calendario
+// "Disponibilidad - Nutrición" (US-44). A diferencia de PilatesClassSlot (una clase discreta
+// con duración fija), esto es un rango continuo que fetchAvailability talla en sub-slots según
+// la duración del tipo de cita solicitado (initial/followup/measurement) — el mismo bloque
+// puede producir un número distinto de sub-slots según qué tipo de cita se esté consultando.
+interface NutricionAvailabilityBlock {
+  start: Date;
+  end: Date;
+}
+
+// Lee los bloques que Dani/Ali marcaron como disponibles en NUTRICION_AVAILABILITY_CALENDAR_ID,
+// dentro de la misma ventana máxima que el resto del proyecto (DAYS_IN_ADVANCE). Es la única
+// función que debe leer ese calendario — nunca se escribe ahí. singleEvents:true expande
+// cualquier bloque recurrente semanal en instancias individuales (mismo aprendizaje de
+// getPilatesAvailabilityEvents/US-43). Se ignoran eventos de día completo (sin dateTime) — no
+// representan un bloque horario real.
+function getNutricionAvailabilityBlocks(): NutricionAvailabilityBlock[] {
+  const calendarId = getNutricionAvailabilityCalendarId();
+  const now = new Date();
+  const end = new Date(now.getTime() + DAYS_IN_ADVANCE * 24 * 60 * 60 * 1000);
+
+  const response = Calendar.Events!.list(calendarId, {
+    timeMin: now.toISOString(),
+    timeMax: end.toISOString(),
+    singleEvents: true,
+    orderBy: "startTime",
+  });
+
+  const items = response.items || [];
+  const blocks: NutricionAvailabilityBlock[] = [];
+  for (const event of items) {
+    if (!event.start || !event.start.dateTime || !event.end || !event.end.dateTime) continue;
+    blocks.push({
+      start: new Date(event.start.dateTime),
+      end: new Date(event.end.dateTime),
+    });
+  }
+  return blocks;
+}
+
 // Una clase de pilates ofrecida por la instructora, leída directamente del calendario de
 // disponibilidad (US-43). fecha/hora ya en TIME_ZONE, mismo formato que el resto del Sheet.
 interface PilatesClassSlot {
@@ -181,13 +247,17 @@ const TIME_ZONE = "America/Costa_Rica";
 const WEB_APP_URL =
   "https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec";
 
-// Días de la semana habilitados como ventana de búsqueda (0=dom, 1=lun, ..., 6=sáb).
-// Se incluye sábado porque pilates es solo sábados. La disponibilidad real la controla
-// el Google Calendar de Dani/instructora — estos días son solo el rango de búsqueda.
+// ⚠️ US-44 (30 jul): sin uso activo en fetchAvailability desde que nutrición pasó al mismo
+// modelo aditivo de pilates (US-43) — la disponibilidad real ahora sale de los bloques que
+// Dani/Ali marcan en el calendario "Disponibilidad - Nutrición" (ver
+// getNutricionAvailabilityBlocks/NUTRICION_AVAILABILITY_CALENDAR_ID), tallados en sub-slots.
+// Se dejan estas dos constantes SIN ELIMINAR a propósito, como plan de rollback: a diferencia
+// de cuando se hizo esto mismo con pilates (donde PILATES_DAY_OF_WEEK/PILATES_START_HOUR sí se
+// borraron), nutrición está en uso real, no solo testing — más barato mantener el código viejo
+// disponible que reconstruirlo si algo falla en producción.
 const WORKDAYS = [1, 2, 3, 4, 5, 6];
 
-// Ventana horaria de búsqueda de slots. Amplia a propósito: el Calendar real de Dani
-// filtra los horarios bloqueados. start/end en horas locales (TIME_ZONE).
+// Ver comentario de WORKDAYS arriba — misma situación, sin uso activo desde US-44.
 const WORKHOURS = {
   start: 7,
   end: 20,
@@ -451,6 +521,12 @@ function fetchAvailability(type: string): {
     )
   );
 
+  // Conflict-check sin cambios respecto a antes de US-44: Freebusy contra el/los calendario(s)
+  // OPERATIVO(s) de nutrición (CALENDARS, donde bookNutricionCalendarEvent crea el evento real
+  // de cada cita) — el calendario de disponibilidad (NUTRICION_AVAILABILITY_CALENDAR_ID) nunca
+  // entra acá, solo define el universo de horas ofrecibles más abajo. Mismo criterio que
+  // pilates: PILATES_CALENDAR_ID (cupo/conflicto) nunca se mezcla con
+  // PILATES_AVAILABILITY_CALENDAR_ID (universo de clases).
   const response = Calendar.Freebusy!.query({
     timeMin: now.toISOString(),
     timeMax: end.toISOString(),
@@ -466,29 +542,29 @@ function fetchAvailability(type: string): {
     }));
   }).reduce((acc, curr) => acc.concat(curr), []);
 
-  const timeslots = [];
-  for (
-    let t = nearestTimeslot.getTime();
-    t + durationMs <= end.getTime();
-    t += durationMs
-  ) {
-    const start = new Date(t);
-    const end = new Date(t + durationMs);
+  // US-44: reemplaza el grid fijo basado en WORKDAYS/WORKHOURS (constantes dejadas en el
+  // código sin uso activo, como plan de rollback — ver CLAUDE.md) por el "tallado" de cada
+  // bloque que Dani/Ali marcaron en "Disponibilidad - Nutrición" en sub-slots consecutivos,
+  // sin huecos, según la duración del tipo de cita solicitado. Un día sin ningún bloque marcado
+  // no aporta ningún sub-slot — no hay fallback a un horario por defecto.
+  const timeslots: string[] = [];
+  for (const block of getNutricionAvailabilityBlocks()) {
+    for (
+      let t = block.start.getTime();
+      t + durationMs <= block.end.getTime();
+      t += durationMs
+    ) {
+      const start = new Date(t);
+      const slotEnd = new Date(t + durationMs);
 
-    if (start.getTime() <= minBookingTime.getTime()) continue;
+      if (start.getTime() <= minBookingTime.getTime()) continue;
 
-    const startTZ = new Date(
-      Utilities.formatDate(start, TIME_ZONE, "yyyy-MM-dd'T'HH:mm:ss")
-    );
-    if (startTZ.getHours() < WORKHOURS.start) continue;
-    if (startTZ.getHours() >= WORKHOURS.end) continue;
-    if (WORKDAYS.indexOf(startTZ.getDay()) < 0) continue;
+      if (events.some((event: { start: Date; end: Date }) => event.start < slotEnd && event.end > start)) {
+        continue;
+      }
 
-    if (events.some((event: { start: Date; end: Date }) => event.start < end && event.end > start)) {
-      continue;
+      timeslots.push(start.toISOString());
     }
-
-    timeslots.push(start.toISOString());
   }
   return { timeslots, durationMinutes: duration };
 }

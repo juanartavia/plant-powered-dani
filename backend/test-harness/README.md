@@ -55,3 +55,19 @@ opcionales, ver `parseWeeklyRecurrence` en `gas-mock.js`) — no es un parser RF
 `fetchAvailability`) — **lo que NO confirma** es que Calendar real expanda la recurrencia
 exactamente así; eso es responsabilidad documentada del API y solo se puede validar contra
 Calendar real con una clase recurrente de verdad (parte del checklist de deploy de US-43).
+
+**US-44 (disponibilidad real de nutrición vía calendario de bloques):** mismo mecanismo de
+siembra que US-43 (`sandbox.Calendar.Events.insert(resource,
+NUTRICION_AVAILABILITY_CALENDAR_ID)`, agregado a `gas-mock.js`), pero para bloques CONTINUOS
+en vez de clases discretas — `getNutricionAvailabilityBlocks()` lee el calendario
+"Disponibilidad - Nutrición" y `fetchAvailability()` talla cada bloque en sub-slots
+consecutivos según la duración del tipo de cita, sin huecos. A diferencia de pilates, este
+flujo no tiene ninguna capa intermedia tipo `Cupos_Pilates` — la disponibilidad se calcula
+100% en vivo, así que no hizo falta ningún mecanismo de dedup nuevo. Los tests 80-84 cubren:
+un bloque parcial talla exactamente los sub-slots que caben completos dentro de su rango
+(sin desbordar ni un minuto), cero bloques marcados → cero slots (sin fallback a
+`WORKDAYS`/`WORKHOURS`, que quedaron en el código sin uso activo como plan de rollback), un
+sub-slot con conflicto real (vía `Calendar.Freebusy.query`, mockeado ad-hoc en el test) queda
+excluido sin afectar el resto del bloque, un bloque recurrente semanal se expande en
+instancias independientes (mismo soporte mínimo de `parseWeeklyRecurrence`), y una regresión
+explícita de que `fetchAvailability("pilates")` no se vio afectado por este cambio.
