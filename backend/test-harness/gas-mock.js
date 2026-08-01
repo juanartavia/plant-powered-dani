@@ -284,6 +284,13 @@ function createMockContext() {
       DANI_EMAIL: "mock-dani@test.com",
       INSTRUCTORA_EMAIL: "mock-instructora@test.com",
       ALI_EMAIL: "mock-ali@test.com",
+      // Remitente ("Enviar como") de los correos AL CLIENTE de pilates — conceptualmente
+      // DISTINTA de INSTRUCTORA_EMAIL (esa es solo destinatario de notificaciones internas, ver
+      // getLateCancellationRecipients). Valor propio (no reutiliza mock-instructora@test.com)
+      // para que los tests puedan distinguir con certeza cuál de las dos properties está
+      // leyendo cada código, en vez de que ambas coincidan por casualidad y oculten un error de
+      // getter equivocado.
+      PILATES_SENDER_EMAIL: "mock-instructora-sender@test.com",
     },
     getProperty(key) {
       return this._props[key] || null;

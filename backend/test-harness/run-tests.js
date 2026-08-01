@@ -292,6 +292,9 @@ function icsDurationMinutes(icsContent) {
   const row = findTokenRow(pilSheet, token);
   assert(pilSheet.getRange(row, 13, 1, 1).getValue() === "Reagendada", "estado pasa a 'Reagendada'");
   assert(pilSheet.getRange(row, 9, 1, 1).getValue() === formatDate(new Date(isoInHours(120)), "", "yyyy-MM-dd"), "fecha_clase actualizada al nuevo slot");
+  const reagendamientoEmail = (sandbox.__sentEmails || []).filter((e) => e.to === "hugo@test.com").pop();
+  assert(!!reagendamientoEmail, "se envía el correo de reagendamiento al cliente de pilates");
+  assert(reagendamientoEmail.options && reagendamientoEmail.options.from === "mock-instructora-sender@test.com", "el correo de reagendamiento de pilates sale con from=alias de la instructora (PILATES_SENDER_EMAIL)");
 })();
 
 // ── Test 9: reagendar una cita VIEJA de nutrición sin event_id (pre-US-06) no bloquea ──
@@ -513,9 +516,10 @@ function clientRecord(overrides) {
   assert(sent[0].to === "sofia-correo@test.com", "el correo de confirmación va dirigido al cliente que agendó");
   assert(typeof sent[0].subject === "string" && sent[0].subject.length > 0, "el correo trae un subject no vacío");
   assert(sent[0].options && sent[0].options.htmlBody && sent[0].options.htmlBody.length > 0, "el correo trae htmlBody no vacío");
+  assert(!sent[0].options.from, "el correo de confirmación de nutrición NO lleva `from` — sale sin remitente alternativo, sin cambios");
   const notifInterna = sent.find((e) => typeof e.subject === "string" && e.subject.startsWith("Nueva:"));
   assert(!!notifInterna, "hay una notificación interna con el verbo 'Nueva' al agendar (buscada por subject, no por posición, por las pruebas de control intercaladas)");
-  assert(notifInterna.to.includes("plantpoweredani.testing@gmail.com"), "la notificación interna va a los destinatarios placeholder (Dani/Ali)");
+  assert(notifInterna.to.includes("mock-dani@test.com") && notifInterna.to.includes("mock-ali@test.com"), "la notificación interna de nutrición va a Dani/Ali (DANI_EMAIL/ALI_EMAIL)");
 })();
 
 // ── Test 17: bookTimeslot envía correo de confirmación en pilates (idioma EN) ───────────
@@ -529,8 +533,11 @@ function clientRecord(overrides) {
   const sent = sandbox.__sentEmails || [];
   assert(sent.length === 2, "se envían exactamente 2 correos (confirmación al cliente + notificación interna US-13/US-30)");
   assert(sent[0].to === "kelly-correo@test.com", "el correo de confirmación va dirigido al cliente que se inscribió");
-  const notifInterna = sent.find((e) => e.to && e.to.includes && e.to.includes("plantpoweredani.testing@gmail.com") && !/PRUEBA-[AB]/.test(e.subject || ""));
-  assert(!!notifInterna, "hay una notificación interna real (no una prueba de control) dirigida a los destinatarios placeholder (Dani/Ali)");
+  assert(sent[0].options && sent[0].options.from === "mock-instructora-sender@test.com", "el correo de confirmación de pilates sale con from=alias de la instructora (PILATES_SENDER_EMAIL)");
+  const notifInterna = sent.find((e) => e.to && e.to.includes && e.to.includes("mock-instructora@test.com") && !/PRUEBA-[AB]/.test(e.subject || ""));
+  assert(!!notifInterna, "hay una notificación interna real (no una prueba de control) dirigida a la instructora (+Ali)");
+  assert(notifInterna.to.includes("mock-ali@test.com"), "la notificación interna de pilates también va a Ali (ALI_EMAIL)");
+  assert(!notifInterna.to.includes("mock-dani@test.com"), "la notificación interna de pilates NO va a Dani");
 })();
 
 // ── Test 18: un fallo al enviar el correo NO revierte ni bloquea el agendamiento ────────
@@ -599,12 +606,13 @@ function clientRecord(overrides) {
   sandbox.cancelBooking(token);
   const sent = sandbox.__sentEmails || [];
   assert(sent.length === 2, "cancelBooking envía 2 correos (notificación interna + correo de cancelación al cliente)");
-  const interno = sent.find((e) => e.to.includes("plantpoweredani.testing@gmail.com"));
+  const interno = sent.find((e) => e.to.includes("mock-dani@test.com"));
   const cliente = sent.find((e) => e.to === "fabricio@test.com");
-  assert(!!interno, "la notificación interna de cancelación va a los destinatarios placeholder (Dani/Ali)");
+  assert(!!interno, "la notificación interna de cancelación (nutrición) va a Dani/Ali (DANI_EMAIL/ALI_EMAIL)");
   assert(interno.subject.startsWith("Cancelada:"), "el subject de la notificación interna usa el verbo 'Cancelada'");
   assert(!!cliente, "el cliente recibe su propio correo de cancelación");
   assert(cliente.subject.toLowerCase().includes("cancel"), "el subject del correo al cliente menciona la cancelación");
+  assert(!cliente.options.from, "el correo de cancelación de nutrición NO lleva `from` — sin cambios");
 })();
 
 // ── Test 22: rescheduleBooking envía notificación interna (tipoAccion=reagendada) ──────────
@@ -619,12 +627,13 @@ function clientRecord(overrides) {
   sandbox.rescheduleBooking(token, isoInHours(96), "America/Costa_Rica");
   const sent = sandbox.__sentEmails || [];
   assert(sent.length === 2, "rescheduleBooking envía 2 correos (notificación interna + correo de reagendamiento al cliente)");
-  const interno = sent.find((e) => e.to.includes("plantpoweredani.testing@gmail.com"));
+  const interno = sent.find((e) => e.to.includes("mock-dani@test.com"));
   const cliente = sent.find((e) => e.to === "gina@test.com");
-  assert(!!interno, "la notificación interna de reagendamiento va a los destinatarios placeholder (Dani/Ali)");
+  assert(!!interno, "la notificación interna de reagendamiento (nutrición) va a Dani/Ali (DANI_EMAIL/ALI_EMAIL)");
   assert(interno.subject.startsWith("Reagendada:"), "el subject de la notificación interna usa el verbo 'Reagendada'");
   assert(!!cliente, "el cliente recibe su propio correo de reagendamiento");
   assert(cliente.subject.toLowerCase().includes("reagendad"), "el subject del correo al cliente menciona el reagendamiento");
+  assert(!cliente.options.from, "el correo de reagendamiento de nutrición NO lleva `from` — sin cambios");
 })();
 
 // ── Test 23: pilates también dispara notificación interna al agendar/reagendar/cancelar ───
@@ -803,7 +812,7 @@ function clientRecord(overrides) {
   assert(nutSheet.getRange(row, 23, 1, 1).getValue() === true, "asistencia_confirmada queda en true");
   const sent = sandbox.__sentEmails || [];
   assert(sent.length === 1, "US-32: confirmAttendance envía exactamente 1 correo (notificación interna de asistencia confirmada)");
-  assert(sent[0].to.includes("plantpoweredani.testing@gmail.com"), "el correo de asistencia confirmada va a los destinatarios placeholder (Dani/Ali)");
+  assert(sent[0].to.includes("mock-dani@test.com") && sent[0].to.includes("mock-ali@test.com"), "el correo de asistencia confirmada va a Dani/Ali (DANI_EMAIL/ALI_EMAIL)");
   assert(sent[0].subject.startsWith("Confirmada:"), "el subject usa el verbo 'Confirmada'");
 })();
 
@@ -1025,6 +1034,10 @@ function findAlertaTardia(sandbox) {
   assert(alerta.to.indexOf("mock-instructora@test.com") >= 0, "la alerta de pilates va a la instructora (INSTRUCTORA_EMAIL)");
   assert(alerta.to.indexOf("mock-ali@test.com") >= 0, "la alerta de pilates también va a Ali (ALI_EMAIL)");
   assert(alerta.to.indexOf("mock-dani@test.com") < 0, "la alerta de pilates NO va a Dani");
+
+  const correoCliente = (sandbox.__sentEmails || []).find((e) => e.to === "olga@test.com");
+  assert(!!correoCliente, "el cliente recibe su propio correo de cancelación");
+  assert(correoCliente.options && correoCliente.options.from === "mock-instructora-sender@test.com", "el correo de cancelación de pilates sale con from=alias de la instructora (PILATES_SENDER_EMAIL)");
 })();
 
 // ── Test 38: la alerta usa la plantilla real y arma correctamente los datos que le inyecta ──

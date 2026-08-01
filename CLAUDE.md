@@ -1,7 +1,7 @@
 # CLAUDE.md — Plant Powered by Dani
 ## Sistema de Agendamiento Automatizado
 > Documento vivo — actualizar conforme avanza el desarrollo
-> Última actualización: 30 julio 2026 — **Sprint 4.** Hoy se cerraron **US-43** (cupos de pilates dinámicos), **US-45** (duración dinámica de pilates + trigger cada 5 min) y **US-44** (disponibilidad real de NUTRICIÓN vía calendario de disponibilidad), las tres **validadas en real contra la URL pública de testing**, no solo en el harness. Deploy activo: **v81** — "US-44 disponibilidad nutrición", confirmado con `clasp deployments`.
+> Última actualización: 1 agosto 2026 — **Sprint 5.** Se cerró el fix de `NOTIFICACION_INTERNA_DESTINATARIOS` (ahora todas las notificaciones internas usan Script Properties, no una constante hardcodeada a la cuenta de testing), se agregó `setupNewAccountSheets()` para poder levantar el esquema completo de Sheets de una sola vez en cuentas nuevas, y se ejecutaron **dos rondas completas de ensayo de deploy en preproducción** (cuentas nuevas simulando a Dani), la segunda sin ningún tropiezo nuevo. Además se implementó y **validó en preproducción** la Opción B de remitente de pilates (alias "Enviar como" real de la instructora). Decisión del equipo: el banner de Google Apps Script (US-36) se acepta como limitación y se comunica como condición de servicio — cerrado, sin más trabajo pendiente ahí.
 
 ---
 
@@ -9,45 +9,60 @@
 
 Si estás retomando este proyecto en un chat nuevo, este documento es tu única fuente de verdad. Antes de generar cualquier prompt para Claude Code:
 
-1. Lee completo este documento, especialmente las secciones 11 (estado de sprints), 13 (notas técnicas — la #43 y la #46 son las más extensas: correos con adjuntos+imágenes, y el bug real de `getLastRow()`/`appendRow()` en Sheets; la #47 cubre la diferencia de modelo entre nutrición y pilates), y 14/15 (método de trabajo y Trello).
-2. **Todo el flujo de correos, gestión de citas, branding, botones de calendario, cupos/duración de pilates y disponibilidad real de nutrición está Done y probado de punta a punta con datos/citas reales:**
+1. Lee completo este documento, especialmente las secciones 11 (estado de sprints), 12-bis (entorno de preproducción, NUEVA), 13 (notas técnicas — la #43 y la #46 son las más extensas: correos con adjuntos+imágenes, y el bug real de `getLastRow()`/`appendRow()` en Sheets; la #47 cubre la diferencia de modelo entre nutrición y pilates; las #48/#49/#50 son las nuevas de esta sesión), y 14/15 (método de trabajo y Trello).
+2. **Todo el flujo de correos, gestión de citas, branding, botones de calendario, cupos/duración de pilates, disponibilidad real de nutrición, notificaciones internas por Script Properties, y remitente real de pilates está Done y probado de punta a punta con datos/citas reales, tanto en testing como en dos cuentas de preproducción distintas:**
    - **US-11 a US-14** — Familia completa de correos automatizados.
    - **US-13/US-30, US-32, US-33** — Notificaciones internas (nueva cita, asistencia confirmada, cancelación tardía).
    - **US-31, US-28, US-41** — Página de gestión de citas + brandbook + fix de título redundante.
    - **US-34** — Formato de fecha en español corregido (día-mes-año, no al revés).
-   - **US-40** — Campo de fecha de nacimiento: reemplazado el `<input type="date">` nativo por un selector propio (Popover+Calendar+Dropdown), porque el nativo no se podía abrir con clic en cualquier parte del campo dentro del iframe de Apps Script, y además el `<select>` de mes/año no tenía estilo propio.
-   - **US-42** — Notificación a Dani/instructora + Ali cuando un cliente reagenda 3 veces o más (cada vez, no solo la primera).
-   - **US-37** — Correo de confirmación con 4 botones de calendario (Google/Outlook/Yahoo/Apple-iCal) + invitación `.ics` real adjunta, que dispara el prompt nativo de "Sí/No/Tal vez" en Gmail/Outlook — **confirmado en real**.
-   - **US-43** — Cupos de pilates dinámicos: reemplaza el horario fijo hardcodeado ("sábados 10am") por clases marcadas por la instructora en un calendario de Google dedicado, con capacidad configurable por clase — **confirmado en real**.
-   - **US-45** — Duración dinámica de clases de pilates (ya no fija en 60 min) + trigger de sincronización corriendo cada 5 minutos en vez de cada hora — **confirmado en real**.
-   - **US-44** — Disponibilidad real de NUTRICIÓN: reemplaza las constantes fijas `WORKDAYS`/`WORKHOURS` por bloques marcados por Dani/Ali en un calendario de Google dedicado (`Disponibilidad - Nutrición`), tallados en sub-slots según el tipo de cita — **confirmado en real, incluyendo huecos entre bloques respetados correctamente**.
+   - **US-40** — Campo de fecha de nacimiento: selector propio (Popover+Calendar+Dropdown).
+   - **US-42** — Notificación a Dani/instructora + Ali cuando un cliente reagenda 3 veces o más.
+   - **US-37** — Correo de confirmación con 4 botones de calendario + invitación `.ics` real adjunta.
+   - **US-43** — Cupos de pilates dinámicos vía calendario de disponibilidad dedicado.
+   - **US-45** — Duración dinámica de clases de pilates + trigger de sincronización cada 5 minutos.
+   - **US-44** — Disponibilidad real de NUTRICIÓN vía calendario de disponibilidad dedicado.
+   - **US-46 (nueva, 1 ago)** — Fix de `NOTIFICACION_INTERNA_DESTINATARIOS`: las notificaciones de "nueva cita/reagendada/cancelada/confirmada" ahora usan `getLateCancellationRecipients(esPilates)` (Script Properties `DANI_EMAIL`/`INSTRUCTORA_EMAIL`/`ALI_EMAIL`), igual que ya hacían cancelación tardía (US-33) y reagendamientos múltiples (US-42) — **confirmado en real en dos cuentas de preproducción distintas**.
+   - **US-47 (nueva, 1 ago)** — `setupNewAccountSheets()`: función que arma el esquema completo y final de Google Sheets de una sola corrida, para cuentas nuevas (sin Debug_US37) — **usada con éxito en las dos rondas de ensayo**.
+   - **US-48 (nueva, 1 ago)** — Opción B: los correos AL CLIENTE del flujo de pilates (confirmación, reagendamiento, cancelación) salen con el remitente real de la instructora, vía alias "Enviar como" de Gmail + Script Property `PILATES_SENDER_EMAIL` — **confirmado en real en preproducción, incluyendo verificación del alias**.
 3. **Bug crítico histórico, ya corregido:** los links de los correos usaban `ScriptApp.getService().getUrl()`, que devuelve `/dev` (deployment HEAD, roto) en vez de `/exec`. Corregido con `WEB_APP_URL` fija.
 4. **Lección de arquitectura (US-28):** el portal se compila a un ÚNICO archivo HTML inlineado (`vite-plugin-singlefile`) — `frontend/public/` NO sirve para nada en producción.
 5. **Gap de build (27 jul), corregido:** `backend/package.json` → `"build": "tsc && node copy-to-dist.js"`.
-6. **Incidente grave de corrupción de OneDrive (27-28 jul), completamente recuperado.** Ver nota técnica correspondiente en sección 13. El proyecto vive en `C:\dev\plant-powered-dani` — **NUNCA** en una carpeta de OneDrive.
+6. **Incidente grave de corrupción de OneDrive (27-28 jul), completamente recuperado.** El proyecto vive en `C:\dev\plant-powered-dani` — **NUNCA** en una carpeta de OneDrive.
 7. **Apps Script Web Apps corren dentro de un iframe cross-origin real, con implicaciones serias:**
-   - `HTMLInputElement.showPicker()` lanza `SecurityError` si se llama desde ese iframe — **nunca usar esta API** para nada que dependa de abrirse dentro del portal (descubierto en US-40, confirmado contra producción real, no solo localhost).
-   - `Logger.log()`/`console.log()` **no aparecen de forma confiable** en el panel de "Ejecuciones" para ejecuciones reales disparadas por el Web App (a diferencia de correr una función manualmente desde el editor) — para diagnósticos reales, escribir a una hoja de Google Sheets dedicada es más confiable. Ver `Debug_US37` en sección 8 (**sigue existiendo en el Sheet, decidir si se limpia o se deja como herramienta de diagnóstico permanente**).
-   - **Cualquier prueba de una funcionalidad nueva debe hacerse contra la URL pública real (`/exec`), nunca solo contra `localhost`** — varios bugs (US-40, US-37) pasaban perfecto en local y fallaban en real, precisamente por el iframe cross-origin.
-   - **Corolario descubierto en US-44:** ni siquiera correr una función manualmente desde el editor sirve para probar `fetchAvailability()` si la función espera parámetros (ej. el tipo de cita) — el botón "Ejecutar" del editor no permite pasar argumentos. Para funciones parametrizadas, la prueba real solo se puede hacer a través del portal público con el parámetro correcto en la URL (ej. `?type=initial`).
-8. **Regla crítica de correos con imágenes + adjuntos, ver nota #43:** nunca embeber imágenes como `<img src="data:image/png;base64,...">` directo en un correo que también lleve un archivo adjunto real vía `GmailApp.sendEmail()` — Gmail descarta el adjunto en silencio. Usar siempre `inlineImages` (con `<img src="cid:...">`) para las imágenes cuando el correo también lleva adjuntos.
-9. **Regla crítica de Sheets, ver nota #46:** nunca llamar `sheet.getLastRow()` inmediatamente después de `sheet.appendRow()` dentro de un loop, sin flush entre medio — en Sheets real (no en el harness) puede devolver un número de fila desactualizado y hacer que la escritura aterrice sobre una fila vieja en vez de la recién creada. Calcular el número de fila localmente (a partir del largo de los datos ya leídos + un contador incremental) en vez de volver a preguntarle a Sheets dentro del loop.
-10. **`clasp push` vs `clasp deploy`, distinción importante:** `clasp push` solo actualiza el HEAD que ve el editor de Apps Script (correr una función manualmente desde ahí SIEMPRE usa el código más reciente pusheado). La URL pública `/exec` que usa el portal y dispara los correos **NO se actualiza con `push`** — solo se mueve haciendo `clasp deploy` explícito sobre el `deploymentId` correspondiente. Si el código parece "no aplicarse" en el portal real después de un push, este es el primer sospechoso antes de pensar que el fix está mal.
-11. **Nutrición y pilates ya NO dependen de horarios/duraciones fijas en el código; ambas leen calendarios de disponibilidad dedicados, pero con modelos distintos** (ver nota #47): pilates es agendamiento de **clases discretas** (cada evento de disponibilidad = una clase completa, con su propia capacidad vía `Cupos_Pilates`); nutrición es agendamiento **continuo** (cada evento de disponibilidad = un bloque abierto que se "talla" en sub-slots según el tipo de cita, sin ninguna capa de Sheet intermedia). No asumir que el mismo patrón de código sirve para ambos sin adaptarlo.
+   - `HTMLInputElement.showPicker()` lanza `SecurityError` si se llama desde ese iframe — **nunca usar esta API** para nada que dependa de abrirse dentro del portal.
+   - `Logger.log()`/`console.log()` **no aparecen de forma confiable** en el panel de "Ejecuciones" para ejecuciones reales disparadas por el Web App.
+   - **Cualquier prueba de una funcionalidad nueva debe hacerse contra la URL pública real (`/exec`), nunca solo contra `localhost`**.
+   - **Corolario US-44:** para funciones parametrizadas (ej. `fetchAvailability(type)`), la única prueba real es a través del portal público con el parámetro en la URL — el botón "Ejecutar" del editor no permite pasar argumentos.
+8. **Regla crítica de correos con imágenes + adjuntos, ver nota #43:** nunca embeber imágenes como `<img src="data:image/png;base64,...">` directo en un correo que también lleve un archivo adjunto real vía `GmailApp.sendEmail()` — usar siempre `inlineImages` (con `<img src="cid:...">`).
+9. **Regla crítica de Sheets, ver nota #46:** nunca llamar `sheet.getLastRow()` inmediatamente después de `sheet.appendRow()` dentro de un loop, sin flush entre medio.
+10. **`clasp push` vs `clasp deploy`, distinción importante:** `clasp push` solo actualiza el HEAD del editor. La URL pública `/exec` **NO se actualiza con `push`** — solo con `clasp deploy` explícito sobre el `deploymentId` correspondiente.
+11. **Nutrición y pilates leen calendarios de disponibilidad dedicados, con modelos distintos** (ver nota #47): pilates = clases discretas; nutrición = tiempo continuo tallado en sub-slots.
 12. **US-20 (token único)** cubierta al 100% por US-06/US-31 — pendiente que el usuario la cierre/archive en Trello.
 13. **Pendientes de fondo, de baja urgencia, confirmados como seguros de dejar así:** coerción de fechas a Date en Sheets (cosmético), `findClientByEmail()` lee con TIME_ZONE en vez de UTC, acceso móvil sin validación formal con dispositivo externo.
-14. **Destinatarios de notificaciones internas siguen en placeholder** — reemplazar antes de producción.
-15. **Varios textos de copy siguen en BORRADOR**, pendientes de aprobación de Gabriela/Dani (lista en sección 11).
+14. **Destinatarios de notificaciones internas de TESTING siguen en placeholder** (`plantpoweredani.testing@gmail.com`) — normal para el ambiente de testing, hay que reemplazar por los correos reales de Dani/Ali/instructora recién en el deploy de producción final.
+15. **Varios textos de copy siguen en BORRADOR**, pendientes de aprobación de Gabriela/Dani.
 16. Flujo de trabajo de siempre: prompt → Claude Code ejecuta → **commit inmediato tras deploy** → **probar en real (URL pública) antes de marcar cualquier checkbox** → actualizar CLAUDE.md.
 17. **Pedir siempre el checklist real de Trello antes de generar un prompt nuevo.**
-18. **Antes de patchear este documento, confirmar que es la versión más completa y reciente.** Ya pasó dos veces que no lo era — ver nota crítica de recuperación en sección 13.
-19. **`WEB_APP_URL` fija siempre, nunca `ScriptApp.getService().getUrl()`.**
-20. **Lista de todo lo construido SIN diseño de Gabriela** (revisar con ella cuando haya oportunidad): botón "Agregar a mi calendario" (ahora expandido a 4 botones + invitación real, US-37), notificación interna con 3 variantes, correo al cliente al reagendar, correo de cancelación al cliente, toda la página de gestión de citas (US-31), plantilla de alerta de cancelación tardía (US-33), plantilla de reagendamientos múltiples (US-42), el selector de fecha de nacimiento propio (US-40).
-21. **Pendiente de fondo, no urgente:** segunda carpeta de recuperación de OneDrive (con `.git` propio, `design-reference/`) nunca se terminó de auditar por si tiene el historial de git real que falta reconstruir.
+18. **Antes de patchear este documento, confirmar que es la versión más completa y reciente.** Ya pasó varias veces que no lo era — incluyendo el 1 de agosto, cuando se pegó la versión vieja del 30 de julio pensando que ya estaba actualizada. **Regla reforzada: después de pedirle a Claude Code que actualice este archivo, confirmar explícitamente que el archivo en disco cambió (ej. pedirle que muestre las primeras líneas o busque una palabra clave nueva) antes de asumir que quedó guardado.**
+19. **`WEB_APP_URL` fija siempre, nunca `ScriptApp.getService().getUrl()`.** Línea 247 de `backend/src/app.ts`.
+20. **Lista de todo lo construido SIN diseño de Gabriela:** botón "Agregar a mi calendario" (4 botones + invitación real, US-37), notificación interna con 3 variantes, correo al cliente al reagendar, correo de cancelación al cliente, página de gestión de citas (US-31), plantilla de cancelación tardía (US-33), plantilla de reagendamientos múltiples (US-42), selector de fecha de nacimiento propio (US-40).
+21. **Pendiente de fondo, no urgente:** segunda carpeta de recuperación de OneDrive nunca se terminó de auditar.
 22. `build.sh` de la raíz no ejecuta en `cmd.exe`/Windows — pendiente, no bloquea.
-23. **US-36** (banner "Un usuario de Google Apps Script creó esta aplicación") — investigado a fondo, no se puede quitar con código; requiere página envoltorio (iframe) en otro dominio. **Pendiente de decisión del equipo** en reunión — ver sección 5.
-24. **Coordinación pendiente con Dani/Ali antes de considerar esto "en producción":** deben cargar bloques de disponibilidad reales en `Disponibilidad - Nutrición` (y la instructora en `Disponibilidad - Pilates`) ANTES de que el modelo viejo se apague del todo — si no marcan nada, el portal no ofrece ningún slot ese día, lo cual puede parecer que "el sistema se rompió" si no están al tanto. Confirmar también si conviene usar eventos recurrentes de Calendar para la carga inicial de su horario habitual, en vez de marcar cada semana a mano.
-25. **Sin tarjetas grandes de arquitectura pendientes por ahora** — las tres tarjetas de disponibilidad dinámica (US-43, US-44, US-45) están cerradas. Lo que queda son los pendientes de higiene/producción listados en la sección 11 (correos reales, banner US-36, textos BORRADOR, `git push` pendiente, etc.).
+23. **US-36 (banner de Google Apps Script) — CERRADO.** Decisión de equipo (StandUp viernes, 1 ago): se acepta como limitación de la versión gratuita y se comunica como condición del servicio. No requiere más trabajo técnico.
+24. **Coordinación pendiente con Dani/Ali/instructora antes de producción:** deben cargar bloques de disponibilidad reales en `Disponibilidad - Nutrición`/`Disponibilidad - Pilates` ANTES de que el modelo viejo se apague del todo.
+25. **Sin tarjetas grandes de arquitectura pendientes** — ver sección 11 para el detalle de lo que falta (mayormente higiene/producción y decisiones de negocio, no arquitectura).
+26. **NUEVO — Terminología: "cuenta de ensayo" pasa a llamarse "preproducción" (preprod).** El equipo confirmó formalmente en el StandUp del 1 de agosto que este ambiente es parte del proceso oficial de despliegue, no una prueba informal — ver sección 12-bis.
+27. **NUEVO — Bug de fecha inconsistente entre banner de Calendar y cuerpo del correo, INVESTIGADO Y CERRADO (no es un bug de producción):** causado por `testSendConfirmationEmails()` (función de prueba manual, no el flujo real de clientes) usando un token hardcodeado (`"test-token-1234"`) reutilizado entre corridas con fechas distintas — Gmail cachea el evento de Calendar bajo ese UID fijo y muestra la fecha del run más reciente en el banner, aunque el cuerpo del correo (leído de Sheets en el momento) muestre la fecha correcta. **Confirmado que no puede pasar con reservas reales** (el `token` real es un UUID único por fila, generado una sola vez). El equipo decidió en el StandUp del 1 de agosto **mantener el botón de calendario tal cual**, sin más cambios — riesgo aceptado, ver nota #49 para el detalle completo.
+28. **NUEVO — Pendiente de la reunión del StandUp (1 ago), no iniciado todavía:**
+    - Bajar la frecuencia del trigger de lectura de disponibilidad de Pilates de 5 min a **1 min**.
+    - Investigar si se mantiene o se elimina la funcionalidad de correo de cancelación (decisión de negocio, no solo técnica).
+    - Crear una historia de usuario formal para "paso a preproducción" (en la práctica, ya se ejecutó dos veces vía las rondas de ensayo — falta solo formalizarla en Trello).
+    - Documentar para el usuario final el enfoque de doble calendario (citas + disponibilidad), enfatizando que da más privacidad y flexibilidad.
+    - Elaborar manual de usuario detallado de todos los procesos.
+    - Danilo explora acortadores de URL (TinyURL u otros) — con la precaución de no usar los nombres de enlace definitivos durante pruebas.
+29. **NUEVO — Reunión de despliegue real programada para el martes**, enfocada exclusivamente en el paso a producción con la cuenta de Dani.
+30. **NUEVO — Facturación del proyecto confirmada:** una sola factura electrónica al final, pago en colones vía transferencia a cuenta BAC.
+31. **NUEVO — Cambio de personal, ya resuelto en el diseño:** la secretaria "Ali" fue despedida. El equipo decidió estandarizar el correo de secretaría a una dirección genérica (ej. `info@plantpoweredbydani.com`), no ligada al nombre de una persona — esto **no requiere ningún cambio de código**, la Script Property sigue llamándose `ALI_EMAIL` (es solo un nombre interno de variable) y simplemente se le pone el correo genérico nuevo cuando lo tengan. Si "Ali" aparece como texto VISIBLE en algún template de correo, revisar y genericizar aparte (pendiente de auditar, no confirmado si aplica).
 
 ---
 
@@ -57,15 +72,15 @@ Si estás retomando este proyecto en un chat nuevo, este documento es tu única 
 **Plant Powered by Dani** — estudio de nutrición y pilates en Costa Rica.
 - **Dani**: nutricionista, admin principal del sistema.
 - **Instructora de pilates**: cuenta separada bajo el mismo dominio. Pilates no tiene recordatorio de 48hrs.
-- **Ali (secretaria)**: distribuye los links de agendamiento por WhatsApp. Recibe las notificaciones internas junto con Dani.
+- **Secretaría**: distribuye los links de agendamiento por WhatsApp. Recibe las notificaciones internas junto con Dani. **Correo genérico institucional** (no ligado a una persona específica, ver punto 31 de la sección 0) — el rol se mantiene bajo la Script Property `ALI_EMAIL`.
 
 ### El negocio
 - Atiende clientes en **español e inglés**, incluyendo clientes en **Estados Unidos** (zonas horarias múltiples).
 - Modalidades: presencial y virtual.
 - Infraestructura: **Squarespace** + **Google Workspace** (Gmail, Calendar, Sheets, Drive, Forms, Meet).
 - Dominio: `PlantPoweredbyDani.com`.
-- **Squarespace fuera de alcance del MVP** — la cuenta de Dani no soporta bien iframes/código embebido en su plan actual (relevante para US-36).
-- **Volumen de negocio:** 100-200 clientes por mes (dato relevante para US-36: muy por debajo del umbral de "alto volumen" que Google exige para el programa de whitelisting de Gmail Actions/schema.org).
+- **Squarespace fuera de alcance del MVP.**
+- **Volumen de negocio:** 100-200 clientes por mes.
 
 ### Facturación del proyecto
 - Una sola factura electrónica al final. Pago en colones, transferencia a cuenta BAC de AutomáTica.
@@ -76,6 +91,9 @@ Santa Ana Town Center
 Work Space Republic – Segundo piso
 Consultorio #33
 ```
+
+### Formalización de AutomáTica (nuevo, 1 ago)
+Danilo está gestionando el registro de la empresa como PYME y la firma digital, para poder facturar a nombre de la sociedad creada junto a Gabriela.
 
 ---
 
@@ -114,7 +132,7 @@ Primer contacto siempre humano (WhatsApp). Sin landing page. Confirmación autom
 | **Ventana máxima** | 8 semanas | 8 semanas |
 
 ### Formulario del cliente
-Nombre, Apellido, Correo, Teléfono, Tipo de identificación + Número, Fecha de nacimiento (mín. 15 años, **selector propio desde US-40**), Modalidad. Sin notas. Idioma solo en Paso 1.
+Nombre, Apellido, Correo, Teléfono, Tipo de identificación + Número, Fecha de nacimiento (mín. 15 años, selector propio desde US-40), Modalidad. Sin notas. Idioma solo en Paso 1.
 
 ### Edad mínima: 15 años ✅ Doble capa frontend+backend en `upsertClient()`.
 
@@ -129,11 +147,9 @@ Nombre, Apellido, Correo, Teléfono, Tipo de identificación + Número, Fecha de
 | Confirmación (US-12) | Cliente | La DEL CLIENTE (`clientTimezone`) |
 | Recordatorio 48hrs (US-14) | Cliente | La DEL CLIENTE |
 | Reagendamiento/cancelación (US-32) | Cliente | La DEL CLIENTE |
-| Notificación interna (US-13/30/32) | Dani/Ali | SIEMPRE Costa Rica (`TIME_ZONE`) |
+| Notificación interna (US-13/30/32) | Dani/Ali/instructora | SIEMPRE Costa Rica (`TIME_ZONE`) |
 | Alerta de cancelación tardía (US-33) | Dani/instructora/Ali | SIEMPRE Costa Rica |
 | Alerta de reagendamientos múltiples (US-42) | Dani/instructora/Ali | SIEMPRE Costa Rica |
-
-**Formato de fecha en español (US-34, 29 jul):** corregido el orden a día-mes-año en las 4 pantallas afectadas (pantalla de "gracias", paso de calendario, y las de US-31) — antes salía en el orden equivocado en español. Inglés no se tocó, ya estaba bien.
 
 ### 3-b. Modelo de notificación interna (US-13/US-30) — un solo template, 3 acciones
 | tipoAccion | Título | Color del badge |
@@ -148,114 +164,101 @@ Trigger de tiempo cada hora, ventana 47-49hrs. 3 botones: Confirmar/Reagendar/Ca
 ### 3-d. Dos formatos de link — RESUELTO con US-31
 - Confirmación: `linkReagendar` sin `accion` → menú.
 - Recordatorio: `?token=...&accion=confirmar|reagendar|cancelar` → pantalla directa.
-- **Desde US-37:** `?action=ics&token=...` → endpoint que genera un `.ics` descargable con los datos ACTUALES de la cita (se regenera en cada clic, así que refleja reagendamientos posteriores al envío del correo original).
+- **Desde US-37:** `?action=ics&token=...` → endpoint que genera un `.ics` descargable con los datos ACTUALES de la cita.
 
 ### 3-e. Página visual de gestión de citas (US-31) — ✅ Done
-4 pantallas: menú, confirmar asistencia, reagendar, cancelar. Título redundante quitado (US-41). Validado en real.
-
-**⚠️ Nota de arquitectura crítica (descubierta en US-40, 29 jul):** el portal corre dentro de un **iframe cross-origin real** (`script.google.com` → `*.googleusercontent.com`). Esto bloquea `showPicker()` con `SecurityError` — cualquier funcionalidad nueva que dependa de APIs del navegador debe verificarse explícitamente contra este contexto, no asumir que "funciona en localhost" es suficiente.
+4 pantallas: menú, confirmar asistencia, reagendar, cancelar. **Validado en real en testing Y en las dos rondas de preproducción (agendar, reagendar, cancelar, confirmar asistencia — los 4 flujos, tanto nutrición como pilates).**
 
 ### 3-f. Bug crítico: `getUrl()` sensible al contexto de ejecución — RESUELTO
 Fix: constante `WEB_APP_URL` fija.
 
 ### 3-g. Correo al cliente al reagendar/cancelar (US-32)
-Reagendar reutiliza `renderConfirmationEmail()` (por lo que **hereda automáticamente** los botones de calendario y el adjunto `.ics` de US-37, sin cambios adicionales). Cancelar usa plantilla propia sin botones de calendario (no tiene sentido ofrecer agendar algo que se acaba de cancelar).
+Reagendar reutiliza `renderConfirmationEmail()`. Cancelar usa plantilla propia sin botones de calendario.
 
-### 3-h. US-32 — Notificación interna de asistencia confirmada — ✅ Done
+### 3-h. US-32 — Notificación interna de asistencia confirmada — ✅ Done, validada en real (testing + ambas rondas de preprod)
 
 ### 3-i. Brandbook del portal (US-28) — ✅ Done
 Paleta `#2C3F27`/`#F9BFC6`/`#B9BD5B`/`#FFF9F1`/`#EFE7DA`. Tipografía Jost + Century Gothic. Logo real.
 
 ### 3-j. US-33 — Alerta de cancelación tardía (RF-2.5) — ✅ Done
-Badge rojo `#C0392B`. Destinatarios: Nutrición → Dani+Ali; Pilates → instructora+Ali (Script Properties `DANI_EMAIL`/`INSTRUCTORA_EMAIL`/`ALI_EMAIL`). Columna `cancelaciones_tardias` por cita (col 20 Nutrición, col 17 Pilates).
+Badge rojo `#C0392B`. Destinatarios: Nutrición → Dani+Ali; Pilates → instructora+Ali (Script Properties). Columna `cancelaciones_tardias` por cita (col 20 Nutrición, col 17 Pilates).
 
-**Nota técnica sobre el emoji del asunto:** el emoji ⚠️ salía corrupto (`?????`) en Gmail real hasta que se reemplazó por la entidad HTML numérica `&#9888;` — mismo patrón de fix aplicado después a 📅 en US-37 (ver nota #43).
+### 3-k. US-40 — Campo de fecha de nacimiento — ✅ Done (ver historial en versiones anteriores del documento)
 
-### 3-k. US-40 — Campo de fecha de nacimiento (Sprint 4, 29 jul, 3 rondas) — ✅ Done
+### 3-l. US-42 — Notificación de reagendamientos múltiples — ✅ Done (ver historial en versiones anteriores del documento)
 
-**Problema original del checklist:** el `<input type="date">` nativo solo se abría al hacer clic exactamente en el ícono de calendario, no en cualquier parte del campo.
+### 3-m. US-37 — Correo de confirmación con botones de calendario e invitación real — ✅ Done, ver nota #43
 
-**Ronda 1 (fallida en producción):** se intentó usar `focus()` + `showPicker()` con mejora progresiva. Funcionaba perfecto en `localhost`, pero **fallaba silenciosamente en producción real** — `showPicker()` lanza `SecurityError` cuando se llama desde el iframe cross-origin de Apps Script (confirmado con Playwright apuntando directo a la URL pública). Lección: probar SIEMPRE contra la URL pública real, nunca solo local.
+### 3-n. US-43 — Cupos de pilates dinámicos vía calendario de disponibilidad — ✅ Done, ver nota #45/#46
 
-**Ronda 2 (solución definitiva):** se reemplazó el `<input type="date">` nativo por un trigger `<button>` + `Popover` + `Calendar` (los mismos componentes que ya usa el calendario principal de selección de cita), con `captionLayout="dropdown"` para saltar directo a años lejanos. Preserva: edad mínima 15 años (año ni siquiera aparece como opción si haría al cliente menor de edad — más estricto que el input nativo original), validación bilingüe de campo requerido, contrato de datos intacto (input hidden, mismo formato `yyyy-MM-dd`).
+### 3-o. US-45 — Duración dinámica de clases de pilates + trigger de sync — ✅ Done. **Pendiente del StandUp del 1 ago: bajar la frecuencia del trigger de 5 min a 1 min** (ver punto 28 de la sección 0) — todavía no ejecutado.
 
-**Ronda 3 (bug visual encontrado por el usuario):** el `<select>` nativo de mes/año de `react-day-picker` no tenía estilo propio — se veía con el tema oscuro del sistema operativo, ilegible. Fix: componente `CalendarDropdown` propio inyectado vía `components={{ Dropdown: CalendarDropdown }}`, reutilizando el mismo patrón Popover+Command que ya usan `LanguageDropdown`/`TimezoneDropdown`.
+### 3-p. US-44 — Disponibilidad real de NUTRICIÓN vía calendario de disponibilidad — ✅ Done, ver nota #47
 
-**Validado en real** (URL pública, no local): clic en label/borde/centro abre el selector; menú de mes/año con estilo correcto incluso en tema oscuro del sistema; límite de edad exacto verificado.
+### 3-q. US-46 (NUEVA) — Fix de destinatarios de notificaciones internas — ✅ Done, confirmado en real
 
-### 3-l. US-42 — Notificación de reagendamientos múltiples (Sprint 4, 29 jul) — ✅ Done
-Columna nueva `contador_reagendamientos` por cita (col 24 Nutrición, col 18 Pilates) — nunca existió antes en ninguna de las dos pestañas, requirió 2 migraciones nuevas. Se incrementa en cada `rescheduleBooking()` exitoso (el reagendamiento SIEMPRE se permite, esta notificación es puramente informativa). A partir del 3er reagendamiento (inclusive) y **en cada uno posterior** (3ro, 4to, 5to... — decisión explícita del usuario, no solo la primera vez que se cruza el umbral) se envía una alerta a Dani/instructora+Ali (mismo ruteo de US-33). Plantilla nueva con badge ámbar `#C9791A` (distinto a los 4 colores ya usados). Bloqueo por ventana vencida NO incrementa el contador ni dispara la alerta. Fallo de Gmail no revierte nada. **Validado en real** por el usuario (reagendó la misma cita 3+ veces).
+**Motivación:** desde Sprint 3 existía una constante hardcodeada, `NOTIFICACION_INTERNA_DESTINATARIOS`, apuntando a `plantpoweredani.testing@gmail.com` dos veces (placeholder de Dani y de Ali). Usada por `sendNotificacionInterna()` (US-13/30: agendada/reagendada/cancelada) y `sendNotificacionInternaConfirmada()` (US-32). Mientras tanto, `getLateCancellationRecipients(esPilates)` ya existía y ya se usaba correctamente en cancelación tardía (US-33) y reagendamientos múltiples (US-42), leyendo `DANI_EMAIL`/`INSTRUCTORA_EMAIL`/`ALI_EMAIL` de Script Properties, distinguiendo destinatario según `esPilates`.
 
-### 3-m. US-37 — Correo de confirmación con botones de calendario e invitación real (Sprint 4, 29 jul) — ✅ Done, ver nota técnica #43 para la investigación completa
+**Descubierto durante:** la primera ronda de ensayo de preproducción (1 ago) — se configuraron `DANI_EMAIL`/`INSTRUCTORA_EMAIL`/`ALI_EMAIL` correctamente para la cuenta nueva, pero la notificación de "nueva cita" seguía llegando a la cuenta de testing vieja. Investigado con "Mostrar original" del correo en Enviados, se confirmó el destinatario real.
 
-**Alcance:** reemplaza el botón único experimental de Google Calendar (de US-11/12) por 4 botones (Google/Outlook/Yahoo/Apple-iCal) en las 4 plantillas de confirmación (nutrición/pilates × es/en), más una invitación `.ics` real **adjunta directamente al correo**, que dispara el prompt nativo de "Sí/No/Tal vez" en Gmail/Outlook sin que el cliente tenga que hacer clic en nada — confirmado en real.
+**Fix aplicado:**
+- Las 2 llamadas a `GmailApp.sendEmail()` en `sendNotificacionInterna()` y `sendNotificacionInternaConfirmada()` ahora usan `getLateCancellationRecipients(params.esPilates).join(",")` en vez de `NOTIFICACION_INTERNA_DESTINATARIOS.join(",")`.
+- Constante `NOTIFICACION_INTERNA_DESTINATARIOS` eliminada por completo (ya no tiene ningún uso).
+- Comentario viejo junto a `LATE_CANCELLATION_PROP_*` actualizado para reflejar que ahora sirve a las 4 notificaciones (US-13/30/32/33/42), no solo 2.
 
-**Nuevas funciones/mecanismos (backend):**
-- `buildAddCalLinks()` — arma los 3 deep-links (fechas en UTC, formato correcto por proveedor — Outlook usa UTC extendido `yyyy-MM-ddTHH:mm:ssZ`, distinto del básico de Google/Yahoo) + el link al endpoint propio de `.ics`. Desde US-45, usa la duración real de la clase para pilates, no una constante fija.
-- `buildBookingIcsContent()`/`buildIcsContent()` — generan el `.ics` real (RFC 5545), con `METHOD:PUBLIC` para el endpoint de descarga y `METHOD:REQUEST` + `ATTENDEE` para el adjunto del correo (`SEQUENCE` reutiliza el contador de reagendamientos de US-42, sin necesitar un contador nuevo).
-- `doGet(?action=ics&token=...)` — nuevo branch, evaluado ANTES del branch genérico de `?token=` (para no romper la SPA de US-31). Token inválido/cita cancelada → error en texto plano, nunca un `.ics` roto.
-- `buildInlineImagesForTemplate()` — arma el mapa `{cid: Blob}` de las imágenes del correo (logo, flor/kettlebell), ver nota #43 para por qué esto fue necesario.
+**Cambio de comportamiento real, ya confirmado y aceptado (no un edge case a evitar):** las notificaciones de PILATES (nueva/reagendada/cancelada/confirmada) ahora le llegan a la instructora (+Ali) en vez de a Dani — comportamiento correcto según el modelo de actores del sistema, pero distinto al de antes.
 
-**Reagendamiento hereda todo automáticamente** (misma función `renderConfirmationEmail()`), sin cambios adicionales. **Cancelación NO lleva botones de calendario** (no tiene sentido, decisión de diseño).
+**Validado:**
+- Harness: subió de 322 a 324 aserciones (2 nuevas en Test 17, confirmando explícitamente que pilates ya no notifica a Dani).
+- Real: confirmado en la primera ronda de preproducción, revisando el header `To:` del correo con "Mostrar original".
 
-**Decisión de negocio tomada durante esta tarjeta:** el `.ics` adjunto incluye `ORGANIZER` (Dani/instructora según tipo de cita) — si el cliente responde al prompt nativo, le puede llegar un correo de RSVP a esa cuenta. Aceptado dado el volumen bajo del negocio (100-200/mes).
+### 3-r. US-47 (NUEVA) — `setupNewAccountSheets()`: setup de Sheets de una sola corrida para cuentas nuevas — ✅ Done, confirmado en real (dos veces)
 
-**Trade-off de testing:** Yahoo solo se verificó parcialmente (el link navega bien, sin cuenta real para confirmar el evento creado) — cuenta de Yahoo bloqueada al crearla por verificación de SMS. Pendiente si alguien del equipo consigue una cuenta.
+**Motivación:** para levantar una cuenta nueva (ensayo o producción), el camino existente era correr `initializeSheets()` y luego cada migración incremental por separado (`addContadorReagendamientosColumnToNutricion()`, `addCancelacionTardiaColumnToPilates()`, `addDisponibilidadEventIdColumnToCuposPilates()`, `addDuracionMinutosColumnToCuposPilates()`, etc.) — una secuencia larga, calcada del historial de cómo fue creciendo el Sheet de testing con el tiempo, sin ninguna razón para repetirse en una cuenta que arranca de cero.
 
-### 3-n. US-43 — Cupos de pilates dinámicos vía calendario de disponibilidad — ✅ Done, confirmado en real
+**Qué hace:**
+- Crea un Spreadsheet nuevo (`SpreadsheetApp.create()`) y guarda su ID en `SPREADSHEET_ID`.
+- Arma las 4 pestañas (`Nutrición`, `Pilates`, `Cupos_Pilates`, `Clientes`) con el esquema FINAL completo desde el inicio — reutilizando `SHEET_SCHEMAS`/`CLIENTES_SCHEMA` como base y anexando las columnas que hoy solo existen vía migración (`asistencia_confirmada`/`contador_reagendamientos` en Nutrición, `contador_reagendamientos` en Pilates), en vez de arrays literales nuevos — así no queda desincronizada si el esquema base cambia a futuro.
+- **NO crea `Debug_US37`** — esa pestaña de diagnóstico ya cumplió su propósito (bug de US-37 resuelto) y no forma parte del esquema de ninguna cuenta nueva de aquí en adelante.
+- Aplica `ensureCuposPilatesPlainTextFormat()` a `Cupos_Pilates`, igual que `initializeSheets()`.
+- Si `SPREADSHEET_ID` ya tiene un valor, lanza un error explícito en vez de crear un Sheet duplicado.
+- `initializeSheets()` y todas las migraciones individuales quedan intactas, sin tocar — por si algún día hace falta aplicarlas sobre un Sheet real que ya tenga datos.
 
-**Motivación:** Dani quería poder ofrecer clases de pilates especiales (fecha/hora/capacidad distintas a la clase regular), algo imposible con el horario fijo hardcodeado ("sábados 10am"). Se presentaron varias opciones y se escogió la más simple: la instructora marca las clases en un calendario de Google dedicado, y ajusta el cupo máximo directamente en el Sheet si una clase necesita una capacidad distinta al default.
+**Verificación de columnas antes de escribir código (mismo hábito que evitó problemas en US-43/44):** conteo exacto contra las constantes `NUTRICION_*_COL`/`PILATES_*_COL`/`CUPOS_PILATES_*_COL`/`CLIENTES_*_COL` confirmó 24 columnas en Nutrición, 18 en Pilates, 8 en Cupos_Pilates, 12 en Clientes — cero desfase.
 
-**Modelo de disponibilidad:** el calendario `Disponibilidad - Pilates` es **aditivo**, no sustractivo — nada está disponible hasta que la instructora marca explícitamente un evento ahí. Es un calendario **separado** del operativo (`PILATES_CALENDAR_ID`, donde el sistema crea los eventos reales de cada reserva) — nunca deben confundirse ni fusionarse, tienen Script Properties distintas.
+**Validado en real: dos veces**, una por cada ronda de ensayo de preproducción — ambas confirmaron el Spreadsheet creado con las 4 pestañas correctas, sin `Debug_US37`, y con el conteo de columnas correcto.
 
-**Flujo de sincronización:**
-1. La instructora marca cada clase (regular o especial, incluyendo recurrencias semanales) como evento en `Disponibilidad - Pilates`.
-2. Un trigger de tiempo (cada 5 min desde US-45, antes cada hora) corre `syncPilatesClassesToCuposSheet()`, que crea automáticamente una fila en `Cupos_Pilates` por cada clase nueva detectada — sin duplicar filas ya sincronizadas (dedup por `disponibilidad_event_id`, no por fecha/hora, para tolerar que la instructora mueva una clase de horario) y sin pisar `max_participantes` ya editado a mano.
-3. `max_participantes` queda **vacío** por defecto (nunca se escribe "5" a la fuerza) — la lectura interpreta celda vacía como 5, y un número escrito como ese número exacto.
-4. El cupo real de cada clase se calcula **en vivo**: `max_participantes` (o 5 default) menos inscripciones activas (`Agendada`/`Reagendada`) contadas directamente en la pestaña "Pilates" — la columna `inscritos` de `Cupos_Pilates` queda como un valor cacheado/informativo, nunca la fuente de verdad.
-5. Al llegar a 0 cupo, la clase deja de ofrecerse en el portal. Cancelar libera el cupo de inmediato (recalculado en vivo, no vía rollback manual de un contador).
-6. Reagendar hacia una clase llena se bloquea con `CLASE_LLENA`, sin afectar la cita original del cliente.
+**Decisión relacionada:** la pestaña `Debug_US37` en el Sheet de **testing** (la vieja) fue borrada manualmente por el usuario el 1 de agosto — ya no existe ahí tampoco.
 
-**Conflicto de schema detectado y resuelto ANTES de escribir código (ver nota #45):** las columnas `event_id`/`meet_link` de `Cupos_Pilates` ya estaban en uso productivo para el evento OPERATIVO — se agregó una columna nueva y separada (`disponibilidad_event_id`, columna G) en vez de repurpose, evitando romper `bookPilatesCalendarEvent`/`joinPilatesSlot`/`leavePilatesSlot`.
+### 3-s. US-48 (NUEVA) — Opción B: remitente real de la instructora para correos de pilates al cliente — ✅ Done, confirmado en real
 
-**Bug real encontrado y corregido durante las pruebas en real (ver nota #46):** `getLastRow()` llamado justo después de `appendRow()`, repetidamente dentro de un loop y sin flush, hacía que varias escrituras de `syncPilatesClassesToCuposSheet()` aterrizaran sobre filas viejas en vez de crear filas nuevas — solo visible probando contra el Sheet real, el harness no lo detectó (su mock de Sheets es un array de JS síncrono, siempre consistente).
+**Contexto de la decisión de negocio:** el equipo (Luis + resto) evaluó 3 opciones para que el sistema pueda gestionar el calendario/correos de pilates estando todo centralizado en la cuenta de Dani (dado el precedente de rotación de personal — ver punto 31 sección 0):
+- **Opción A:** compartir el calendario de la instructora con la cuenta de Dani; correos salen "como" Dani con el nombre de la instructora.
+- **Opción B (ELEGIDA):** alias "Enviar como" verificado en Gmail — los correos salen realmente desde la dirección de la instructora.
+- **Opción C (descartada):** todo el proyecto bajo la cuenta de la instructora — más difícil de manejar si esa persona rota, descartada por el mismo motivo que llevó a estandarizar el correo de secretaría.
 
-**Validado en real:** el portal muestra exactamente las clases marcadas en el calendario (incluyendo expansión correcta de un evento recurrente semanal en instancias individuales), respeta el cupo configurado por clase, y libera/bloquea cupo correctamente al cancelar/reagendar. **Deploy: v77.**
+**Auditoría previa a escribir código, sin conflictos graves pero con un hallazgo no obvio importante:**
+- Ninguna de las 8 llamadas a `GmailApp.sendEmail()` usaba el parámetro `from` antes de este cambio.
+- **Hallazgo clave:** el manifest usa `"executeAs": "USER_DEPLOYING"` — el Web App SIEMPRE ejecuta bajo la identidad de quien hizo el último `clasp deploy` (la cuenta de Dani en producción), sin importar quién dispara la acción. Esto significa que el alias "Enviar como" de la instructora debe configurarse **en la cuenta que hace el deploy (Dani), no en la cuenta de la instructora misma** — fácil de asumir al revés. Ningún scope OAuth nuevo hace falta (`https://mail.google.com/` ya cubre `options.from`, agregado desde US-37).
 
-### 3-o. US-45 — Duración dinámica de clases de pilates + trigger de sync cada 5 min — ✅ Done, confirmado en real
+**Cambios de código:**
+- `getPilatesSenderEmail()` — getter nuevo, mismo patrón que `getPilatesAvailabilityCalendarId()`, lee la Script Property `PILATES_SENDER_EMAIL` (lanza si falta).
+- 3 llamadas a `GmailApp.sendEmail()` AL CLIENTE actualizadas con un `fromOption` condicional (`{ from: getPilatesSenderEmail() }` si es pilates, `{}` si es nutrición):
+  - `bookTimeslot` (confirmación) — condición `type === "pilates"`.
+  - `rescheduleBooking` (reagendamiento) — condición `booking.sheetName === "Pilates"`.
+  - `cancelBooking` (cancelación) — misma condición.
+- Las notificaciones INTERNAS (US-46 arriba) no se tocaron — son un mecanismo distinto (destinatario interno, no remitente al cliente).
 
-**Motivación:** durante las pruebas reales de US-43 se descubrió que el sistema seguía asumiendo 60 minutos fijos para toda clase de pilates (`getDurationForType("pilates")`), ignorando la duración real del evento en `Disponibilidad - Pilates`. Se decidió resolverlo de inmediato en la misma ronda, dado el bajo costo relativo de hacerlo con el contexto ya fresco.
+**⚠️ Riesgo operativo importante, ya conocido antes de deployar:** con este código en producción, si `PILATES_SENDER_EMAIL` no está configurada, los 3 correos al cliente de pilates dejan de enviarse **en silencio** (capturado por el mismo try/catch de resiliencia de siempre, que nunca revierte la reserva) — antes de este cambio, pilates no dependía de ninguna Script Property de remitente, así que este es un punto de falla nuevo. **Regla: nunca hacer `clasp push`/`deploy` de este código sin `PILATES_SENDER_EMAIL` ya configurada.**
 
-**Cambios:**
-- Columna nueva `duracion_minutos` (columna H) en `Cupos_Pilates`, poblada por el sync a partir de la diferencia real `fin - inicio` del evento de disponibilidad.
-- Toda la cadena de pilates (disponibilidad mostrada al cliente, cálculo de hora de fin al reservar, reagendamiento — siempre toma la duración de la clase **destino**, no la original —, botones "agregar al calendario", `.ics` adjunto) usa la duración real por clase en vez de la constante fija.
-- **Ajuste de UX pedido por el usuario:** antes de que el cliente seleccione una fecha/hora específica, el portal ya no muestra ningún número de minutos ("Clase de Pilates" a secas, sin "(60 min)" por defecto) — el número aparece solo después de elegir un slot concreto, con su duración real.
-- **Fix del trigger de sincronización:** `installPilatesAvailabilitySyncTrigger()` no borraba ningún trigger existente antes de instalar uno nuevo (podía dejar dos triggers de la misma función corriendo en paralelo si se volvía a ejecutar). Se corrigió para que siempre borre cualquier trigger previo de `syncPilatesClassesToCuposSheet` antes de instalar el nuevo. Aprovechando el cambio, se bajó la frecuencia de cada hora a **cada 5 minutos**.
+**Validado en real en preproducción (segunda ronda), en este orden correcto:**
+1. Alias verificado primero en Gmail de la cuenta que ejecuta el script (Configuración → Cuentas → "Enviar correo como" → agregar el correo real de quien simula a la instructora → confirmar el código de verificación que le llega a esa cuenta).
+2. Script Property `PILATES_SENDER_EMAIL` configurada recién después de tener el alias verificado.
+3. Deploy del código.
+4. Clase de pilates agendada — correo de confirmación llegó con el remitente real del alias, confirmado con "Mostrar original" (línea `From:`).
+5. Notificación interna de esa misma clase también confirmada correcta (llega a `INSTRUCTORA_EMAIL`, no a `DANI_EMAIL` — gracias al fix de US-46).
 
-**Gotcha de deploy encontrado en esta tarjeta (ver nota #46/punto 10 de la sección 0):** después de pushear el fix, el portal público seguía mostrando "60 min" — no era un bug de código, sino que `clasp push` no mueve la URL pública `/exec`; hacía falta un `clasp deploy` explícito adicional.
-
-**Validado en real:** una clase de prueba de 45 min mostró correctamente "(45 min)" en el portal, en el correo de confirmación, y en el `.ics` adjunto; una clase regular de 60 min se comportó exactamente igual que antes de esta tarjeta (regresión confirmada); el trigger quedó instalado corriendo cada 5 minutos, sin duplicados. **Deploy: sobre el mismo deploymentId, tras US-43.**
-
-### 3-p. US-44 — Disponibilidad real de NUTRICIÓN vía calendario de disponibilidad — ✅ Done, confirmado en real (30 jul)
-
-**Motivación:** mismo espíritu que US-43, pero para el flujo de Dani. Nutrición seguía usando constantes fijas `WORKDAYS`/`WORKHOURS` (martes-viernes 7am-7pm, sábados 7am-2pm salvo el último del mes) sin leer el Calendar real de Dani. Se acordó reemplazar ese modelo por el mismo principio aditivo ya validado en pilates: sin marco fijo por defecto, Dani/Ali marcan explícitamente en un calendario dedicado los bloques en que sí se puede agendar.
-
-**Diferencia de modelo respecto a pilates (importante, ver nota #47):** nutrición es agendamiento **continuo**, no clases discretas. Cada evento en `Disponibilidad - Nutrición` es un **bloque abierto** (ej. "martes 7am-7pm"), no una clase puntual — el sistema "talla" ese bloque en sub-slots consecutivos según la duración del tipo de cita que se esté consultando (60 min inicial / 45 min seguimiento / 15 min solo medición), sin dejar huecos entre sub-slots. Los 3 tipos de cita comparten el mismo calendario de disponibilidad — no hay un calendario de disponibilidad por tipo de cita, el bloque es agnóstico al tipo; lo único que cambia por tipo es cómo se talla.
-
-**Investigación previa (Paso 0), sin conflictos encontrados:** a diferencia de pilates, nutrición **no tenía** ninguna Script Property de calendario operativo dedicada tipo `PILATES_CALENDAR_ID` — usaba (y sigue usando, sin cambios) la Script Property genérica `CALENDARS` (`CALENDARS[0]` para crear/mover/borrar el evento real de cada cita). Tampoco existe ninguna capa intermedia tipo `Cupos_Pilates` para nutrición — su disponibilidad se calcula 100% en vivo dentro de `fetchAvailability()`, sin persistir nada a ningún Sheet. Esto hizo que esta tarjeta fuera estructuralmente **más simple** que pilates: sin necesidad de sync, sin trigger, sin columna de dedup, y sin ningún riesgo del bug de `getLastRow()`/`appendRow()` (nota #46), porque no se escribe a ningún Sheet en este flujo.
-
-**Cambios:**
-- `getNutricionAvailabilityCalendarId()` — getter de `NUTRICION_AVAILABILITY_CALENDAR_ID` (Script Property nueva y separada de `CALENDARS`), mismo patrón que `getPilatesAvailabilityCalendarId()`.
-- `getNutricionAvailabilityBlocks()` — lee bloques del calendario `Disponibilidad - Nutrición` (`Calendar.Events.list`, `singleEvents: true` — expande recurrencias, mismo aprendizaje de US-43), ventana de 8 semanas.
-- `fetchAvailability()` (rama nutrición) — reemplaza el grid fijo `WORKDAYS`/`WORKHOURS` por el tallado de cada bloque en sub-slots consecutivos según `getDurationForType(type)`, sin huecos, dentro del rango del bloque.
-- El chequeo de conflictos (`Calendar.Freebusy` contra `CALENDARS`, el calendario operativo) **queda sin cambios** — el calendario de disponibilidad nunca entra en esa query, por la misma razón que en pilates: un evento de "disponibilidad" cuenta como "ocupado" en términos de Calendar, así que mezclarlo con el chequeo de conflictos lo haría bloquearse a sí mismo.
-- `WORKDAYS`/`WORKHOURS` quedan en el código sin uso activo, como plan de rollback — a diferencia de cuando se hizo esto con pilates, nutrición sí tiene actividad real, así que se prefirió no eliminarlas todavía.
-
-**Validado en real, con dos bloques el mismo día y un hueco entre ellos (8am-12pm y 1pm-5pm):**
-- Consulta Inicial (60 min): 8, 9, 10, 11am y 1, 2, 3, 4pm — el hueco de 12-1pm se respetó exactamente, y el último slot antes del hueco (11am) cupo completo antes de las 12.
-- Cita de Seguimiento (45 min) y Solo Medición (15 min): mismos bloques y hueco, con más sub-slots por caber más veces en el mismo tiempo — confirmado que los 3 tipos comparten el bloque pero se tallan independientemente.
-
-**Deploy: v81** — "US-44 disponibilidad nutrición".
+**Harness:** subió de 324 a 332 aserciones (8 nuevas: `from` presente y correcto en confirmación/reagendamiento/cancelación de pilates, y explícitamente AUSENTE en los mismos 3 casos para nutrición). El mock de `GmailApp.sendEmail()` en `gas-mock.js` usa un valor de `PILATES_SENDER_EMAIL` deliberadamente distinto al de `INSTRUCTORA_EMAIL` en las Script Properties por defecto del harness, para poder detectar si el código llegara a leer la property equivocada.
 
 ---
 
@@ -268,16 +271,16 @@ Columna nueva `contador_reagendamientos` por cita (col 24 Nutrición, col 18 Pil
 | Cita de seguimiento | `followup` | 45 min | Presencial o virtual |
 | Solo medición | `measurement` | 15 min | Solo presencial |
 
-**Horario ya NO es fijo desde US-44 (30 jul, ✅ Done, validado en real):** hasta antes de esta tarjeta, la disponibilidad de nutrición se calculaba con las constantes `WORKDAYS`/`WORKHOURS` (martes-viernes 7am-7pm, sábados 7am-2pm salvo el último del mes). Ahora Dani/Ali marcan bloques de tiempo abiertos como eventos en el calendario `Disponibilidad - Nutrición` (Script Property `NUTRICION_AVAILABILITY_CALENDAR_ID`), y el portal talla esos bloques en sub-slots según la duración de cada tipo de cita. Si no hay ningún bloque marcado un día dado, ese día no ofrece ningún slot — sin caer a un horario por defecto. Las duraciones de la tabla arriba (60/45/15 min) siguen siendo fijas por tipo — lo dinámico es SOLO cuándo hay disponibilidad, no cuánto dura cada tipo de cita.
+Horario no fijo desde US-44 — Dani/Ali marcan bloques abiertos en `Disponibilidad - Nutrición`, el portal talla sub-slots según el tipo de cita.
 
 ### Pilates (flujo instructora)
 | Tipo | ?type= | Duración | Modalidad | Formato | Horario | Ventana mínima | Cupo |
 |------|--------|----------|-----------|---------|---------|----------------|------|
-| Clase de pilates | `pilates` | **Dinámico (US-45)** — la duración real de cada clase se lee del evento de Calendar, ya no una constante fija de 60 min | Virtual únicamente | Grupal | **Dinámico (US-43)** — la instructora marca las clases en el calendario `Disponibilidad - Pilates`, ya no un horario fijo | 12 horas | 5 (default) — ajustable por clase en `Cupos_Pilates` |
+| Clase de pilates | `pilates` | Dinámico (US-45) — próximamente lectura de sync cada 1 min, pendiente | Virtual únicamente | Grupal | Dinámico (US-43) | 12 horas | 5 (default) — ajustable en `Cupos_Pilates` |
 
-**Pilates NO tiene recordatorio de 48hrs.**
+**Pilates NO tiene recordatorio de 48hrs.** Correos al cliente salen con remitente real de la instructora (US-48, `PILATES_SENDER_EMAIL`). Notificaciones internas le llegan a la instructora+Ali, no a Dani (US-46).
 
-Ver notas técnicas #45/#46/#47 para el detalle completo de ambos modelos (nutrición continuo vs. pilates discreto) y por qué son intencionalmente distintos.
+Ver notas técnicas #45/#46/#47/#48/#49/#50 para el detalle completo.
 
 ---
 
@@ -297,10 +300,9 @@ Ver notas técnicas #45/#46/#47 para el detalle completo de ambos modelos (nutri
 ```
 Todos construidos con la constante fija `WEB_APP_URL` — nunca con `getUrl()`.
 
-**⚠️ US-36, pendiente de decisión del equipo:** el banner "Un usuario de Google Apps Script creó esta aplicación" no se puede quitar con código. Investigado a fondo:
-- **Marcado schema.org/Event de Gmail:** requiere aprobación de whitelisting de Google (mínimo ~100 correos/día sostenido), muy por encima del volumen real del negocio (100-200/**mes**) — casi seguro no calificaría. Solo se ve dentro de la misma cuenta de Gmail (self-send), dando una falsa sensación de que funciona en testing.
-- **Página envoltorio (iframe) en otro dominio:** técnicamente viable (GitHub Pages/Cloudflare Pages/subdominio propio), pero cambia el modelo completo de distribución de links. Pendiente de decisión de equipo en su próxima reunión.
-- Acortar los links (bit.ly, etc.) es un problema DISTINTO al del banner — no lo resuelve, solo acorta el texto.
+**US-36 — CERRADO (ver punto 23 de la sección 0):** el banner "Un usuario de Google Apps Script creó esta aplicación" se acepta como limitación de la versión gratuita, se comunica como condición del servicio al cliente. No se investiga más ni se pica más código para esto.
+
+**Pendiente (Danilo):** explorar acortadores de URL gratuitos (TinyURL u otros) para mejorar la estética de los enlaces compartidos — con la precaución explícita de no usar los nombres de enlace definitivos durante fases de prueba.
 
 ---
 
@@ -308,70 +310,64 @@ Todos construidos con la constante fija `WEB_APP_URL` — nunca con `getUrl()`.
 
 | Actor | Rol |
 |-------|-----|
-| **Dani** | Admin/nutricionista. Recibe notificación interna en cada acción. Marca su disponibilidad en `Disponibilidad - Nutrición` (US-44). |
-| **Ali (secretaria)** | Distribuye links por WhatsApp. Recibe las mismas notificaciones que Dani. Puede marcar disponibilidad de Dani también, si aplica. |
-| **Instructora de pilates** | Calendar y correo propios. Marca las clases disponibles en `Disponibilidad - Pilates` y puede ajustar `max_participantes` directamente en `Cupos_Pilates`. |
+| **Dani** | Admin/nutricionista. Recibe notificación interna en cada acción de nutrición. Marca su disponibilidad en `Disponibilidad - Nutrición`. |
+| **Secretaría** (correo genérico institucional) | Distribuye links por WhatsApp. Recibe las notificaciones internas de ambos flujos junto con Dani/instructora. Ya NO ligada al nombre de una persona específica (rotación de personal, ver punto 31 sección 0). |
+| **Instructora de pilates** | Marca las clases en `Disponibilidad - Pilates`, ajusta `max_participantes` en `Cupos_Pilates`. Recibe notificaciones internas de pilates (US-46). Los correos AL CLIENTE de pilates salen con su remitente real vía alias verificado (US-48). |
 | **Cliente (ES/EN)** | Agenda, reagenda, cancela, confirma asistencia. Mayor de 15 años. |
-| **Google Apps Script** | Motor de automatización. |
+| **Google Apps Script** | Motor de automatización. Corre bajo `executeAs: USER_DEPLOYING` — SIEMPRE la identidad de quien hizo el último `clasp deploy` (será la cuenta de Dani en producción), sin importar quién dispara la acción. |
 
 ### Checklist de acceso necesario para producción
-- Compartir Calendar real de la instructora con la cuenta de deploy (tanto el operativo como `Disponibilidad - Pilates`).
+- Compartir Calendar real de la instructora con la cuenta de deploy (operativo + `Disponibilidad - Pilates`) — **si se usa Opción A**. Si se mantiene Opción B (ya validada), en cambio hace falta el alias "Enviar como" verificado en la cuenta de Dani.
 - Compartir/crear el calendario `Disponibilidad - Nutrición` real de Dani con la cuenta de deploy.
-- Reemplazar correos placeholder de Dani/Ali/instructora por los reales.
+- Reemplazar correos placeholder de testing por los reales de Dani/instructora/secretaría.
+- Configurar `PILATES_SENDER_EMAIL` con el correo real de la instructora (si se mantiene Opción B) ANTES de deployar el código que lo requiere.
 - Deploy final bajo cuenta de Dani.
-- Coordinar con Dani/Ali (y la instructora) que carguen su disponibilidad real ANTES de considerar el sistema listo para clientes reales — ver punto 24 de la sección 0.
+- Coordinar con Dani/instructora que carguen su disponibilidad real ANTES de considerar el sistema listo.
+- Bajar el trigger de sync de pilates a 1 minuto (pendiente, punto 28 sección 0).
 
 ---
 
 ## 7. FLUJOS COMPLETOS
 
-### Flujo principal — Agendar cita de nutrición ✅ 100% COMPLETO (incluye US-44)
+### Flujo principal — Agendar cita de nutrición ✅ 100% COMPLETO, validado en real (testing + 2 rondas de preprod)
 ```
-1. Dani/Ali marcan bloques de tiempo abiertos en "Disponibilidad - Nutrición"
-   (evento único o recurrente).
-2. Ali/Dani comparte link ?type=... por WhatsApp
-3. Cliente ve calendario (zona propia): el sistema lee los bloques del punto 1,
-   los talla en sub-slots según el tipo de cita, y excluye los que ya
-   tengan conflicto real (Calendar.Freebusy contra el calendario OPERATIVO,
-   CALENDARS). Elige fecha/hora.
-4. Ingresa correo → busca en "Clientes"
-5. Completa datos (valida edad con selector propio US-40, upsert)
-6. Apps Script re-verifica ventana + LockService
-7. Escribe fila (fecha/hora protegidas como texto plano)
-8. Crea evento en Calendar (CALENDARS[0]) + Meet si es virtual
-9. Envía correo de confirmación — CON 4 botones de calendario + invitación .ics
-   real adjunta (US-37): logo/flor vía inlineImages, no base64 en <img>
-10. Envía notificación interna a Dani/Ali
-11. [Solo nutrición] 47-49hrs antes: recordatorio con confirmar/reagendar/cancelar
-12. Cliente hace clic en cualquiera de los 3 botones → página visual (US-31):
-    - Confirmar → asistencia_confirmada=true → notificación interna (US-32)
-    - Reagendar → nuevo horario → Sheet/Calendar actualizados → notificación
-      interna + correo al cliente (hereda botones de calendario de US-37)
-      → Si es el 3er reagendamiento o más: alerta especial a Dani/instructora+Ali (US-42)
-    - Cancelar → Sheet/Calendar actualizados → notificación interna + correo
-      de cancelación al cliente (sin botones de calendario)
-      → Si fue con <24hrs: alerta especial de cancelación tardía (US-33)
+1. Dani/Ali marcan bloques de tiempo abiertos en "Disponibilidad - Nutrición".
+2. Ali/Dani comparte link ?type=... por WhatsApp.
+3. Cliente ve calendario: sub-slots tallados según tipo de cita, conflictos
+   excluidos vía Freebusy contra CALENDARS. Elige fecha/hora.
+4. Ingresa correo → busca en "Clientes".
+5. Completa datos (valida edad, upsert).
+6. Apps Script re-verifica ventana + LockService.
+7. Escribe fila. Crea evento en Calendar (CALENDARS[0]) + Meet si es virtual.
+8. Envía correo de confirmación (4 botones de calendario + .ics real adjunto).
+9. Envía notificación interna a Dani/Ali (vía getLateCancellationRecipients,
+   fix US-46).
+10. [Solo nutrición] 47-49hrs antes: recordatorio con confirmar/reagendar/cancelar.
+11. Cliente hace clic → página visual (US-31):
+    - Confirmar → notificación interna (US-32)
+    - Reagendar → notificación interna + correo al cliente
+      → 3er reagendamiento o más: alerta especial (US-42)
+    - Cancelar → notificación interna + correo de cancelación
+      → <24hrs: alerta especial de cancelación tardía (US-33)
 ```
 
-### Flujo pilates ✅ 100% COMPLETO (incluye US-43/US-45)
+### Flujo pilates ✅ 100% COMPLETO, validado en real (testing + 2 rondas de preprod, incluyendo Opción B)
 ```
-1. La instructora marca cada clase (fecha/hora/duración) como evento en
-   "Disponibilidad - Pilates" — incluye soporte de eventos recurrentes.
-2. syncPilatesClassesToCuposSheet() (trigger cada 5 min) crea la fila
-   correspondiente en Cupos_Pilates si no existe todavía (max_participantes
-   y duracion_minutos calculados/vacíos según corresponda).
-3. La instructora puede ajustar max_participantes directamente en el Sheet
-   para cualquier clase (default 5 si lo deja vacío).
-4. Ali/Dani/instructora comparte el link ?type=pilates por WhatsApp — el
-   mismo link para todas las clases, regulares o especiales.
-5. Cliente ve solo las clases con cupo disponible, con su duración real.
-6. Resto del flujo (correo, notificación interna, reagendar/cancelar,
-   cancelación tardía, reagendamientos múltiples) igual que nutrición,
-   salvo que NO hay recordatorio de 48hrs y el cupo se valida en vivo en
-   cada paso (agendar, reagendar hacia otro slot, cancelar).
+1. La instructora marca cada clase en "Disponibilidad - Pilates".
+2. syncPilatesClassesToCuposSheet() (trigger cada 5 min, pendiente bajar a 1 min)
+   crea la fila en Cupos_Pilates.
+3. Instructora ajusta max_participantes si hace falta (default 5).
+4. Se comparte el link ?type=pilates por WhatsApp.
+5. Cliente ve solo clases con cupo, con su duración real.
+6. Al agendar: correo de confirmación AL CLIENTE sale con el remitente real
+   de la instructora (PILATES_SENDER_EMAIL, US-48). Notificación interna
+   le llega a la instructora+Ali, no a Dani (US-46).
+7. Resto del flujo (reagendar/cancelar, cancelación tardía, reagendamientos
+   múltiples) igual que nutrición, salvo sin recordatorio de 48hrs y con
+   validación de cupo en vivo.
 ```
 
-### Flujo reagendamiento/cancelación ✅ 100% completo
+### Flujo reagendamiento/cancelación ✅ 100% completo, validado en real en ambos flujos
 
 ---
 
@@ -380,52 +376,40 @@ Todos construidos con la constante fija `WEB_APP_URL` — nunca con `getUrl()`.
 ### Spreadsheet de testing
 - **ID:** 16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw
 - **URL:** https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit
+- **`Debug_US37` fue borrada manualmente el 1 de agosto** — ya no existe en este Sheet.
 
-### Pestaña "Nutrición"
+### Pestaña "Nutrición" (24 columnas)
 ```
 token | nombre | apellido | correo | telefono | tipo_id | numero_id | fecha_nacimiento |
 tipo_cita | fecha | hora | zona_horaria_cliente | modalidad | idioma |
 meet_link | estado | fecha_creacion | recordatorio_enviado | show_no_show |
-cancelaciones_tardias (col 20, US-33) | requiere_pago (legacy) | event_id |
-asistencia_confirmada | contador_reagendamientos (col 24, US-42, NUEVA)
+cancelaciones_tardias (col 20) | requiere_pago (legacy) | event_id |
+asistencia_confirmada | contador_reagendamientos (col 24)
 ```
 **Estados posibles:** `Agendada` → `Reagendada` → `Cancelada`, también `Error_Calendar`.
-**Sin cambios de schema en US-44** — esta tarjeta no agrega ninguna columna ni capa intermedia; la disponibilidad se calcula 100% en vivo, sin persistir nada nuevo.
 
-### Pestaña "Pilates"
+### Pestaña "Pilates" (18 columnas)
 ```
 token | nombre | apellido | correo | telefono | tipo_id | numero_id | fecha_nacimiento |
 fecha_clase | hora_clase | zona_horaria_cliente | idioma |
 estado | fecha_inscripcion | recordatorio_enviado | show_no_show |
-cancelaciones_tardias (col 17, US-33) | contador_reagendamientos (col 18, US-42, NUEVA)
+cancelaciones_tardias (col 17) | contador_reagendamientos (col 18)
 ```
-Es la fuente de verdad real del cupo de cada clase (conteo en vivo de filas activas, ver US-43).
 
-### Pestaña "Cupos_Pilates"
+### Pestaña "Cupos_Pilates" (8 columnas)
 ```
 fecha_clase | hora_clase | inscritos | max_participantes | event_id | meet_link |
-disponibilidad_event_id (columna G, US-43) | duracion_minutos (columna H, US-45)
+disponibilidad_event_id (col G) | duracion_minutos (col H)
 ```
-**Significado de cada columna:**
-- `inscritos` (columna C) — valor CACHEADO/informativo únicamente. **Nunca** es la fuente de verdad del cupo — eso es un conteo en vivo desde la pestaña "Pilates" (`getAvailableCapacityForClass()`/`countActivePilatesRegistrations()`).
-- `max_participantes` (columna D) — puede quedar VACÍA (se interpreta como default de 5).
-- `event_id`/`meet_link` (columnas E/F) — el evento del calendario OPERATIVO (`PILATES_CALENDAR_ID`) que el sistema mismo crea cuando un cliente agenda de verdad.
-- `disponibilidad_event_id` (columna G, US-43) — el ID del evento del calendario `Disponibilidad - Pilates` (`PILATES_AVAILABILITY_CALENDAR_ID`) que originó esta fila. Deliberadamente SEPARADA de `event_id`/`meet_link` — ver nota técnica #45.
-- `duracion_minutos` (columna H, US-45) — la duración real de la clase, calculada como `fin - inicio` del evento de disponibilidad.
 
-**Nota comparativa con nutrición (US-44):** esta capa intermedia (`Cupos_Pilates`) existe SOLO para pilates, porque pilates necesita capacidad por clase (varias personas por slot). Nutrición no la necesita ni la tiene — cada slot de nutrición es 1 cliente, y su disponibilidad se recalcula en vivo sin persistir nada.
-
-### Pestaña "Clientes"
+### Pestaña "Clientes" (12 columnas)
 ```
 correo | nombre | apellido | telefono | tipo_id | numero_id | fecha_nacimiento | idioma |
 cancelaciones_tardias | requiere_pago | cliente_nutricion | cliente_pilates
 ```
 
-### Pestaña "Debug_US37" (NUEVA, 29 jul — herramienta de diagnóstico)
-```
-timestamp | mensaje
-```
-Creada durante la investigación de US-37 porque `Logger.log()`/`console.log()` no aparecían de forma confiable en ejecuciones reales del Web App. **Sigue existiendo en el Sheet — pendiente decidir si se limpia/vacía o se deja como herramienta de diagnóstico permanente para futuros problemas similares.**
+### `Debug_US37` — YA NO SE CREA en cuentas nuevas
+Ya cumplió su propósito (diagnóstico del bug de US-37, resuelto). `setupNewAccountSheets()` (US-47) explícitamente NO la crea. Se borró manualmente del Sheet de testing el 1 de agosto. La función `logDebugUS37()` sigue existiendo en el código por si hiciera falta reactivar un diagnóstico similar en el futuro, pero no se usa activamente.
 
 ### Valores válidos de `tipo_id`
 ```
@@ -440,21 +424,23 @@ cedula | pasaporte | licencia | otro
 | ID | Requerimiento | Estado |
 |----|--------------|--------|
 | RF-2.1 | Correo de confirmación inmediato | ✅ Done |
-| RF-2.2 | Correos de nutrición desde Dani, pilates desde instructora | ⚠️ Parcial — todo sale desde cuenta de testing |
-| RF-2.3 | Notificación interna en cada acción | ✅ Done |
+| RF-2.2 | Correos de nutrición desde Dani, pilates desde instructora | ✅ **Done — US-48 (Opción B, alias verificado)** |
+| RF-2.3 | Notificación interna en cada acción, a los destinatarios correctos por Script Properties | ✅ **Done — US-46** |
 | RF-2.4 | Recordatorio 48 hrs (solo nutrición) | ✅ Done |
 | RF-2.5 | Notificación a Dani/Ali/instructora si cancelación tardía | ✅ Done — US-33 |
-| RF-2.6 | Frontend de reagendar/cancelar/confirmar asistencia | ✅ Done — US-31 |
+| RF-2.6 | Frontend de reagendar/cancelar/confirmar asistencia | ✅ Done — US-31, validado en ambos flujos |
 | (nuevo) | Look & feel según brandbook | ✅ Done — US-28 |
-| (nuevo) | Quitar título redundante en vista de cancelación | ✅ Done — US-41 |
-| (nuevo) | Formato de fecha en español correcto | ✅ **Done — US-34** |
-| (nuevo) | Campo de fecha de nacimiento clic-en-cualquier-parte | ✅ **Done — US-40** |
-| (nuevo) | Notificación de reagendamientos múltiples (3ro+) | ✅ **Done — US-42** |
-| (nuevo) | Botones de calendario + invitación .ics real | ✅ **Done — US-37** |
-| (nuevo) | Cupos de pilates dinámicos vía calendario de disponibilidad | ✅ **Done — US-43** |
-| (nuevo) | Duración dinámica de clases de pilates + trigger de sync cada 5 min | ✅ **Done — US-45** |
-| (nuevo) | Disponibilidad real de nutrición vía calendario de disponibilidad | ✅ **Done — US-44** |
-| (pendiente) | Quitar banner de Google Apps Script | ⏸️ US-36 — decisión de equipo pendiente |
+| (nuevo) | Formato de fecha en español correcto | ✅ Done — US-34 |
+| (nuevo) | Campo de fecha de nacimiento clic-en-cualquier-parte | ✅ Done — US-40 |
+| (nuevo) | Notificación de reagendamientos múltiples (3ro+) | ✅ Done — US-42 |
+| (nuevo) | Botones de calendario + invitación .ics real | ✅ Done — US-37 |
+| (nuevo) | Cupos de pilates dinámicos | ✅ Done — US-43 |
+| (nuevo) | Duración dinámica de pilates + trigger sync | ✅ Done — US-45 (pendiente bajar frecuencia a 1 min) |
+| (nuevo) | Disponibilidad real de nutrición | ✅ Done — US-44 |
+| (nuevo) | Fix destinatarios de notificaciones internas | ✅ **Done — US-46** |
+| (nuevo) | Setup de Sheets de una corrida para cuentas nuevas | ✅ **Done — US-47** |
+| (nuevo) | Remitente real de instructora para correos de pilates | ✅ **Done — US-48** |
+| (resuelto) | Banner de Google Apps Script | ✅ **CERRADO — aceptado como limitación, US-36** |
 
 ---
 
@@ -462,240 +448,136 @@ cedula | pasaporte | licencia | otro
 
 ### Constantes clave
 ```typescript
-const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec";
+const WEB_APP_URL = "..."; // línea 247 de backend/src/app.ts, distinta por cuenta/deployment
 // NO usar ScriptApp.getService().getUrl() para construir links propios.
 
-const NOTIFICACION_INTERNA_DESTINATARIOS = ["plantpoweredani.testing@gmail.com", "plantpoweredani.testing@gmail.com"];
-// TODO: reemplazar por correos reales de Dani y Ali antes de producción.
+// NOTIFICACION_INTERNA_DESTINATARIOS fue ELIMINADA (US-46, 1 ago) — ya no existe en el código.
+// Todas las notificaciones internas (US-13/30/32/33/42) usan ahora:
+// getLateCancellationRecipients(esPilates): string[]
+//   → nutrición: [DANI_EMAIL, ALI_EMAIL]
+//   → pilates:   [INSTRUCTORA_EMAIL, ALI_EMAIL]
 
-// Script Properties (US-33/US-42/US-37 comparten el mismo ruteo):
+// Script Properties de destinatarios internos:
 // DANI_EMAIL, INSTRUCTORA_EMAIL, ALI_EMAIL
 
-// Script Properties de calendario OPERATIVO — sin cambios por US-43/44/45:
-// CALENDARS                        → (nutrición) JSON array, default ["primary"] si no
-//                                     está configurada. CALENDARS[0] es donde se crean los
-//                                     eventos reales de las citas de nutrición.
-// PILATES_CALENDAR_ID              → (pilates) calendario OPERATIVO: donde el sistema crea
-//                                     el evento real cuando un cliente agenda una clase.
+// Script Property de remitente AL CLIENTE (US-48, NUEVA):
+// PILATES_SENDER_EMAIL → correo real de la instructora, debe tener el alias
+//   "Enviar como" YA VERIFICADO en Gmail de la cuenta que hace el clasp deploy
+//   (no en la cuenta de la instructora misma — ver nota #50). Si falta esta
+//   property, los 3 correos al cliente de pilates dejan de enviarse en
+//   silencio — NUNCA deployar este código sin configurarla primero.
 
-// Script Properties de calendario de DISPONIBILIDAD (US-43/US-44) — de solo lectura para
-// el sistema, SEPARADAS de las operativas de arriba, nunca deben confundirse ni fusionarse:
-// PILATES_AVAILABILITY_CALENDAR_ID    → "Disponibilidad - Pilates": clases que la instructora
-//                                        ofrece (eventos discretos, uno por clase).
-// NUTRICION_AVAILABILITY_CALENDAR_ID  → "Disponibilidad - Nutrición": bloques abiertos que
-//                                        Dani/Ali marcan (eventos que se tallan en sub-slots).
+// Script Properties de calendario OPERATIVO:
+// CALENDARS                        → (nutrición) JSON array, default ["primary"] si falta
+//                                     (falla SILENCIOSA — ver nota #49, doble-chequear siempre)
+// PILATES_CALENDAR_ID              → (pilates) calendario OPERATIVO
+
+// Script Properties de calendario de DISPONIBILIDAD (de solo lectura):
+// PILATES_AVAILABILITY_CALENDAR_ID
+// NUTRICION_AVAILABILITY_CALENDAR_ID
+
+// Script Property de base de datos:
+// SPREADSHEET_ID → poblada automáticamente por setupNewAccountSheets() (US-47)
+//                   en cuentas nuevas, o manualmente si se usa initializeSheets()
 ```
 
 ### Funciones principales (backend, `backend/src/app.ts`)
 ```typescript
-// US-11/US-12
-renderConfirmationEmail(params): { subject, htmlBody, icsAttachment, inlineImages }
-// Arma y devuelve el adjunto .ics real (US-37) y el mapa de imágenes en línea
-// (US-37, nota #43) — ambos con degradación con gracia propia si fallan (el
-// correo se sigue enviando igual). Desde US-45, usa la duración real de la
-// clase para pilates (parámetro durationMinutes opcional, default a
-// getDurationForType si no se especifica).
+// (todas las de Sprint 1-4 sin cambios — ver secciones anteriores del documento)
 
-// US-13/US-30
-renderNotificacionInterna(params), sendNotificacionInterna(params)
+// US-46 (NUEVA, 1 ago) — fix de notificaciones internas
+// sendNotificacionInterna() y sendNotificacionInternaConfirmada() ahora
+// usan getLateCancellationRecipients(params.esPilates) en vez de la
+// constante NOTIFICACION_INTERNA_DESTINATARIOS (eliminada).
 
-// US-14
-renderRecordatorio48h(), sendRemindersJob(), installRemindersTrigger(),
-confirmAttendance(token), buildBookingActionLink(token, accion)
+// US-47 (NUEVA, 1 ago)
+setupNewAccountSheets() // crea el Spreadsheet completo de una corrida para
+                         // cuentas nuevas (4 pestañas, esquema final, sin
+                         // Debug_US37). Lanza si SPREADSHEET_ID ya existe.
+                         // Reutiliza SHEET_SCHEMAS/CLIENTES_SCHEMA como base.
+                         // NO reemplaza initializeSheets() ni las migraciones
+                         // individuales, que siguen existiendo intactas.
 
-// US-31 — backend
-doGet(e) // branches: ?action=ics (US-37) → ?token= (SPA) → portal normal
-getManageBookingInfo(token)
-
-// US-32
-renderNotificacionInternaConfirmada(), sendNotificacionInternaConfirmada(),
-renderCancellationEmail() // sin botones de calendario
-
-// US-33
-notifyLateCancellation(), markLateCancellationOnBookingRow(),
-getLateCancellationRecipients(esPilates), setupLateCancellationEmailProperties(),
-renderNotificacionCancelacionTardia(), sendNotificacionCancelacionTardia(),
-addCancelacionTardiaColumnToPilates() // migración manual ejecutada
-
-// US-42
-incrementRescheduleCounterOnBookingRow(),
-addContadorReagendamientosColumnToNutricion() // migración manual ejecutada
-addContadorReagendamientosColumnToPilates()    // migración manual ejecutada
-formatOrdinalReagendamiento(), buildReagendamientosMultiplesSubject(),
-renderNotificacionReagendamientosMultiples(), sendNotificacionReagendamientosMultiples(),
-notifyMultipleReschedules(), testSendNotificacionReagendamientosMultiples()
-
-// US-37
-buildAddCalLinks(params): { addCalGoogleLink, addCalOutlookLink, addCalYahooLink, addCalIcsLink }
-buildBookingIcsContent(params): string // .ics crudo, reusado por endpoint y adjunto
-buildInlineImagesForTemplate(isPilates, idioma): { [cid: string]: Blob }
-verifySentEmailAttachmentsViaGmail() // diagnóstico — confirma contra Gmail real
-                                       // qué llegó, no solo nuestras variables
-describeError(error) // logging reforzado (.message + .toString() + .stack)
-logDebugUS37(mensaje) // escribe a la hoja Debug_US37, no depende de Logger/console
-
-// Fixes de fecha/coerción
-normalizeSheetDateCell(value, pattern), appendBookingToSheet(...)
-
-// US-43 — cupos de pilates dinámicos — ✅ Done, validado en real
-getPilatesAvailabilityCalendarId() // getter de PILATES_AVAILABILITY_CALENDAR_ID
-getPilatesAvailabilityEvents(): PilatesClassSlot[] // lee el calendario de disponibilidad
-                                                     // (Calendar.Events.list, singleEvents:true
-                                                     // — expande recurrencias), única función
-                                                     // que debe leerlo, nunca escribe ahí
-syncPilatesClassesToCuposSheet() // refleja las clases del calendario en Cupos_Pilates,
-                                   // idempotente (dedup por disponibilidad_event_id, nunca
-                                   // por fecha/hora). FIX REAL (ver nota #46): ya no usa
-                                   // getLastRow() dentro del loop tras appendRow() — calcula
-                                   // el número de fila localmente. Envuelta en LockService.
-installPilatesAvailabilitySyncTrigger() // instala/reinstala el trigger — SIEMPRE borra
-                                          // cualquier trigger previo de esta función antes de
-                                          // crear el nuevo. Frecuencia: everyMinutes(5).
-addDisponibilidadEventIdColumnToCuposPilates() // migración de la columna G, ejecutada
-addDuracionMinutosColumnToCuposPilates() // migración de la columna H (US-45), ejecutada
-getAvailableCapacityForClass(fecha, hora): number // ÚNICA función que decide si una clase
-                                                    // tiene cupo — max_participantes
-                                                    // (Cupos_Pilates, default 5) menos
-                                                    // countActivePilatesRegistrations()
-countActivePilatesRegistrations(fecha, hora): number // fuente de verdad real del cupo
-refreshCuposPilatesInscritosCache(fecha, hora) // actualiza la columna cacheada "inscritos"
-findCuposPilatesRow(cuposData, fecha, hora): number // helper de lookup
-
-// US-45 — duración dinámica de pilates — ✅ Done, validado en real
-getPilatesClassDurationMinutes(fecha, hora): number // ÚNICA fuente de verdad para la
-                                                       // duración de una clase de pilates ya
-                                                       // agendada/por agendar
-
-// US-44 — disponibilidad real de nutrición — ✅ Done, validado en real
-getNutricionAvailabilityCalendarId() // getter de NUTRICION_AVAILABILITY_CALENDAR_ID
-getNutricionAvailabilityBlocks() // lee bloques del calendario Disponibilidad - Nutrición
-                                   // (Calendar.Events.list, singleEvents:true — expande
-                                   // recurrencias), ventana de 8 semanas
-fetchAvailability(type) // rama nutrición reescrita: talla cada bloque en sub-slots
-                          // consecutivos según getDurationForType(type), sin huecos,
-                          // excluye conflictos vía el Freebusy existente contra CALENDARS
-                          // (sin cambios en esa parte). Rama pilates SIN CAMBIOS (regresión
-                          // confirmada en el harness).
-// WORKDAYS/WORKHOURS: constantes que quedan en el código SIN uso activo (plan de
-// rollback) — ya no participan en el cálculo de disponibilidad de nutrición.
+// US-48 (NUEVA, 1 ago)
+getPilatesSenderEmail() // getter de PILATES_SENDER_EMAIL, lanza si falta,
+                          // mismo patrón que getPilatesAvailabilityCalendarId()
+// bookTimeslot/rescheduleBooking/cancelBooking: agregan {from: getPilatesSenderEmail()}
+// condicionalmente cuando el flujo es pilates, en las llamadas a
+// GmailApp.sendEmail() dirigidas AL CLIENTE.
 ```
 
 ### Frontend
-```
-frontend/src/components/manage-booking.tsx  // 4 pantallas de gestión de citas
-frontend/src/hooks/useManageBookingInfo.tsx / useConfirmAttendance.tsx /
-                    useCancelBooking.tsx / useRescheduleBooking.tsx
-frontend/src/index.css                      // paleta + @font-face Jost (US-28)
-frontend/src/assets/logo.png, fonts/Jost-*.ttf
-
-// US-40: selector de fecha de nacimiento propio dentro de calendar-picker.tsx
-// - Trigger <button> + Popover + Calendar (react-day-picker), captionLayout="dropdown"
-// - CalendarDropdown: componente propio inyectado vía components={{ Dropdown: ... }},
-//   reemplaza el <select> nativo de mes/año (sin estilo propio, ilegible en tema oscuro)
-// - Input hidden sincronizado, mismo formato yyyy-MM-dd — sin cambios en el backend
-
-// US-45: duración dinámica en el frontend
-// - frontend/src/models/Timeslots.tsx: cada slot carga su durationMinutes real
-// - frontend/src/hooks/useGoogleTimeslots.tsx: expone slotDurations (ISO → minutos)
-// - calendar-picker.tsx: el título ("Clase de Pilates (X min)") se arma dinámicamente
-//   según la clase seleccionada — antes de seleccionar, muestra solo "Clase de Pilates",
-//   sin ningún número por defecto. Nutrición sigue con sus textos fijos de siempre
-//   (su duración por tipo de cita NO es dinámica, solo su disponibilidad lo es, US-44).
-```
-`CalendarTimeslotPicker` exportado desde `calendar-picker.tsx` para reutilizar en reagendar. **US-44 no requirió ningún cambio de frontend** — el contrato de `fetchAvailability` (timeslots/durationMinutes) se mantuvo idéntico, solo cambió de dónde salen los timeslots en el backend.
+Sin cambios en esta sesión — ver secciones anteriores del documento para el detalle completo (US-40, US-45).
 
 ### Templates de correo (backend/templates/)
-```
-correo_confirmacion_{nutricion,pilates}_{es,en}.html  // US-37: 4 botones de
-  calendario + imágenes vía cid: (ya NO base64 directo, ver nota #43)
-correo_cancelacion_cliente_{es,en}.html               // sin botones de calendario
-notificacion_interna_nueva_cita.html                  // 3 variantes de tipoAccion
-notificacion_interna_confirmada.html                  // US-32
-notificacion_cancelacion_tardia.html                  // US-33, badge rojo
-notificacion_reagendamientos_multiples.html           // US-42, badge ámbar #C9791A
-recordatorio_48h_nutricion_{es,en}.html
+Sin plantillas nuevas en esta sesión.
 
-// Extraídos de los <img base64> originales (US-37):
-asset_logo_pph.html            // logo compartido (nutrición es/en, pilates es)
-asset_flor_pph.html            // flor decorativa (nutrición)
-asset_kettlebell_pph.html      // kettlebell decorativo (pilates)
-asset_logo_pilates_en_pph.html // logo propio de pilates EN (divergencia preexistente, no un bug)
-```
-Sin plantillas nuevas en US-43/US-44/US-45.
-
-### Build pipeline (corregido 27 jul, nota #35)
+### Build pipeline
 ```
 backend/package.json → "build": "tsc && node copy-to-dist.js"
 backend/copy-to-dist.js → copia backend/dist/app.js y backend/templates/*.html a ../dist/
 ```
-El build del **frontend** (`vite build`) NO se copia automáticamente a `dist/index.html` — hay que hacerlo a mano antes de `clasp push` si hubo cambios de frontend. `build.sh` de la raíz sigue sin funcionar en cmd.exe.
-
-**⚠️ Scope de manifest (29 jul, US-37):** se agregó `https://mail.google.com/` a `appsscript.json`. **Cualquier scope OAuth nuevo requiere autorización manual desde el editor una vez** — no basta con `clasp deploy`. **US-43/US-44/US-45 NO requirieron ningún scope nuevo** — el servicio avanzado de Calendar y el scope completo de `calendar` ya estaban habilitados desde antes; `getNutricionAvailabilityBlocks()` reutiliza exactamente el mismo mecanismo (`Calendar.Events.list`) que `getPilatesAvailabilityEvents()`, solo con un `calendarId` distinto.
+**IMPORTANTE, descubierto en la primera ronda de ensayo (ver nota #49): `copy-to-dist.js` NO copia `appsscript.json`.** Cuando se crea un proyecto de Apps Script nuevo con `clasp create`, este clona un `appsscript.json` vacío/genérico a `dist/` — hay que copiar manualmente el `appsscript.json` de la raíz del repo (el completo, con scopes y sección `webapp`) a `dist/appsscript.json` ANTES del primer `clasp push`, o el deployment no se comporta como Web App (ver nota #49 para el síntoma exacto).
 
 ### Test harness
-`backend/test-harness/` — **322 aserciones, todas pasando** (subió de 307 con US-44: +15 — bloque parcial tallado en sub-slots exactos sin huecos, cero bloques → cero slots, sub-slot con conflicto real excluido, bloque recurrente semanal de nutrición expandido correctamente, y regresión explícita de que pilates no se vio afectado).
+`backend/test-harness/` — **332 aserciones, todas pasando** (subió de 322: +2 por el fix de destinatarios de notificaciones internas US-46, +8 por el remitente real de pilates US-48).
 
-**Puntos ciegos confirmados del mock:**
-- No valida el content-type real que `Utilities.newBlob()` acepta o rechaza (US-37).
-- `Blob.setContentType()` en el mock no reproducía la mutación en el mismo lugar del objeto real (US-37).
-- No reproduce el comportamiento real de Gmail al combinar imágenes embebidas en HTML + attachments (US-37, causa raíz de la nota #43).
-- `Calendar.Events.list` no reproduce paginación (`pageToken`) ni límites de cuota del API real (US-43) — irrelevante hoy dado el volumen bajo, a revisar si crece mucho. Sí expande recurrencia semanal (`FREQ=WEEKLY` + `INTERVAL`/`COUNT`/`UNTIL` opcionales) para poder probarla en el harness, pero no es un parser RFC 5545 completo.
-- El mock de Sheets (`appendRow()`/`getLastRow()` como array de JS síncrono) **no puede reproducir** el bug real de `getLastRow()` de la nota #46 — solo se confirmó contra el Sheet real de Google.
-- **US-44 no agrega puntos ciegos nuevos** más allá de los ya conocidos de `Calendar.Events.list` — no toca Sheets en absoluto, así que no hereda el riesgo de la nota #46.
+**Recordatorio operativo (ya documentado, reforzado esta sesión):** el harness corre contra `test-harness/out/app.js`, un build COMPILADO APARTE de `backend/dist/` — no se regenera solo al editar `src/app.ts`. Hay que recompilarlo a mano (`npx tsc --target ES2019 --module none --outDir test-harness/out src/app.ts --skipLibCheck`, el mismo comando del README del harness) antes de correr las pruebas después de cualquier cambio de código, o se sigue viendo el comportamiento viejo.
 
 ---
 
 ## 11. SPRINTS Y ESTADO ACTUAL
 
 ### Sprint 2 — Completo salvo US-20 (decisión de Trello pendiente)
-US-11 a US-14, US-13/30, US-28, US-31, US-32, US-33, US-41 — todas ✅ Done.
 
-### Sprint 4 — estado real
+### Sprint 4 — Completo (ver historial en versiones anteriores del documento para el detalle de cada US)
+
+### Sprint 5 (NUEVO, 1 agosto) — estado real
 
 | US | Título | Estado |
 |----|--------|--------|
-| **US-34** | Fix formato de fecha en español | ✅ **Done** (v52) |
-| **US-40** | Fix campo de fecha de nacimiento — clic en cualquier parte | ✅ **Done** (v56, 3 rondas) |
-| **US-42** | Notificación de reagendamientos múltiples | ✅ **Done** (v60) |
-| **US-37** | Correo de confirmación con botones de calendario + invitación .ics | ✅ **Done** (v76, investigación extensa — nota #43) |
-| **US-43** | Cupos de pilates dinámicos vía calendario de disponibilidad | ✅ **Done** (v77 — incluye fix real de `getLastRow()`, ver nota #46). **Validado en real.** |
-| **US-45** | Duración dinámica de clases de pilates + trigger de sync cada 5 min | ✅ **Done** (desplegada tras US-43, sobre el mismo deploymentId). **Validado en real.** |
-| **US-44** | Disponibilidad real de NUTRICIÓN vía calendario de disponibilidad | ✅ **Done** (v81). **Validado en real** — dos bloques con hueco entre ellos, los 3 tipos de cita tallando correctamente. |
-| **US-36** | Quitar banner de Google Apps Script | ⏸️ Investigado, **pendiente decisión de equipo** |
+| **US-46** | Fix destinatarios de notificaciones internas (Script Properties, no hardcode) | ✅ **Done, validado en real** en 2 cuentas de preprod distintas |
+| **US-47** | `setupNewAccountSheets()` — setup de Sheets de una corrida, sin Debug_US37 | ✅ **Done, validado en real** 2 veces (una por ronda de ensayo) |
+| **US-48** | Remitente real de instructora para correos de pilates (Opción B, alias verificado) | ✅ **Done, validado en real** en preprod, incluyendo verificación completa del alias |
+| **US-36** | Quitar banner de Google Apps Script | ⏸️➡️✅ **CERRADO** — decisión de equipo: se acepta como limitación, se comunica como condición de servicio |
 
-### US-43/US-44/US-45 — checklist real, ✅ TODO completado y validado
-- [x] `clasp push` + `clasp deploy` de las tres tarjetas.
-- [x] Migraciones ejecutadas (solo pilates): `addDisponibilidadEventIdColumnToCuposPilates()`, `addDuracionMinutosColumnToCuposPilates()`. **Nutrición no requirió ninguna migración** (sin Sheet intermedio).
-- [x] `installPilatesAvailabilitySyncTrigger()` corrido (instaló primero cada hora, luego reinstalado a cada 5 min tras el fix de US-45). **Nutrición no requiere ningún trigger** (todo se calcula en vivo).
-- [x] Clases/bloques de prueba marcados en ambos calendarios de disponibilidad y confirmados en la URL pública.
-- [x] Pilates: `max_participantes=2` bloquea al 3er cliente; cancelar libera cupo; reagendar hacia clase llena bloquea con `CLASE_LLENA`.
-- [x] Nutrición: bloque parcial talla sub-slots exactos; hueco entre bloques se respeta; los 3 tipos de cita comparten el bloque pero tallan independientemente.
-- [x] `syncPilatesClassesToCuposSheet` confirmado idempotente contra el Sheet real tras el fix de `getLastRow()`.
-- [x] Label de duración dinámico de pilates confirmado en el portal.
-- [x] Trigger de 5 min confirmado sin duplicados tras reinstalar.
+### Preproducción — dos rondas de ensayo completo, ✅ ambas exitosas
 
-**Acción pendiente en Trello:** marcar todos los checkboxes de las tarjetas US-43/US-44/US-45 y moverlas a Done.
+**Ronda 1** (cuenta `pruebadeploy8@gmail.com`): con varios tropiezos de aprendizaje (API de Apps Script no habilitada, tipo `webapp` inválido en `clasp create`, manifest vacío tras crear el proyecto, error de tipeo en la URL, comilla sin cerrar en PowerShell). Todos diagnosticados y resueltos — ver nota #49 para el detalle completo de cada uno.
 
-### Textos en BORRADOR pendientes de aprobación de Gabriela/Dani (acumulado)
-Sin cambios desde la última ronda — ver historial. Ninguno bloquea funcionalidad.
+**Ronda 2** (cuenta `deployprueba4@gmail.com`): repitiendo el mismo proceso aplicando lo aprendido en la Ronda 1 (activar API antes de `clasp create`, copiar `appsscript.json` antes del primer push, tipo `standalone` correcto desde el inicio) — **sin ningún tropiezo nuevo**, funcionando de punta a punta a la primera. Confirma que el proceso de deploy real con Dani debería ser igual de directo. En esta misma ronda se validó también US-48 (Opción B).
+
+**Checklist de pruebas funcionales, completado en las dos rondas combinadas:**
+- [x] Nutrición: agendar, reagendar, cancelar, confirmar asistencia.
+- [x] Pilates: agendar, reagendar, cancelar, confirmar asistencia.
+- [x] Fix de notificaciones internas (US-46) confirmado con headers reales de correo.
+- [x] Remitente real de pilates (US-48) confirmado con headers reales de correo.
+- [x] Notificación interna llega al destinatario correcto según flujo (nutrición → Dani/Ali; pilates → instructora/Ali).
+
+### Textos en BORRADOR pendientes de aprobación de Gabriela/Dani
+Sin cambios — ver historial.
 
 ### Pendientes conocidos, sin bloquear nada
-- Acceso móvil: validado visualmente, no formalmente con dispositivo externo.
-- Reemplazar destinatarios placeholder de Dani/Ali/instructora por correos reales.
-- Decidir "enviar como"/Reply-To para pilates.
+- Bajar el trigger de sync de disponibilidad de pilates de 5 min a 1 min (acordado en StandUp, no ejecutado).
+- Investigar si se mantiene o elimina el correo de cancelación (decisión de negocio pendiente).
+- Documentar para el usuario final el modelo de doble calendario.
+- Manual de usuario detallado — pendiente de elaborar.
+- Historia de usuario formal para "paso a preproducción" — formalizar en Trello (ya ejecutado 2 veces en la práctica).
+- Danilo explorando acortadores de URL.
+- Reemplazar destinatarios placeholder de testing por correos reales de Dani/instructora/secretaría antes de producción.
+- **Decidir y configurar `PILATES_SENDER_EMAIL` real + verificar el alias en la cuenta real de Dani** antes del deploy de producción (si se mantiene Opción B).
 - Checklist de acceso de producción (sección 6).
-- **Coordinar con Dani/Ali/instructora la carga de disponibilidad real** en ambos calendarios ANTES de considerar el sistema listo para producción — ver punto 24 de la sección 0.
-- Reunir y enviar todos los textos BORRADOR a Gabriela/Dani.
+- Coordinar con Dani/instructora la carga de disponibilidad real antes de producción.
 - Decidir en Trello el estado final de US-20.
 - Verificar en producción real que el branding coincide con lo aprobado por Dani.
-- Reconstruir el historial de deploys faltante entre v28-v42 (no bloquea).
-- **US-36** — pendiente de decisión del equipo (ver sección 5).
-- Auditar la segunda carpeta de recuperación de OneDrive por si tiene el historial de git real que falta.
+- Reconstruir historial de deploys v28-v42 (no bloquea).
+- Auditar segunda carpeta de recuperación de OneDrive.
 - Arreglar `build.sh` para cmd.exe/Windows (baja prioridad).
 - Confirmar Yahoo con una cuenta real (US-37, testing quedó parcial).
-- Decidir si limpiar/vaciar la hoja `Debug_US37` o dejarla como herramienta de diagnóstico permanente.
-- Decidir si limpiar/vaciar la hoja `Cupos_Pilates` de datos de prueba antes de producción (o si se deja, ya que es puramente derivada/reconstruible desde el calendario + conteo en vivo).
-- **`git push` pendiente** — hay commits locales (incluyendo el de US-44, `17e701a`) sin subir a `origin/master` todavía.
+- Decidir si limpiar `Cupos_Pilates` de datos de prueba antes de producción.
+- `git push` de commits locales pendientes (confirmar estado actual).
+- Auditar si "Ali" aparece como texto VISIBLE en algún template de correo (punto 31, sección 0) — no confirmado todavía.
+- **Reunión de deploy real: martes** — enfocada exclusivamente en producción con la cuenta de Dani.
 
 ---
 
@@ -704,94 +586,107 @@ Sin cambios desde la última ronda — ver historial. Ninguno bloquea funcionali
 | Dato | Valor |
 |------|-------|
 | Cuenta de testing | plantpoweredani.testing@gmail.com |
-| **Versión activa** | **v81** — "US-44 disponibilidad nutrición", confirmada con `clasp deployments` |
 | URL de testing | https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec |
 | Editor Apps Script | https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit |
 | Repo | https://github.com/juanartavia/plant-powered-dani |
-| **Ubicación local del repo** | `C:\dev\plant-powered-dani` — **NO en OneDrive** |
-| Spreadsheet testing | https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit |
-| Harness de pruebas | `backend/test-harness/` — **322 aserciones, todas pasando** |
-| Calendario `Disponibilidad - Pilates` (testing) | Creado en `plantpoweredani.testing@gmail.com` |
-| Calendario `Disponibilidad - Nutrición` (testing) | Creado en `plantpoweredani.testing@gmail.com`, ID guardado en `NUTRICION_AVAILABILITY_CALENDAR_ID` |
-| Cuenta secundaria de prueba (Outlook) | `juan.artavia.urena@est.una.ac.cr` — en realidad es Google Workspace educativo, NO un buzón real de Outlook |
+| Ubicación local del repo | `C:\dev\plant-powered-dani` — NO en OneDrive |
+| Spreadsheet testing | https://docs.google.com/spreadsheets/d/16M6WUqMAK9XkVoIutIn9UkJojlS5biT5o470GySs5gw/edit (sin `Debug_US37`, borrada 1 ago) |
+| Harness de pruebas | `backend/test-harness/` — **332 aserciones, todas pasando** |
 
 ### Links de testing
 ```
-Consulta Inicial (disponibilidad dinámica, US-44): .../exec?type=initial
-Cita de Seguimiento (disponibilidad dinámica, US-44): .../exec?type=followup
-Solo Medición (disponibilidad dinámica, US-44): .../exec?type=measurement
-Clase de Pilates (horario y duración dinámicos, US-43/US-45): .../exec?type=pilates
+Consulta Inicial: .../exec?type=initial
+Cita de Seguimiento: .../exec?type=followup
+Solo Medición: .../exec?type=measurement
+Clase de Pilates: .../exec?type=pilates
 ```
 
-### Historial de deploys (resumen — v28-v42 detallado pendiente de reconstruir)
-| Versión | Cambios principales |
-|---------|----------------------|
-| v8-v27 | Sprint 1 + primeros ajustes de Sprint 2 |
-| v28-v42 | US-13/30, US-14, US-31 (1ra versión), US-32, US-28, 1ra versión de US-33 — **historial detallado pendiente** |
-| v43-v44 | US-33 completa (backend), tras recuperación de OneDrive |
-| v45 | `clasp version` huérfana |
-| v46 | US-33 — plantilla de branding real |
-| v47 | `clasp version` huérfana |
-| v48 | US-31 (frontend) + US-28 (brandbook) + US-41, recuperados tras incidente OneDrive |
-| v49-v51 | (sin cambios documentados / intermedias) |
-| v52 | **US-34** — fix formato de fecha en español (4 pantallas) |
-| v53 | US-40 ronda 1 — fix showPicker() progresivo (**falló en producción**, ver nota #44) |
-| v54 | US-40 ronda 1 confirmado roto en real por el usuario |
-| v55 | US-40 ronda 2 — reemplazo por Popover+Calendar propio |
-| v56 | **US-40 ronda 3** — CalendarDropdown propio, arregla el `<select>` sin estilo. **US-40 Done.** |
-| v57-v59 | US-42 en desarrollo (versiones huérfanas de `clasp version`) |
-| v60 | **US-42 Done** — notificación de reagendamientos múltiples |
-| v61-v62 | US-37 primera implementación (4 botones + adjunto .ics — con el bug del content-type sin diagnosticar aún) |
-| v63-v70 | US-37 — investigación del bug del adjunto .ics perdido (varias rondas de diagnóstico, ver nota #43) |
-| v71-v74 | US-37 — pruebas de control A/B (PRUEBA-A sin imágenes / PRUEBA-B blob desde Drive) que aislaron la causa raíz |
-| v75-v76 | **US-37 Done** — fix real: imágenes vía `inlineImages`+`cid` en vez de base64 en `<img>`. |
-| v77 | **US-43 Done** — cupos de pilates dinámicos, incluye el fix real de `getLastRow()` post-`appendRow()` en el sync (ver nota #46). |
-| v78-v80 | **US-45 Done** — duración dinámica de clases de pilates + trigger cada 5 min (rondas intermedias incluyendo el gotcha de `clasp push` vs `clasp deploy`, ver nota #46). |
-| v81 | **US-44 Done** — disponibilidad real de nutrición vía calendario de disponibilidad. Confirmado en real con bloques y hueco de prueba. **Deploy activo.** |
+---
+
+## 12-bis. ENTORNO DE PREPRODUCCIÓN (NUEVO — 1 agosto 2026)
+
+> Confirmado formalmente en el StandUp del 1 de agosto como parte del proceso oficial de despliegue — ya no es una "prueba informal", es el paso de preproducción antes del deploy real con Dani.
+
+### Objetivo
+Simular el proceso de deploy completo en una cuenta nueva, antes de hacerlo en la cuenta real de Dani, para tener un checklist probado y no improvisar el día real.
+
+### Ronda 1 — `pruebadeploy8@gmail.com`
+
+| Dato | Valor |
+|------|-------|
+| Cuenta | pruebadeploy8@gmail.com |
+| `deploymentId` | AKfycbzO6SthAS_-cbE1eZGENDj3g1EKXR9QP7-lb3Nliru8pKnLxwvDmwKDIYOPksOhDey8nw |
+| URL | https://script.google.com/macros/s/AKfycbzO6SthAS_-cbE1eZGENDj3g1EKXR9QP7-lb3Nliru8pKnLxwvDmwKDIYOPksOhDey8nw/exec |
+| Spreadsheet | https://docs.google.com/spreadsheets/d/1TMNBKxe0kxQ1XKRH7Z325C4IUKJmDZFhYRs4rCpv7Ns/edit *(nota: este ID corresponde en realidad a la Ronda 2 — confirmar el ID real de la Ronda 1 si se necesita volver a acceder al Sheet, puede haber quedado con otro ID; verificar en Drive de esta cuenta)* |
+| Editor Apps Script | https://script.google.com/d/1E2ifta3XyJC7d6Xa1VVsNuTqwOILQssyRS43uhiawWW1KuSOnX3FFKpI/edit |
+| Calendario Nutrición - Citas | 876b650623be938149ecabaddf14bee2416f4a3a6219561bc0f332a5897fb041@group.calendar.google.com |
+| Calendario Disponibilidad - Nutrición | 724acd654d8c4548c025f6790489a954d2a3492172a26650cf5c9fd8f97bb571@group.calendar.google.com |
+| Calendario Pilates - Citas | 6ab51db650e9e84059f8071bc5099c07937aaf1bbaa01e21243f1af549627964@group.calendar.google.com |
+| Calendario Disponibilidad - Pilates | 66c1033c3c20951f0bcedbb80da69768fcbe9d14d83ea76b536518b7b2809685@group.calendar.google.com |
+| Rol en Opción B | Simula a la instructora (destinatario de `INSTRUCTORA_EMAIL` en la Ronda 2) |
+
+**Tropiezos encontrados y resueltos (ver nota #49 para el detalle completo):** API de Apps Script no habilitada, `clasp create --type webapp` inválido (correcto es `standalone`), `.clasp.json` viejo bloqueando la creación del proyecto, manifest vacío (falta copiar `appsscript.json` de la raíz a `dist/`), error de tipeo `I`/`l` en la URL, comilla sin cerrar en un comando de PowerShell.
+
+### Ronda 2 — `deployprueba4@gmail.com`
+
+| Dato | Valor |
+|------|-------|
+| Cuenta | deployprueba4@gmail.com |
+| `deploymentId` | AKfycbxzU6YQzHeT0l7h5gFsVhXgDNr8cJK1HclFkOy3y_oS5CHfuqlc_bfXifmQEG9IAz7GJQ |
+| URL | https://script.google.com/macros/s/AKfycbxzU6YQzHeT0l7h5gFsVhXgDNr8cJK1HclFkOy3y_oS5CHfuqlc_bfXifmQEG9IAz7GJQ/exec |
+| Spreadsheet | https://docs.google.com/spreadsheets/d/1TMNBKxe0kxQ1XKRH7Z325C4IUKJmDZFhYRs4rCpv7Ns/edit |
+| Editor Apps Script | https://script.google.com/d/1xQct7-WuuxreROqASeQjJGxXQLgiur8qhr__cBI4FIMUm48W0THW6xQZ/edit |
+| Calendario Nutrición - Citas | 6775d1f64bf46fc152ae2c39ec86af0f1e3a99155ad4131a40ab2d2a735fcc41@group.calendar.google.com |
+| Calendario Disponibilidad - Nutrición | 5e20364d88e0ecf3242e49d7ab85c04157e63c2dfdb32925f718bbf2f8d09feb@group.calendar.google.com |
+| Calendario Pilates - Citas | 812a3b260529deb402ec095b0a90389f0e60392ec36852eda15ae4c2a3b8d813@group.calendar.google.com |
+| Calendario Disponibilidad - Pilates | d01f15d9a51d8ebdf6bf8b9b6a4d89d36667cfbe7b29b165eb7152aa43315167@group.calendar.google.com |
+| Rol en Opción B | Simula a Dani — cuenta que ejecuta el script y tiene el alias "Enviar como" de la instructora configurado |
+| `PILATES_SENDER_EMAIL` en esta ronda | Correo personal del usuario (simula a la instructora, alias verificado en esta misma cuenta) |
+| `DANI_EMAIL`/`ALI_EMAIL` en esta ronda | plantpoweredani.testing@gmail.com |
+| `INSTRUCTORA_EMAIL` en esta ronda | pruebadeploy8@gmail.com (cuenta de la Ronda 1) |
+
+**Sin tropiezos nuevos** — confirma que el proceso, aplicando lo aprendido en la Ronda 1, es directo y repetible.
+
+### Notas de seguridad
+Las contraseñas de las cuentas de preproducción NO se documentan en este archivo — están registradas por separado entre el equipo (compartidas puntualmente para que Luis pueda probar el flujo completo). Recordatorio: cambiarlas si estas cuentas dejan de usarse activamente para pruebas.
 
 ---
 
 ## 13. NOTAS TÉCNICAS CRÍTICAS
 
-*(Notas 1-42 sin cambios — ver versión anterior del documento para el detalle completo de Sprint 1-3, incluyendo el incidente de recuperación de OneDrive.)*
+*(Notas 1-42 sin cambios — ver versiones anteriores del documento. Notas 43-47 tampoco cambiaron — ver más abajo.)*
 
-**43. La investigación más larga del proyecto hasta antes de US-43: el adjunto `.ics` de US-37 se perdía en silencio dentro de `GmailApp.sendEmail()` — causa raíz real: imágenes embebidas en base64 dentro del HTML.**
+**43-47.** Ver versión anterior del documento — cubren: imágenes+adjuntos en Gmail (#43), `showPicker()` en iframe (#44), conflicto de schema US-43 (#45), bug `getLastRow()`/`appendRow()` (#46), diferencia de modelo nutrición/pilates (#47).
 
-**Síntoma:** el correo de confirmación debía llevar 4 botones de calendario + una invitación `.ics` real adjunta. Los 4 botones funcionaban perfecto. El adjunto `.ics`, en cambio, **nunca llegaba** al correo real — confirmado repetidamente con "Mostrar original" en Gmail.
+**48. US-46 (1 ago) — la lección de "ya existía el patrón bueno, solo había que aplicarlo en los 2 lugares que faltaban".**
 
-**Causa raíz real, encontrada con una prueba de control A/B:** un correo de prueba armado SIN ninguna imagen embebida en el HTML sí traía el adjunto `.ics` perfecto. Con las imágenes (incrustadas como `<img src="data:image/png;base64,...">` directo en el HTML), el adjunto se perdía. **Gmail, al procesar un correo con imágenes embebidas de esta forma, las extrae internamente como adjuntos reales al momento de enviar — desplazando/descartando cualquier adjunto real que hayamos agregado nosotros mismos en el mismo envío.**
+El propio código ya documentaba la deuda desde US-33: un comentario junto a `LATE_CANCELLATION_PROP_*` decía literalmente que valdría la pena migrar las notificaciones de US-13/30/32 a ese mismo mecanismo de Script Properties — quedó anotado y nunca ejecutado por 2 sprints, hasta que el ensayo de preproducción lo hizo evidente de forma práctica (notificación llegando a la cuenta equivocada). **Regla reforzada:** cuando el código ya deja un comentario de deuda técnica señalando "esto debería hacerse igual que aquello", tratarlo como una tarea real pendiente, no solo un comentario decorativo — especialmente si aparece en una auditoría previa a otro cambio.
 
-**Fix definitivo:** reemplazar `<img src="data:image/png;base64,...">` por `<img src="cid:nombre_del_cid">` + la opción `inlineImages: { nombre_del_cid: Blob }` en `GmailApp.sendEmail()`.
+**49. Dos rondas de ensayo de preproducción (1 ago) — inventario completo de tropiezos encontrados en la Ronda 1, todos resueltos y confirmados que no se repiten en la Ronda 2.**
 
-**Regla reforzada:** nunca combinar `<img src="data:...;base64,...">` directo en el HTML con un adjunto real en la misma llamada a `GmailApp.sendEmail()` — usar siempre `inlineImages`+`cid:`. El harness no puede detectar este tipo de bug — solo se confirma contra Gmail real.
+1. **API de Apps Script no habilitada:** `clasp create` falla con *"User has not enabled the Apps Script API"* la primera vez que se usa Apps Script en una cuenta de Google nueva. Fix: activar el toggle en https://script.google.com/home/usersettings, esperar 1-2 min, reintentar. **Regla reforzada: activar esto ANTES de intentar `clasp create` en cualquier cuenta nueva, no esperar a que falle.**
 
-**44. `HTMLInputElement.showPicker()` lanza `SecurityError` dentro del iframe cross-origin de Apps Script Web Apps — API descartada por completo para este proyecto (US-40, 29 jul).**
+2. **`clasp create --type webapp` es inválido:** el tipo correcto es `standalone` — "Web App" no es un tipo de contenedor de Apps Script, es una forma de desplegar un script `standalone`, configurada vía el manifest (`appsscript.json`), no vía el flag `--type`.
 
-Apps Script sirve el portal dentro de un iframe de 3 niveles, cross-origin respecto al top-level. `showPicker()` está bloqueado por especificación del navegador cuando se llama desde un iframe que no comparte origen con el documento de nivel superior. **Regla reforzada:** para cualquier funcionalidad que dependa de abrirse dentro del portal, nunca depender de esta API.
+3. **`.clasp.json` preexistente bloquea `clasp create`:** si ya existe un `.clasp.json` en la carpeta (de una cuenta anterior), `clasp create` falla con *"Project file already exists"*. Fix: respaldar el archivo viejo con otro nombre (`copy .clasp.json .clasp.json.NOMBRE-backup`) y borrar el original (`del .clasp.json`) antes de crear el proyecto nuevo.
 
-**45. US-43 (cupos de pilates dinámicos, 30 jul) — conflicto de schema detectado ANTES de escribir código, y una reordenación de operaciones descubierta a medio camino.**
+4. **Manifest vacío tras `clasp create` — causa raíz del error "Google Drive no pudo abrir el archivo":** `clasp create` clona un `dist/appsscript.json` genérico y vacío (sin scopes, sin sección `webapp`) al crear un proyecto nuevo. El pipeline de build (`copy-to-dist.js`) **no copia `appsscript.json`** — solo `app.js` y templates. Si se hace `clasp push`/`deploy` con ese manifest vacío, la URL `/exec` no se comporta como Web App — Google intenta abrirla como un archivo de Drive cualquiera y falla con un error de "No se pudo abrir el archivo", sin ninguna pista de que el problema es el manifest. **Fix:** copiar manualmente `appsscript.json` de la raíz del repo a `dist/appsscript.json` ANTES del primer `clasp push` en cualquier proyecto nuevo. **Diagnóstico si ya se dio el error:** revisar el diálogo "Administrar implementaciones" del editor — si NO aparece el campo "Quién tiene acceso" (normal en un Web App), es señal de que el manifest no tiene la sección `webapp`.
 
-**Conflicto de schema, resuelto ANTES de tocar código:** el prompt original pedía reutilizar `event_id`/`meet_link` de `Cupos_Pilates` (E/F) para el dedup del sync — pero esas columnas ya estaban en uso productivo para el evento OPERATIVO. Se resolvió agregando una columna nueva y separada (`disponibilidad_event_id`, columna G). **Lección:** cuando un prompt describe un cambio de schema sobre una tabla que el código YA usa activamente, revisar los usos existentes de esas columnas ANTES de escribir una sola línea.
+5. **Error de tipeo `I` mayúscula vs. `l` minúscula al escribir un `deploymentId` a mano:** estos IDs son largos y ambos caracteres se ven casi idénticos en muchas fuentes. **Regla reforzada: siempre copiar y pegar el `deploymentId` directo de la salida de la terminal, nunca reescribirlo a mano.**
 
-**Reordenación de operaciones en `rescheduleBooking` (pilates):** con el cupo pasando de contador cacheado a conteo en vivo, el ORDEN de las operaciones sí importa — `leavePilatesSlot` (slot viejo) debe correr DESPUÉS de que la fila del cliente ya se haya movido al horario nuevo, o cuenta mal el cupo liberado. Encontrado escribiendo el Test 72 del harness, no leyendo el código.
+6. **Comilla sin cerrar en un comando de PowerShell con `--description "..."` deja la terminal esperando más input** (se ve como `>>` repetido) — se resuelve con `Ctrl+C` y reintentando el comando completo con la comilla de cierre bien puesta.
 
-**46. US-43 (30 jul) — bug real de `getLastRow()` llamado justo después de `appendRow()` dentro de un loop sin flush, encontrado probando contra el Sheet real, invisible para el harness. Más el gotcha de `clasp push` vs `clasp deploy`.**
+**Ninguno de estos 6 tropiezos se repitió en la Ronda 2**, aplicando el orden correcto desde el inicio (activar API → `clasp create --type standalone` → copiar manifest → recién ahí `clasp push`).
 
-**Causa raíz:** `syncPilatesClassesToCuposSheet()` llamaba `cuposSheet.getLastRow()` inmediatamente después de cada `cuposSheet.appendRow()`, repetidas veces dentro del mismo loop, sin flush. En Sheets real (a diferencia del mock del harness, siempre consistente), esto no garantiza reflejar la escritura todavía — varias iteraciones escribieron sobre la MISMA fila vieja en vez de 8 filas nuevas distintas.
+**Hallazgo aparte, no un tropiezo sino un comportamiento esperado a explicar de antemano:** las cuentas de Gmail creadas el mismo día, sin historial de envío, reciben sus primeros correos con adjunto `.ics` en la carpeta de Spam — no es un bug, es el comportamiento normal de reputación de remitente nueva. No aplica a la cuenta real de Dani (dominio de Workspace con su propia reputación), y de todas formas no bloquea la entrega, solo la clasificación.
 
-**Fix:** el número de fila se calcula una sola vez a partir del largo de los datos ya leídos al inicio de la función, y se incrementa localmente en cada iteración, sin volver a preguntarle a Sheets a mitad del loop.
+**50. US-48 (1 ago) — el alias "Enviar como" se configura en la cuenta que EJECUTA el script, no en la cuenta que se quiere simular; y el organizador del evento de Calendar sigue siendo distinto del remitente del correo, a propósito.**
 
-**Gotcha relacionado (US-45):** después de pushear el fix de duración dinámica, el portal público seguía mostrando "60 min" — no porque el fix estuviera mal, sino porque `clasp push` solo actualiza el HEAD del editor; la URL pública `/exec` solo se mueve con `clasp deploy` explícito. **Regla reforzada:** si un fix pusheado "no se refleja" en el portal real pero sí funciona corriendo la función manualmente desde el editor, sospechar primero de un deploy pendiente.
+Por `executeAs: USER_DEPLOYING` en el manifest, todo el Web App corre siempre bajo la identidad de quien hizo el último `clasp deploy`. Esto significa que si se quiere que un correo salga "desde" la instructora, el alias tiene que estar verificado en la bandeja de Gmail de la cuenta que despliega (la de Dani en producción) — no tiene ningún efecto configurarlo en la cuenta de la instructora misma. Fácil de asumir al revés la primera vez.
 
-**Regla reforzada para cualquier código futuro que escriba a Sheets dentro de un loop:** nunca volver a preguntarle a Sheets su propio estado inmediatamente después de una escritura sin flush — calcular la posición localmente a partir de una lectura hecha una sola vez al inicio. Ya es la tercera vez que este patrón exacto aparece en el proyecto.
+**Dato aparte confirmado durante la prueba real, no confundir con un bug:** el organizador del evento de Google Calendar (visible en el banner del correo) sigue mostrando la cuenta que ejecuta el script (la operativa, `PILATES_CALENDAR_ID`) — el `from` del correo y el `organizer` del evento de Calendar son dos mecanismos independientes. Cambiar uno no cambia el otro automáticamente; si en algún momento se quisiera que el organizador del evento también fuera la instructora, sería un cambio aparte (no evaluado ni pedido en esta ronda).
 
-**47. US-44 (30 jul) — nutrición y pilates leen calendarios de disponibilidad con el mismo espíritu, pero con modelos de cómputo deliberadamente distintos; y un límite real de las pruebas manuales desde el editor de Apps Script con funciones parametrizadas.**
-
-**Por qué el modelo NO es el mismo entre nutrición y pilates, a propósito:** pilates es agendamiento de **clases discretas** — cada evento en `Disponibilidad - Pilates` ES una clase completa y reservable tal cual (con su propia capacidad, vía `Cupos_Pilates`). Nutrición es agendamiento **continuo** — cada evento en `Disponibilidad - Nutrición` es un **bloque abierto** que el sistema tiene que "tallar" en sub-slots consecutivos según la duración del tipo de cita solicitado, sin dejar huecos. Intentar reutilizar el código de pilates tal cual para nutrición habría sido un error — el patrón de "leer Calendar.Events.list con singleEvents:true" sí se comparte, pero lo que se hace con esos eventos después es fundamentalmente distinto. Antes de escribir código para cualquier tarjeta futura de este estilo, confirmar primero si el dominio es de clases discretas o de tiempo continuo — determina toda la arquitectura de la solución.
-
-**Investigación previa (Paso 0) sin conflictos, a diferencia de US-43:** nutrición resultó ser una tarjeta estructuralmente más simple que pilates — no tiene ninguna Script Property de calendario operativo dedicada (usa la genérica `CALENDARS[0]`, ya existente desde antes) y no tiene ninguna capa intermedia tipo `Cupos_Pilates` (su disponibilidad se calcula 100% en vivo, sin persistir nada). Esto significó: sin necesidad de sync, sin trigger, sin columna de dedup, y sin ningún riesgo del bug de `getLastRow()`/`appendRow()` de la nota #46, porque este flujo no escribe a ningún Sheet. Investigar la arquitectura existente ANTES de codear (mismo hábito que evitó el conflicto de schema en US-43) confirmó esto de entrada, en vez de descubrirlo a medio camino.
-
-**Límite real de las pruebas manuales desde el editor, descubierto en esta tarjeta:** correr una función manualmente desde el editor de Apps Script (botón "Ejecutar") solo funciona sin fricción para funciones sin parámetros, o cuyos parámetros se puedan editar directo en el código antes de correr. `fetchAvailability(type)` requiere un parámetro (`"initial"`, `"followup"`, `"measurement"`) que el editor no permite pasar por la UI de "Ejecutar". **Regla reforzada:** para cualquier función parametrizada, la única prueba real posible es a través del portal público con el parámetro correcto en la URL — no perder tiempo intentando correrla "a mano" desde el editor solo para confirmar el comportamiento de negocio; el editor sirve para correr funciones de instalación/migración (sin parámetros o con parámetros fijos en el código), no para probar lógica que depende de input externo.
+**Verificación del alias, proceso real:** Gmail → Configuración → "Ver todos los ajustes" → pestaña "Cuentas e importación" → "Enviar mensaje como" → "Agregar otra dirección de correo electrónico" → Gmail manda un código a la dirección agregada → confirmar el código desde la cuenta que despliega. Una vez verificado, aparece sin ningún link de "verificar" pendiente junto a la dirección, solo "convertir en predeterminada"/"eliminar".
 
 ---
 
@@ -805,31 +700,43 @@ Apps Script sirve el portal dentro de un iframe de 3 niveles, cross-origin respe
 4. Dev pega la respuesta de Claude Code en este chat
 5. Este chat analiza, detecta problemas, genera siguiente prompt si hace falta
 6. clasp push → pasos manuales en el editor si aplica (migraciones, autorización
-   de nuevos scopes OAuth) → clasp deploy
+   de nuevos scopes OAuth, Script Properties nuevas) → clasp deploy
 6.5. Inmediatamente después de un clasp deploy exitoso: git add . && git commit
 7. Probar en el navegador real contra el deploy (URL PÚBLICA, nunca solo local/Playwright)
    NO se marca nada como completado solo porque el código se escribió o Playwright pasó en local
 8. Solo si la prueba real en la URL pública confirma que funciona → marcar checkbox(es) en Trello
 9. Cuando todos los checkboxes de la tarjeta estén marcados → mover la tarjeta a Done
-10. Actualizar CLAUDE.md — confirmando primero que la base sobre la que se edita es la más reciente
+10. Actualizar CLAUDE.md — confirmando primero que la base sobre la que se edita
+    es la más reciente, Y confirmando después que el archivo quedó realmente
+    guardado en disco (ver punto 18 de la sección 0)
 ```
 
 ### Reglas añadidas el 29 jul
-- Cualquier scope OAuth nuevo en `appsscript.json` requiere autorización MANUAL una vez desde el editor antes de que funcione en ejecuciones reales del Web App — no basta con `clasp deploy`.
-- Ante un bug donde "todo se ve bien en nuestras variables pero el resultado real no aparece", diagnosticar contra el sistema externo real, no solo contra el propio código.
-- Nunca combinar imágenes en base64 embebidas con adjuntos reales en el mismo correo — usar `inlineImages`+`cid:`.
-- `showPicker()` y cualquier API sensible al origen del documento no se pueden usar dentro del portal.
-- Antes de dar por buena cualquier funcionalidad nueva del portal, probarla contra la URL pública real.
+- Cualquier scope OAuth nuevo en `appsscript.json` requiere autorización MANUAL una vez desde el editor.
+- Ante un bug "se ve bien en nuestras variables pero el resultado real no aparece", diagnosticar contra el sistema externo real.
+- Nunca combinar imágenes base64 con adjuntos reales en el mismo correo.
+- `showPicker()` y APIs sensibles al origen del documento no se pueden usar dentro del portal.
+- Probar siempre contra la URL pública real antes de dar por buena una funcionalidad nueva.
 
 ### Reglas añadidas el 30 jul (US-43/US-44/US-45)
-- **Nunca llamar `sheet.getLastRow()` inmediatamente después de `sheet.appendRow()` dentro de un loop, sin flush entre medio.** Calcular la posición localmente a partir de una lectura hecha una sola vez, incrementando un contador propio.
-- **Antes de escribir código sobre una tabla/Sheet que el proyecto YA usa activamente**, revisar primero los usos existentes de las columnas involucradas (ver nota #45).
-- **`clasp push` no mueve la URL pública `/exec`** — solo actualiza el HEAD del editor. Si un fix pusheado parece "no aplicarse" en el portal real, sospechar primero de un `clasp deploy` pendiente.
-- Cuando la fuente de verdad de un conteo pasa de "contador cacheado" a "conteo en vivo desde otra tabla", revisar el ORDEN de las operaciones en cualquier flujo que mueva datos entre dos estados.
-- **Antes de asumir que dos tarjetas de "leer disponibilidad desde Calendar" comparten arquitectura**, confirmar si el dominio es de clases discretas (como pilates) o de tiempo continuo a tallar (como nutrición) — determina todo el diseño (ver nota #47).
-- **Correr funciones manualmente desde el editor de Apps Script solo sirve como prueba real para funciones sin parámetros** (instalación, migraciones). Para cualquier función parametrizada (ej. `fetchAvailability(type)`), la única prueba real es a través del portal público con el parámetro en la URL.
+- Nunca `getLastRow()` inmediatamente después de `appendRow()` sin flush en un loop.
+- Revisar usos existentes de columnas ANTES de escribir código sobre una tabla ya activa.
+- `clasp push` no mueve `/exec` — solo `clasp deploy` explícito.
+- Revisar el ORDEN de operaciones cuando una fuente de verdad pasa de cacheada a en-vivo.
+- Confirmar si el dominio es de clases discretas o tiempo continuo antes de asumir arquitectura compartida.
+- Funciones parametrizadas solo se prueban de verdad contra el portal público con el parámetro en la URL.
 
-**URL del editor:** https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit
+### Reglas añadidas el 1 ago (Sprint 5 — fix de notificaciones, setup de cuentas nuevas, Opción B)
+- **Cuando el código ya deja un comentario de deuda técnica tipo "esto debería usar el mismo patrón que aquello"**, tratarlo como tarea pendiente real, no decorativo (ver nota #48).
+- **Antes de `clasp create` en una cuenta de Google nueva, activar primero la Apps Script API** en https://script.google.com/home/usersettings — no esperar a que falle.
+- **`clasp create` usa `--type standalone`, nunca `--type webapp`** (no es un tipo válido).
+- **Copiar manualmente `appsscript.json` de la raíz a `dist/appsscript.json` ANTES del primer `clasp push`** en cualquier proyecto de Apps Script nuevo — el build normal no lo copia, y un manifest vacío rompe el comportamiento de Web App de forma confusa (ver nota #49).
+- **Copiar y pegar siempre los `deploymentId` de la terminal, nunca reescribirlos a mano** (riesgo de confundir `I`/`l`).
+- **Un alias "Enviar como" de Gmail se configura en la cuenta que EJECUTA el script (`executeAs`), no en la cuenta que se quiere simular como remitente** (ver nota #50).
+- **Antes de deployar código que dependa de una Script Property nueva y crítica** (ej. `PILATES_SENDER_EMAIL`), confirmar que ya está configurada — o el fallo será silencioso en producción, no un error visible.
+- **Confirmar que un archivo (como CLAUDE.md) realmente se actualizó en disco**, no solo que un chat describió los cambios — pedir una verificación explícita (ver punto 18, sección 0).
+
+**URL del editor de testing:** https://script.google.com/d/1cu-HdKiAmfUYOgjwtjKcE9lCO6waLfFsL71PwP4GgcdGiQWzqygPS3fK/edit
 
 ---
 
@@ -843,29 +750,85 @@ Backlog → In Progress → Done
 ### Reglas
 - Al **iniciar** una US → moverla a **In Progress**.
 - Al **completar todos los checkboxes, validados en real** → moverla a **Done**.
-- **Ningún checkbox ni tarjeta se marca como completado/Done solo porque Claude Code terminó de escribir el código** — requiere prueba real confirmada primero, contra la URL pública.
-- **Acción pendiente en Trello:** mover US-34, US-40, US-42, US-37, **US-43, US-44, US-45** a Done (todas validadas en real).
+- **Ningún checkbox ni tarjeta se marca como completado/Done solo porque Claude Code terminó de escribir el código** — requiere prueba real confirmada primero.
+- **Acción pendiente en Trello:** mover US-46, US-47, US-48 a Done (todas validadas en real en preproducción). Mover US-36 a Done/Archivada (decisión de equipo, cerrada). Formalizar como tarjeta la historia de usuario de "paso a preproducción" (ya ejecutada en la práctica).
 
 ---
 
 ## 16. FLUJO DE DEPLOY EN WINDOWS (PowerShell)
 
+### Para un deployment EXISTENTE (código nuevo sobre una cuenta ya configurada)
 ```powershell
 cd C:\dev\plant-powered-dani
 cd backend
-npm run build          # ya copia automáticamente a ../dist/ (nota #35)
-cd ..
-cd frontend
-npm run build           # solo si hubo cambios en frontend — copiar dist/index.html a ../dist/ manualmente
+npm run build
 cd ..
 clasp push
-# Si hay migraciones nuevas O scopes OAuth nuevos: ir al editor, ejecutar/autorizar
-# manualmente, ANTES del deploy (o antes de la primera prueba real tras el deploy)
 clasp version "descripción del cambio"
-clasp deploy --deploymentId AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ -V <número de versión recién creada> --description "descripción"
+clasp deploy --deploymentId <deploymentId de esa cuenta> -V <número de versión recién creada> --description "descripción"
 git add .
 git commit -m "descripción del cambio"
 git push
+```
+
+### Para una cuenta NUEVA desde cero (basado en las dos rondas de preproducción — ver sección 12-bis para el detalle narrado)
+```powershell
+# 0. Crear la cuenta de Google y los 4 calendarios manualmente primero
+#    (Nutrición - Citas, Disponibilidad - Nutrición, Pilates - Citas,
+#    Disponibilidad - Pilates) — copiar los 4 IDs.
+
+# 1. Activar la Apps Script API en la cuenta nueva ANTES de seguir:
+#    https://script.google.com/home/usersettings
+
+# 2. Respaldar el .clasp.json actual si existe
+copy .clasp.json .clasp.json.CUENTA-VIEJA-backup
+del .clasp.json
+
+# 3. Login con la cuenta nueva
+clasp login
+
+# 4. Crear el proyecto — SIEMPRE standalone, nunca webapp
+clasp create --type standalone --title "TITULO" --rootDir ./dist
+
+# 5. CRÍTICO: copiar el manifest completo ANTES del primer push
+copy appsscript.json dist\appsscript.json
+
+# 6. Build y push
+cd backend
+npm run build
+cd ..
+clasp push
+
+# 7. En el editor: Configuración del proyecto → Propiedades del script,
+#    agregar los 7 (o más) valores: CALENDARS (¡con corchetes y comillas!),
+#    NUTRICION_AVAILABILITY_CALENDAR_ID, PILATES_CALENDAR_ID,
+#    PILATES_AVAILABILITY_CALENDAR_ID, DANI_EMAIL, INSTRUCTORA_EMAIL,
+#    ALI_EMAIL (y PILATES_SENDER_EMAIL si se usa Opción B — ver paso 11)
+
+# 8. Correr setupNewAccountSheets() manualmente desde el editor
+#    (primera vez pide autorizar permisos — aceptar todo)
+
+# 9. Crear el primer deployment
+clasp deploy --description "descripción inicial"
+
+# 10. Copiar el deploymentId de la salida, actualizar WEB_APP_URL en
+#     backend/src/app.ts (línea 247) con la URL /exec correspondiente
+
+# 11. Si se usa Opción B (alias real para pilates): verificar el alias en
+#     Gmail de ESTA cuenta (Configuración → Cuentas → "Enviar correo como")
+#     ANTES de configurar PILATES_SENDER_EMAIL y ANTES de deployar código
+#     que dependa de esa property.
+
+# 12. Rebuild + push + deploy con la URL corregida
+cd backend
+npm run build
+cd ..
+clasp push
+clasp version "URL actualizada"
+clasp deploy --deploymentId <deploymentId del paso 9> -V <número> --description "descripción"
+
+# 13. Marcar bloques/clases de prueba en los calendarios de disponibilidad,
+#     y probar contra la URL pública (copiar/pegar, nunca tipear)
 ```
 
 ### Notas importantes
@@ -873,12 +836,13 @@ git push
 - `&&` no funciona en PowerShell — correr comandos uno por uno.
 - El `rootDir` en `.clasp.json` apunta a `dist/` — no cambiar.
 - Siempre `clasp push` antes de `clasp deploy`.
-- **Usar siempre el mismo `--deploymentId`:** `AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ`.
-- **`clasp deploy` sin `-V` explícito crea su propia versión nueva** — pasar siempre `-V <número>` explícito, y confirmar con `clasp deployments` cuál versión quedó realmente publicada.
-- **`clasp push` actualiza el HEAD del editor, pero NO mueve la URL pública `/exec`** — esa solo se actualiza con `clasp deploy` explícito (ver nota #46).
+- **`clasp deploy` sin `-V` explícito crea su propia versión nueva** — pasar siempre `-V <número>` explícito, confirmar con `clasp deployments`.
+- **`clasp push` actualiza el HEAD del editor, pero NO mueve la URL pública `/exec`**.
 - `build.sh` de la raíz no funciona en cmd.exe.
-- Si se agrega un scope OAuth nuevo a `appsscript.json`, hay que actualizarlo tanto en la raíz como en `dist/appsscript.json` y autorizarlo manualmente corriendo cualquier función desde el editor una vez.
-- **Para probar funciones parametrizadas (ej. `fetchAvailability(type)`), usar el portal público con el parámetro en la URL** — el botón "Ejecutar" del editor no permite pasar argumentos (ver nota #47).
+- Scope OAuth nuevo → actualizar tanto en la raíz como en `dist/appsscript.json`, autorizar manualmente una vez.
+- Para funciones parametrizadas, usar el portal público con el parámetro en la URL.
+- **`copy-to-dist.js` NO copia `appsscript.json`** — copiarlo a mano en cuentas nuevas (ver nota #49).
+- **Copiar/pegar siempre los `deploymentId`, nunca reescribirlos a mano** (riesgo `I`/`l`).
 
 ---
 
@@ -886,11 +850,10 @@ git push
 
 | Fecha | Cambio |
 |-------|--------|
-| *(ver versiones anteriores para historial completo hasta 28 jul)* | |
-| 27-28 jul 2026 | Incidente grave de OneDrive, recuperación completa backend+frontend. US-33 completada con plantilla de branding real. US-41 resuelto. |
-| 29 jul 2026 | **US-34/US-40/US-42/US-37 Done** — ver versiones anteriores del documento para el detalle completo de cada una. Deploy final: v76. |
-| 30 jul 2026 | **US-43 Done, validado en real** (cupos de pilates dinámicos vía calendario `Disponibilidad - Pilates`). Conflicto de schema resuelto antes de codear (columna `disponibilidad_event_id` separada, nota #45). Bug real de `getLastRow()`/`appendRow()` encontrado y corregido contra el Sheet real (nota #46). Deploy: v77. **US-45 Done, validado en real** (duración dinámica de pilates + trigger cada 5 min, gotcha de `clasp push` vs `clasp deploy` documentado). **US-44 Done, validado en real** (disponibilidad real de nutrición vía calendario `Disponibilidad - Nutrición`, modelo de tallado de bloques en sub-slots — deliberadamente distinto al de pilates, ver nota #47). Investigación previa (Paso 0) confirmó que nutrición no tiene calendario operativo dedicado ni capa Sheet intermedia, haciendo esta tarjeta más simple que pilates. Deploy: v81. Harness: 322 aserciones, todas pasando. Commits locales hechos, `git push` pendiente. |
+| *(ver versiones anteriores para historial completo hasta 30 jul)* | |
+| 30 jul 2026 | US-43/US-44/US-45 Done, validados en real. Deploy: v81. Harness: 322/322. |
+| 1 ago 2026 | **Sprint 5.** US-46 Done (fix `NOTIFICACION_INTERNA_DESTINATARIOS` → `getLateCancellationRecipients`, eliminada la constante hardcodeada). US-47 Done (`setupNewAccountSheets()`, sin `Debug_US37`; borrada también del Sheet de testing). US-48 Done (Opción B: remitente real de instructora vía alias "Enviar como" + `PILATES_SENDER_EMAIL`). **Dos rondas completas de ensayo de deploy en preproducción** ejecutadas (`pruebadeploy8@gmail.com` y `deployprueba4@gmail.com`) — la primera con 6 tropiezos de aprendizaje (todos documentados en nota #49), la segunda sin ningún tropiezo nuevo. Validado en preproducción: agendar/reagendar/cancelar/confirmar asistencia en ambos flujos, fix de notificaciones, y Opción B. StandUp de equipo: **US-36 cerrado** (banner aceptado como limitación), bug de fecha en banner de Calendar **investigado y cerrado** (causa: token fijo de función de testing, no reproducible en producción real — botón se mantiene). Harness: 332/332. Pendientes nuevos del StandUp: bajar trigger de pilates a 1 min, decidir sobre correo de cancelación, manual de usuario, historia de usuario de preprod formal, acortadores de URL. Reunión de deploy real: martes. |
 
 ---
 
-*Última actualización: 30 julio 2026 — **US-43, US-44 y US-45 Done, las tres validadas en real contra la URL pública** (deploy activo v81), no solo en el harness (322 aserciones). Pendientes reales para continuar: mover las tres tarjetas a Done en Trello, hacer `git push` de los commits locales pendientes, coordinar con Dani/Ali/instructora la carga de disponibilidad real en ambos calendarios antes de producción, decisión de equipo sobre US-36, aprobación formal de textos BORRADOR, correos reales de Dani/Ali/instructora, decisión sobre US-20, validación móvil formal, reconstrucción del historial de deploys v28-v42, y confirmar Yahoo con una cuenta real cuando se consiga una.*
+*Última actualización: 1 agosto 2026 — **Sprint 5 completo: US-46, US-47 y US-48 Done, todas validadas en real en dos rondas de preproducción independientes** (332/332 en harness). US-36 cerrado por decisión de equipo. Pendientes reales para continuar: bajar trigger de pilates a 1 min, decidir sobre el correo de cancelación, configurar `PILATES_SENDER_EMAIL` real + verificar alias en la cuenta real de Dani antes del deploy de producción, reemplazar correos placeholder por los reales, manual de usuario, documentación del modelo de doble calendario para Dani/instructora, y la reunión de deploy real programada para el martes.*

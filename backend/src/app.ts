@@ -94,6 +94,31 @@ function getPilatesAvailabilityCalendarId(): string {
   return id;
 }
 
+// Correo remitente real de la instructora para los correos que le llegan AL CLIENTE en el
+// flujo de pilates (confirmación, reagendamiento, cancelación) vía alias "Enviar como" de
+// Gmail — DISTINTO de INSTRUCTORA_EMAIL, que es solo el destinatario de las notificaciones
+// INTERNAS (ver getLateCancellationRecipients). Nutrición no usa este getter en absoluto: sus
+// correos al cliente siguen saliendo sin `from` explícito, exactamente igual que antes.
+//
+// Restricción real de Apps Script (no solo "que el alias esté verificado en Gmail"): el Web
+// App siempre ejecuta como la cuenta que hizo el último `clasp deploy`
+// (appsscript.json "executeAs": "USER_DEPLOYING"), nunca como quien dispara la acción. Por lo
+// tanto este alias debe estar agregado y VERIFICADO como "Enviar correo como" en la
+// configuración de Gmail de ESA cuenta deployer (no en la cuenta de la instructora) — de lo
+// contrario GmailApp.sendEmail({ from: ... }) falla o Gmail ignora el remitente solicitado.
+function getPilatesSenderEmail(): string {
+  const email = PropertiesService.getScriptProperties().getProperty("PILATES_SENDER_EMAIL");
+  if (!email) {
+    throw new Error(
+      "PILATES_SENDER_EMAIL no configurado en Script Properties. Debe ser el correo real de la " +
+      "instructora, agregado y verificado como alias \"Enviar correo como\" en la cuenta que " +
+      "ejecuta el Web App (la que hizo el último clasp deploy) — no en la cuenta de la " +
+      "instructora misma."
+    );
+  }
+  return email;
+}
+
 // Calendario donde Dani/Ali marcan los BLOQUES de tiempo abiertos para agendar nutrición
 // (US-44, mismo espíritu que PILATES_AVAILABILITY_CALENDAR_ID/US-43) — de SOLO LECTURA para el
 // sistema, nunca se escribe ahí. Es un calendario DISTINTO del operativo de nutrición: ese es
@@ -244,8 +269,7 @@ const TIME_ZONE = "America/Costa_Rica";
 // Producción (Sprint 3, deploy bajo la cuenta real de Dani): actualizar este valor a la URL
 // pública del deployment de producción antes de ir en vivo — es un valor distinto al de
 // testing, generado en su propio `clasp deploy`.
-const WEB_APP_URL =
-  "https://script.google.com/macros/s/AKfycbwNUEjG8CXo2D5bk2eq1w6wBrme9XqJpCqOt-TkP0otTypiXd7GCEk7L7uFhdDOLCaJ/exec";
+const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxzU6YQzHeT0l7h5gFsVhXgDNr8cJK1HclFkOy3y_oS5CHfuqlc_bfXifmQEG9IAz7GJQ/exec";
 
 // ⚠️ US-44 (30 jul): sin uso activo en fetchAvailability desde que nutrición pasó al mismo
 // modelo aditivo de pilates (US-43) — la disponibilidad real ahora sale de los bloques que
@@ -1357,6 +1381,75 @@ function addDuracionMinutosColumnToCuposPilates(): void {
 
   sheet.getRange(1, CUPOS_PILATES_DURACION_MINUTOS_COL).setValue("duracion_minutos").setFontWeight("bold");
   Logger.log('Columna "duracion_minutos" agregada a Cupos_Pilates.');
+}
+
+// Crea el spreadsheet COMPLETO Y FINAL para una cuenta NUEVA (cuenta de ensayo, o la cuenta
+// real de Dani más adelante) en un solo paso, con las 4 pestañas ya armadas con TODAS sus
+// columnas del estado final actual — sin tener que correr initializeSheets() y luego cada
+// migración incremental una por una (addContadorReagendamientosColumnToNutricion,
+// addCancelacionTardiaColumnToPilates, addClientesSheet,
+// addDisponibilidadEventIdColumnToCuposPilates, addDuracionMinutosColumnToCuposPilates, etc.).
+//
+// Función ADICIONAL, no un reemplazo: initializeSheets() y todas las migraciones individuales
+// siguen existiendo tal cual, para poder aplicarse sobre un Sheet real que ya tenga datos.
+//
+// Reutiliza SHEET_SCHEMAS/CLIENTES_SCHEMA como base (en vez de repetir arrays literales
+// nuevos) y les anexa las columnas que hoy solo existen como migraciones separadas
+// (asistencia_confirmada/contador_reagendamientos en Nutrición, contador_reagendamientos en
+// Pilates, cliente_nutricion/cliente_pilates en Clientes) — así esta función no se
+// desincroniza si alguien cambia el esquema base más adelante. Las posiciones resultantes
+// fueron verificadas 1 a 1 contra las constantes NUTRICION_*_COL/PILATES_*_COL/
+// CUPOS_PILATES_*_COL/CLIENTES_*_COL que usa el resto del código (sin desfase).
+//
+// NO crea "Debug_US37" — esa pestaña fue una herramienta de diagnóstico para el bug de
+// US-37 (ver nota técnica #43 del CLAUDE.md), ya resuelto, y no debe formar parte del
+// esquema de ninguna cuenta nueva de aquí en adelante.
+function setupNewAccountSheets(): void {
+  const scriptProperties = PropertiesService.getScriptProperties();
+  const existingId = scriptProperties.getProperty("SPREADSHEET_ID");
+
+  if (existingId) {
+    throw new Error(
+      `SPREADSHEET_ID ya existe (${existingId}) — setupNewAccountSheets() no se ejecutó, ` +
+      "para evitar crear un spreadsheet duplicado sobre una cuenta que ya tiene una base de " +
+      'datos configurada. Si de verdad se necesita crear una desde cero, borrar manualmente ' +
+      'la Script Property "SPREADSHEET_ID" primero (Configuración del proyecto > Propiedades ' +
+      "del script, en el editor de Apps Script).",
+    );
+  }
+
+  const finalSchemas: Record<string, string[]> = {
+    "Nutrición": [...SHEET_SCHEMAS["Nutrición"], "asistencia_confirmada", "contador_reagendamientos"],
+    "Pilates": [...SHEET_SCHEMAS["Pilates"], "contador_reagendamientos"],
+    "Cupos_Pilates": [...SHEET_SCHEMAS["Cupos_Pilates"]],
+    "Clientes": [...CLIENTES_SCHEMA, "cliente_nutricion", "cliente_pilates"],
+  };
+
+  const spreadsheet = SpreadsheetApp.create(SPREADSHEET_NAME);
+
+  Object.keys(finalSchemas).forEach((sheetName) => {
+    const headers = finalSchemas[sheetName];
+    const sheet = spreadsheet.insertSheet(sheetName);
+    const headerRange = sheet.getRange(1, 1, 1, headers.length);
+    headerRange.setValues([headers]);
+    headerRange.setFontWeight("bold");
+    sheet.setFrozenRows(1);
+
+    if (sheetName === "Cupos_Pilates") {
+      ensureCuposPilatesPlainTextFormat(sheet);
+    }
+  });
+
+  // Eliminar la pestaña por defecto ("Sheet1" / "Hoja 1") que Apps Script crea automáticamente.
+  const defaultSheet = spreadsheet.getSheets()[0];
+  if (Object.keys(finalSchemas).indexOf(defaultSheet.getName()) < 0) {
+    spreadsheet.deleteSheet(defaultSheet);
+  }
+
+  scriptProperties.setProperty("SPREADSHEET_ID", spreadsheet.getId());
+
+  Logger.log(`Spreadsheet de cuenta nueva creado con el esquema completo y final (sin Debug_US37). ID: ${spreadsheet.getId()}`);
+  Logger.log(`URL: ${spreadsheet.getUrl()}`);
 }
 
 // Retorna la pestaña (Sheet) correspondiente al nombre dado, a partir del spreadsheet
@@ -2632,7 +2725,10 @@ function bookTimeslot(
     // hacían que Gmail descartara SILENCIOSAMENTE el adjunto real (attachments). Ahora se
     // pasan como inlineImages (referenciadas por cid: en las 4 plantillas), en la MISMA
     // llamada que attachments — combinación oficialmente soportada por Apps Script.
-    GmailApp.sendEmail(email, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages });
+    // "Enviar como" (alias de la instructora): SOLO para pilates, vía PILATES_SENDER_EMAIL —
+    // nutrición sigue sin `from` explícito, sin ningún cambio de comportamiento.
+    const fromOption = type === "pilates" ? { from: getPilatesSenderEmail() } : {};
+    GmailApp.sendEmail(email, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages, ...fromOption });
     // Verifica contra Gmail mismo (no contra nuestras variables) que el mensaje YA ENTREGADO
     // trae el .ics — se deja activo (no se agregan correos extra, solo busca/lee) para poder
     // confirmar el fix con la próxima reserva real sin depender de "Mostrar original" a mano.
@@ -3052,7 +3148,9 @@ function cancelBooking(token: string): { lateCancellation: boolean } {
       hora: booking.hora,
       clientTimezone: booking.clientTimezone,
     });
-    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody });
+    // "Enviar como": mismo criterio que bookTimeslot/rescheduleBooking, SOLO para pilates.
+    const fromOption = booking.sheetName === "Pilates" ? { from: getPilatesSenderEmail() } : {};
+    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, ...fromOption });
   } catch (e) {
     Logger.log(`cancelBooking: fallo al enviar correo de cancelación a ${booking.correo} (token ${token}): ${(e as Error).message}`);
   }
@@ -3271,7 +3369,9 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
         : "")
     );
     // US-37 — mismo fix real que bookTimeslot: inlineImages en la MISMA llamada que attachments.
-    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages });
+    // "Enviar como": mismo criterio que bookTimeslot, SOLO para pilates.
+    const fromOption = booking.sheetName === "Pilates" ? { from: getPilatesSenderEmail() } : {};
+    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages, ...fromOption });
     // Verifica contra Gmail mismo que el mensaje YA ENTREGADO trae el .ics (se deja activo).
     verifySentEmailAttachmentsViaGmail(booking.correo, subject, token, "rescheduleBooking");
   } catch (e) {
@@ -4207,12 +4307,6 @@ function testSendConfirmationEmails(): void {
 // `tipoAccion` agregada directamente en el HTML (ver comentario dentro del archivo).
 // ============================================================================
 
-// TODO: reemplazar por los correos reales de Dani y Ali antes de producción (Sprint 3).
-const NOTIFICACION_INTERNA_DESTINATARIOS = [
-  "plantpoweredani.testing@gmail.com", // Dani (placeholder)
-  "plantpoweredani.testing@gmail.com", // Ali / secretaria (placeholder)
-];
-
 // Solo nutrición necesita distinguir el tipo de cita en el correo interno (el título de
 // pilates ya lo dice). Un solo idioma (español) — a diferencia de renderConfirmationEmail,
 // este correo es interno y Dani/Ali son hispanohablantes, así que no hace falta la variable
@@ -4314,7 +4408,8 @@ function renderNotificacionInterna(params: {
 function sendNotificacionInterna(params: Parameters<typeof renderNotificacionInterna>[0]): void {
   try {
     const { subject, htmlBody } = renderNotificacionInterna(params);
-    GmailApp.sendEmail(NOTIFICACION_INTERNA_DESTINATARIOS.join(","), subject, "", { htmlBody });
+    const destinatarios = getLateCancellationRecipients(params.esPilates);
+    GmailApp.sendEmail(destinatarios.join(","), subject, "", { htmlBody });
   } catch (e) {
     Logger.log(`sendNotificacionInterna: fallo al enviar notificación interna (token ${params.token}, tipoAccion ${params.tipoAccion}): ${(e as Error).message}`);
   }
@@ -4357,7 +4452,8 @@ function renderNotificacionInternaConfirmada(params: {
 function sendNotificacionInternaConfirmada(params: Parameters<typeof renderNotificacionInternaConfirmada>[0] & { token: string }): void {
   try {
     const { subject, htmlBody } = renderNotificacionInternaConfirmada(params);
-    GmailApp.sendEmail(NOTIFICACION_INTERNA_DESTINATARIOS.join(","), subject, "", { htmlBody });
+    const destinatarios = getLateCancellationRecipients(params.esPilates);
+    GmailApp.sendEmail(destinatarios.join(","), subject, "", { htmlBody });
   } catch (e) {
     Logger.log(`sendNotificacionInternaConfirmada: fallo al enviar notificación interna (token ${params.token}): ${(e as Error).message}`);
   }
@@ -4392,12 +4488,10 @@ function sendNotificacionInternaConfirmada(params: Parameters<typeof renderNotif
 //   INSTRUCTORA_EMAIL  → instructora de pilates, recibe las de pilates
 //   ALI_EMAIL          → secretaria, recibe TODAS (ambos flujos)
 //
-// Nota para producción (Sprint 3): estas 3 propiedades son independientes del array
-// NOTIFICACION_INTERNA_DESTINATARIOS que usan US-13/US-30/US-32, que sigue con placeholders
-// hardcodeados. Cuando se reemplacen esos placeholders por correos reales, vale la pena
-// migrar aquellas notificaciones a estas mismas propiedades para no tener dos listas de
-// destinatarios que se puedan desincronizar — fuera del alcance de US-33, que no debe tocar
-// el comportamiento ya validado de esos correos.
+// Reutilizada también por sendNotificacionInterna/sendNotificacionInternaConfirmada
+// (US-13/US-30/US-32) desde que se migraron del array hardcodeado
+// NOTIFICACION_INTERNA_DESTINATARIOS (eliminado) a este mismo mecanismo — una sola lista de
+// destinatarios internos por flujo (nutrición/pilates), sin riesgo de desincronizarse.
 const LATE_CANCELLATION_PROP_DANI = "DANI_EMAIL";
 const LATE_CANCELLATION_PROP_INSTRUCTORA = "INSTRUCTORA_EMAIL";
 const LATE_CANCELLATION_PROP_ALI = "ALI_EMAIL";
