@@ -2368,13 +2368,21 @@ function rollbackPilatesCupo(fecha: string, hora: string): void {
 // evento normal sin Meet (citas presenciales). Devuelve el eventId (usable directamente con
 // Calendar.Events.get/patch — no es el iCalUID que usa CalendarApp.getEventById) y el link
 // de Meet si se generó.
+//
+// NUNCA agregar al cliente como attendee/guest de este evento (bug de duplicación resuelto
+// 2 ago): ser invitado de un evento de Calendar hace que ese evento aparezca automáticamente
+// en el calendario PERSONAL del invitado, sin ningún clic — independientemente de
+// sendUpdates. La decisión del 18 jul de usar sendUpdates:'none' solo apagó el correo nativo
+// de invitación; no evitaba que el evento (con cédula/fecha de nacimiento en la descripción)
+// apareciera igual en el calendario del cliente. El cliente ya tiene 2 formas propias de
+// agregar la cita a su calendario (los 3 deep links + el .ics de descarga manual de
+// buildAddCalLinks) que no requieren volverlo invitado del evento operativo.
 function createCalendarEventWithMeet(
   calendarId: string,
   summary: string,
   startTime: Date,
   endTime: Date,
   description: string,
-  guestEmail: string,
   wantsMeet: boolean
 ): { eventId: string; meetLink: string } {
   const eventResource: GoogleAppsScript.Calendar.Schema.Event = {
@@ -2382,7 +2390,6 @@ function createCalendarEventWithMeet(
     description,
     start: { dateTime: startTime.toISOString(), timeZone: TIME_ZONE },
     end: { dateTime: endTime.toISOString(), timeZone: TIME_ZONE },
-    attendees: [{ email: guestEmail }],
     status: "confirmed",
   };
 
@@ -2395,11 +2402,6 @@ function createCalendarEventWithMeet(
     };
   }
 
-  // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
-  // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
-  // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
-  // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
-  // Google en el futuro, basta con cambiar este valor a 'all'.
   const created = Calendar.Events!.insert(eventResource, calendarId, {
     sendUpdates: "none",
     conferenceDataVersion: wantsMeet ? 1 : 0,
@@ -2463,7 +2465,6 @@ function bookNutricionCalendarEvent(
       startTime,
       endTime,
       description,
-      email,
       wantsMeet
     );
 
@@ -2541,16 +2542,10 @@ function bookPilatesCalendarEvent(
     }
 
     if (eventId) {
-      const existingEvent = Calendar.Events!.get(calendarId, eventId);
-      const attendees = (existingEvent.attendees || []).concat([{ email }]);
-      // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
-      // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
-      // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
-      // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
-      // Google en el futuro, basta con cambiar este valor a 'all'.
-      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "none" });
-      // Devuelve el meetLink ya existente (el evento compartido no cambia de link al sumar
-      // un invitado más) para el correo de confirmación (US-12).
+      // El evento compartido del slot ya existe — el cliente NUNCA se agrega como
+      // attendee/guest (ver comentario de createCalendarEventWithMeet), así que no hace
+      // falta leer ni parchear el evento para sumarlo. Solo se devuelve el meetLink ya
+      // guardado en Cupos_Pilates (el evento compartido no cambia de link entre inscritos).
       return { meetLink: existingMeetLink };
     } else {
       const created = createCalendarEventWithMeet(
@@ -2559,7 +2554,6 @@ function bookPilatesCalendarEvent(
         startTime,
         endTime,
         description,
-        email,
         true // pilates siempre es virtual
       );
       cuposSheet.getRange(rowNumber, CUPOS_PILATES_EVENT_ID_COL).setValue(created.eventId);
@@ -2691,7 +2685,7 @@ function bookTimeslot(
   try {
     const idioma: "es" | "en" = language === "en" ? "en" : "es";
     const linkReagendar = `${WEB_APP_URL}?token=${token}`;
-    const { subject, htmlBody, icsAttachment, inlineImages } = renderConfirmationEmail({
+    const { subject, htmlBody, inlineImages } = renderConfirmationEmail({
       tipoCita: type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
       nombre,
@@ -2702,37 +2696,18 @@ function bookTimeslot(
       linkReagendar,
       clientTimezone,
       token,
-      correo: email,
-      icsSequence: 0,
       durationMinutes: duration,
     });
-    // ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — log INMEDIATAMENTE ANTES de la llamada real a
-    // GmailApp.sendEmail(), en el punto exacto donde se arma options.attachments (no donde ya
-    // se construye el blob, más arriba en renderConfirmationEmail) — para descartar que algún
-    // paso entre la construcción del blob y el envío real esté vaciando/reconstruyendo el
-    // array. Confirma cuántos attachments trae options en el momento exacto del envío, y el
-    // contentType/tamaño en bytes del primero, si existe.
-    const attachmentsForSend = icsAttachment ? [icsAttachment] : [];
-    logDebugUS37(
-      `[DIAGNÓSTICO] bookTimeslot: a punto de llamar GmailApp.sendEmail (token ${token}) — ` +
-      `attachments.length=${attachmentsForSend.length}` +
-      (attachmentsForSend[0]
-        ? `, [0].contentType="${attachmentsForSend[0].getContentType()}", [0].name="${attachmentsForSend[0].getName()}", [0].bytes=${attachmentsForSend[0].getBytes().length}`
-        : "")
-    );
     // US-37 — FIX REAL (causa raíz confirmada con PRUEBA-A/PRUEBA-B, ya removidas): el logo y
     // la flor/kettlebell embebidos como src="data:image/png;base64,..." directo en el HTML
-    // hacían que Gmail descartara SILENCIOSAMENTE el adjunto real (attachments). Ahora se
-    // pasan como inlineImages (referenciadas por cid: en las 4 plantillas), en la MISMA
-    // llamada que attachments — combinación oficialmente soportada por Apps Script.
+    // hacían que Gmail descartara SILENCIOSAMENTE el adjunto real (attachments) que este
+    // correo llevaba en ese momento. Ya no aplica (el correo ya no lleva ningún attachment
+    // real, ver renderConfirmationEmail) pero inlineImages sigue siendo la forma correcta de
+    // embeber el logo/flor vía cid:.
     // "Enviar como" (alias de la instructora): SOLO para pilates, vía PILATES_SENDER_EMAIL —
     // nutrición sigue sin `from` explícito, sin ningún cambio de comportamiento.
     const fromOption = type === "pilates" ? { from: getPilatesSenderEmail() } : {};
-    GmailApp.sendEmail(email, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages, ...fromOption });
-    // Verifica contra Gmail mismo (no contra nuestras variables) que el mensaje YA ENTREGADO
-    // trae el .ics — se deja activo (no se agregan correos extra, solo busca/lee) para poder
-    // confirmar el fix con la próxima reserva real sin depender de "Mostrar original" a mano.
-    verifySentEmailAttachmentsViaGmail(email, subject, token, "bookTimeslot");
+    GmailApp.sendEmail(email, subject, "", { htmlBody, inlineImages, ...fromOption });
   } catch (e) {
     Logger.log(`bookTimeslot: fallo al enviar correo de confirmación a ${email} (token ${token}): ${(e as Error).message}`);
   }
@@ -2919,7 +2894,7 @@ function cancelNutricionCalendarEvent(token: string): void {
 // movida de fecha) ANTES de llamar esta función, para que el conteo ya refleje su salida.
 // Mismo LockService que protege el resto del sistema (US-05/US-10), para que una salida y una
 // entrada casi simultáneas al mismo slot no corrompan el evento compartido de Calendar.
-function leavePilatesSlot(fecha: string, hora: string, email: string): void {
+function leavePilatesSlot(fecha: string, hora: string): void {
   const calendarId = getPilatesCalendarId();
   const lock = LockService.getScriptLock();
   lock.waitLock(10000);
@@ -2938,32 +2913,18 @@ function leavePilatesSlot(fecha: string, hora: string, email: string): void {
     const quedanActivos = countActivePilatesRegistrations(fecha, hora);
     cuposSheet.getRange(rowNumber, 3).setValue(quedanActivos);
 
-    if (eventId) {
-      if (quedanActivos <= 0) {
-        try {
-          Calendar.Events!.remove(calendarId, eventId, { sendUpdates: "all" });
-        } catch (e) {
-          Logger.log(`leavePilatesSlot: error eliminando evento ${eventId}: ${(e as Error).message}`);
-        }
-        cuposSheet.getRange(rowNumber, CUPOS_PILATES_EVENT_ID_COL).setValue("");
-        cuposSheet.getRange(rowNumber, CUPOS_PILATES_MEET_LINK_COL).setValue("");
-      } else {
-        try {
-          const existingEvent = Calendar.Events!.get(calendarId, eventId);
-          const attendees = (existingEvent.attendees || []).filter(
-            (a) => (a.email || "").trim().toLowerCase() !== email.trim().toLowerCase()
-          );
-          // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
-      // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
-      // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
-      // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
-      // Google en el futuro, basta con cambiar este valor a 'all'.
-      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "none" });
-        } catch (e) {
-          Logger.log(`leavePilatesSlot: error removiendo invitado del evento ${eventId}: ${(e as Error).message}`);
-        }
+    if (eventId && quedanActivos <= 0) {
+      try {
+        Calendar.Events!.remove(calendarId, eventId, { sendUpdates: "all" });
+      } catch (e) {
+        Logger.log(`leavePilatesSlot: error eliminando evento ${eventId}: ${(e as Error).message}`);
       }
+      cuposSheet.getRange(rowNumber, CUPOS_PILATES_EVENT_ID_COL).setValue("");
+      cuposSheet.getRange(rowNumber, CUPOS_PILATES_MEET_LINK_COL).setValue("");
     }
+    // Si quedan otros inscritos activos, el evento compartido sigue igual — el cliente que
+    // sale nunca fue agregado como attendee/guest (ver createCalendarEventWithMeet), así que
+    // no hace falta leer ni parchear el evento para "sacarlo".
 
     SpreadsheetApp.flush();
   } finally {
@@ -3033,23 +2994,16 @@ function joinPilatesSlot(
     }
     SpreadsheetApp.flush();
 
-    if (eventId) {
-      const existingEvent = Calendar.Events!.get(calendarId, eventId);
-      const attendees = (existingEvent.attendees || []).concat([{ email }]);
-      // sendUpdates: 'none' — decisión del 18 jul: el cliente NO debe recibir la invitación
-      // nativa de Google Calendar (expone cédula/fecha de nacimiento de la descripción del
-      // evento sin ningún diseño). El único correo que debe recibir el cliente al agendar es
-      // el de confirmación propio (US-12). Para volver a activar la invitación nativa de
-      // Google en el futuro, basta con cambiar este valor a 'all'.
-      Calendar.Events!.patch({ attendees }, calendarId, eventId, { sendUpdates: "none" });
-    } else {
+    // Si el evento compartido del slot ya existe, no hay nada más que hacer: el cliente
+    // NUNCA se agrega como attendee/guest (ver createCalendarEventWithMeet) — mismo criterio
+    // que bookPilatesCalendarEvent.
+    if (!eventId) {
       const created = createCalendarEventWithMeet(
         calendarId,
         "Clase de Pilates",
         startTime,
         endTime,
         description,
-        email,
         true // pilates siempre es virtual
       );
       cuposSheet.getRange(rowNumber, CUPOS_PILATES_EVENT_ID_COL).setValue(created.eventId);
@@ -3095,7 +3049,7 @@ function cancelBooking(token: string): { lateCancellation: boolean } {
   if (booking.sheetName === "Pilates") {
     // estado ya quedó 'Cancelada' arriba, ANTES de esta llamada — leavePilatesSlot cuenta
     // inscripciones activas en vivo (US-43) y ya no ve a este cliente como activo.
-    leavePilatesSlot(booking.fecha, booking.hora, booking.correo);
+    leavePilatesSlot(booking.fecha, booking.hora);
   } else {
     cancelNutricionCalendarEvent(booking.token);
   }
@@ -3234,7 +3188,7 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
     sheet.getRange(booking.row, PILATES_ESTADO_COL).setValue("Reagendada");
     SpreadsheetApp.flush();
 
-    leavePilatesSlot(booking.fecha, booking.hora, booking.correo);
+    leavePilatesSlot(booking.fecha, booking.hora);
     refreshCuposPilatesInscritosCache(newFecha, newHora);
   } else {
     // Mismo patrón de LockService que bookNutricionCalendarEvent (US-09): conflict-check y
@@ -3339,7 +3293,7 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   try {
     const idioma: "es" | "en" = booking.language === "en" ? "en" : "es";
     const esVirtualCita = booking.sheetName === "Pilates" ? true : booking.modalidad === "virtual";
-    const { subject, htmlBody, icsAttachment, inlineImages } = renderConfirmationEmail({
+    const { subject, htmlBody, inlineImages } = renderConfirmationEmail({
       tipoCita: booking.type as "initial" | "followup" | "measurement" | "pilates",
       idioma,
       nombre: booking.nombre,
@@ -3351,29 +3305,11 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
       clientTimezone,
       tipoAccion: "reagendada",
       token,
-      correo: booking.correo,
-      // Reusa el contador de reagendamientos (US-42) como SEQUENCE de la invitación .ics —
-      // ya sube en cada reagendamiento real, exactamente lo que un cliente de calendario
-      // necesita para reconocer esta invitación como una actualización de la anterior (ver
-      // comentario de icsSequence en renderConfirmationEmail).
-      icsSequence: numeroReagendamiento,
       durationMinutes: duration,
     });
-    // ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — mismo log que bookTimeslot, ver ese comentario.
-    const attachmentsForSend = icsAttachment ? [icsAttachment] : [];
-    logDebugUS37(
-      `[DIAGNÓSTICO] rescheduleBooking: a punto de llamar GmailApp.sendEmail (token ${token}) — ` +
-      `attachments.length=${attachmentsForSend.length}` +
-      (attachmentsForSend[0]
-        ? `, [0].contentType="${attachmentsForSend[0].getContentType()}", [0].name="${attachmentsForSend[0].getName()}", [0].bytes=${attachmentsForSend[0].getBytes().length}`
-        : "")
-    );
-    // US-37 — mismo fix real que bookTimeslot: inlineImages en la MISMA llamada que attachments.
     // "Enviar como": mismo criterio que bookTimeslot, SOLO para pilates.
     const fromOption = booking.sheetName === "Pilates" ? { from: getPilatesSenderEmail() } : {};
-    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, attachments: attachmentsForSend, inlineImages, ...fromOption });
-    // Verifica contra Gmail mismo que el mensaje YA ENTREGADO trae el .ics (se deja activo).
-    verifySentEmailAttachmentsViaGmail(booking.correo, subject, token, "rescheduleBooking");
+    GmailApp.sendEmail(booking.correo, subject, "", { htmlBody, inlineImages, ...fromOption });
   } catch (e) {
     Logger.log(`rescheduleBooking: fallo al enviar correo de reagendamiento a ${booking.correo} (token ${token}): ${(e as Error).message}`);
   }
@@ -3642,20 +3578,11 @@ function renderConfirmationEmail(params: {
   // cambiar el comportamiento de bookTimeslot/testSendConfirmationEmails, que no lo pasan.
   tipoAccion?: "confirmacion" | "reagendada";
   // --- US-37 ---
-  // token de la cita: hace falta para addCalIcsLink (deep link al .ics propio) y para el UID
-  // estable del .ics real que se adjunta al correo (ver buildBookingIcsContent).
+  // token de la cita: hace falta para addCalIcsLink (deep link al .ics propio, ver
+  // buildAddCalLinks) — el correo ya NO lleva ningún .ics adjunto como attachment real (ver
+  // nota de duplicación de eventos, 2 ago): esa era la única otra razón por la que esta
+  // función necesitaba el token.
   token: string;
-  // Correo del cliente: se usa como ATTENDEE de la invitación .ics real adjunta (ver el
-  // bloque icsAttachment más abajo) — NUNCA se imprime en la plantilla HTML ni en los 3 deep
-  // links (mismo criterio de datos sensibles que buildEventContentParts).
-  correo: string;
-  // SEQUENCE de la invitación .ics adjunta (RFC 5546): 0 para la confirmación inicial: en cada
-  // reenvío real de una invitación para la MISMA cita (reagendamiento) debe subir, para que un
-  // cliente de calendario que ya tenía la invitación vieja la reconozca como una actualización
-  // en vez de un evento nuevo. rescheduleBooking pasa el contador de reagendamientos ya
-  // existente (US-42, incrementRescheduleCounterOnBookingRow) — no hace falta un contador
-  // nuevo. Default 0 para no romper bookTimeslot/testSendConfirmationEmails, que no lo pasan.
-  icsSequence?: number;
   // US-45 — duración REAL (minutos) de esta cita/clase. bookTimeslot/rescheduleBooking la
   // resuelven antes de llamar acá (getDurationForType para nutrición, o
   // getPilatesClassDurationMinutes para la clase específica de pilates) y la pasan tal cual —
@@ -3666,10 +3593,9 @@ function renderConfirmationEmail(params: {
 }): {
   subject: string;
   htmlBody: string;
-  icsAttachment: GoogleAppsScript.Base.Blob | null;
   // US-37 — imágenes embebidas (logo/flor/kettlebell) para options.inlineImages de
-  // GmailApp.sendEmail(), en la MISMA llamada que icsAttachment (ver comentario de
-  // buildInlineImagesForTemplate). Nunca null/opcional: siempre hay logo, al menos.
+  // GmailApp.sendEmail() (ver comentario de buildInlineImagesForTemplate). Nunca
+  // null/opcional: siempre hay logo, al menos.
   inlineImages: Record<string, GoogleAppsScript.Base.Blob>;
 } {
   const isPilates = params.tipoCita === "pilates";
@@ -3739,86 +3665,16 @@ function renderConfirmationEmail(params: {
     ? subjectsMap.pilates[params.idioma]
     : subjectsMap.nutricion[params.idioma];
 
-  // US-37 — invitación .ics REAL adjunta al correo (METHOD:REQUEST + ATTENDEE), para que
-  // Gmail/Outlook/Apple Mail la detecten automáticamente como invitación (sin necesitar
-  // whitelisting de Google) y ofrezcan sus propios botones nativos "Aceptar/Rechazar" además
-  // de los 4 botones "agregar a mi calendario" de arriba. Su propio try/catch: un fallo acá
-  // (por ejemplo, Script Properties de organizer mal configuradas) NUNCA debe impedir que el
-  // correo de confirmación salga — mismo criterio de resiliencia que el resto de esta función
-  // y de bookTimeslot/rescheduleBooking (ver sus try/catch alrededor de GmailApp.sendEmail).
-  let icsAttachment: GoogleAppsScript.Base.Blob | null = null;
-  try {
-    const icsContent = buildBookingIcsContent({
-      token: params.token,
-      tipoCita: params.tipoCita,
-      idioma: params.idioma,
-      primerNombre: params.nombre,
-      apptInstant,
-      esVirtual: params.esVirtual,
-      meetLink: params.meetLink,
-      method: "REQUEST",
-      // Math.max(0, ...) — no solo `|| 0`: incrementRescheduleCounterOnBookingRow (US-42)
-      // devuelve -1 si falló al escribir el contador (ver su propio try/catch), y -1 es
-      // truthy en JS, así que `|| 0` lo dejaría pasar tal cual como SEQUENCE, violando RFC
-      // 5545 (debe ser un entero no negativo).
-      sequence: Math.max(0, params.icsSequence || 0),
-      organizerEmail: getOrganizerEmailForTipoCita(params.tipoCita),
-      attendeeEmail: params.correo,
-      durationMinutes,
-    });
-    // ⚠️ DIAGNÓSTICO TEMPORAL EN CURSO (US-37) — NO es el estado final de este código.
-    // Confirmado con Debug_US37 en una reserva real (token 1f8ad410-...): el blob SÍ se
-    // construye bien ("adjunto .ics construido OK, 680 bytes"), pero "Mostrar original" en
-    // Gmail no trae NINGUNA parte Content-Type: text/calendar en el MIME final — el correo
-    // sale, pero sin el adjunto de verdad, pese a que options.attachments se arma con el
-    // mismo objeto (ver bookTimeslot/rescheduleBooking, sin ningún paso intermedio que lo
-    // reconstruya). El bug está aislado entre "el blob existe" y "GmailApp.sendEmail arma el
-    // MIME final" — por eso esta ronda hace una prueba de control: el blob que se ADJUNTA de
-    // verdad se deja con un content-type LIMPIO ("text/calendar", sin "; method=REQUEST;
-    // charset=UTF-8"), mientras se sigue intentando (y logueando, sin afectar lo que se
-    // adjunta) enriquecerlo, para poder comparar. Si el adjunto limpio SÍ aparece en el MIME
-    // real y el enriquecido no, confirma que GmailApp.sendEmail (o el pipeline de envío de
-    // Gmail) descarta/reescribe un content-type con parámetros extra sin lanzar ningún error.
-    icsAttachment = Utilities.newBlob(icsContent, "text/calendar", "invite.ics");
-    try {
-      // ⚠️ Blob.setContentType() MUTA el blob EN EL LUGAR y devuelve la MISMA instancia (no
-      // una copia) — confirmado por el propio harness al escribir este diagnóstico: llamarlo
-      // sobre `icsAttachment` directamente lo ensuciaba con los parámetros extra aunque el
-      // resultado no se reasignara. Por eso la prueba de control usa una instancia SEPARADA
-      // (`diagnosticBlob`, construida aparte con los mismos datos) — así `icsAttachment`
-      // queda garantizado sin tocar, sea cual sea el comportamiento real de setContentType().
-      const diagnosticBlob = Utilities.newBlob(icsContent, "text/calendar", "invite.ics");
-      const enriched = diagnosticBlob.setContentType("text/calendar; method=REQUEST; charset=UTF-8");
-      logDebugUS37(
-        `[DIAGNÓSTICO] renderConfirmationEmail: setContentType con parámetros extra SÍ funcionó sin error (token ${params.token}) — content-type resultante="${enriched.getContentType()}". Por ahora se sigue adjuntando la versión LIMPIA (instancia separada, nunca tocada) de todas formas (prueba de control US-37).`
-      );
-    } catch (contentTypeError) {
-      // Logger.log() (Stackdriver "clásico") y console.log() (Cloud Logging) NO aparecían en
-      // el panel de Ejecuciones para ejecuciones reales disparadas por el Web App (confirmado
-      // en 2 reservas reales distintas) — limitación real del entorno, no de este código. Se
-      // agrega ADEMÁS logDebugUS37() (escribe en el Sheet "Debug_US37"), que sí sabemos que
-      // funciona sin demora en este proyecto. Los 3 mecanismos quedan, no se reemplazan entre
-      // sí: Logger.log/console.log siguen sirviendo al correr manualmente desde el editor.
-      const setContentTypeMsg = `renderConfirmationEmail: setContentType con parámetros extra fue rechazado (token ${params.token}, tipoAccion=${tipoAccion}) — se adjunta igual con content-type limpio "text/calendar": ${describeError(contentTypeError)}`;
-      Logger.log(setContentTypeMsg);
-      console.log(setContentTypeMsg);
-      logDebugUS37(setContentTypeMsg);
-    }
-    // Camino FELIZ: confirma que este bloque SÍ se alcanzó y el blob SÍ se construyó (con o
-    // sin el content-type enriquecido). Si "Debug_US37" queda completamente vacía después de
-    // una reserva real, el problema es que el código ni siquiera llega hasta acá — algo más
-    // raro (una excepción ANTES de este bloque, o que la versión con este fix nunca llegó a
-    // desplegarse) — no un error silencioso dentro de este try/catch.
-    const okMsg = `renderConfirmationEmail: adjunto .ics construido OK (token ${params.token}, tipoAccion=${tipoAccion}), ${icsContent.length} bytes, content-type final del blob a ADJUNTAR="${icsAttachment.getContentType()}"`;
-    Logger.log(okMsg);
-    console.log(okMsg);
-    logDebugUS37(okMsg);
-  } catch (e) {
-    const icsBuildMsg = `renderConfirmationEmail: fallo al construir el adjunto .ics (token ${params.token}, tipoAccion=${tipoAccion}): ${describeError(e)}`;
-    Logger.log(icsBuildMsg);
-    console.log(icsBuildMsg);
-    logDebugUS37(icsBuildMsg);
-  }
+  // US-37 adjuntaba acá una invitación .ics real (METHOD:REQUEST + ATTENDEE) como attachment
+  // del correo — eliminado (2 ago): junto con el cliente quedando como attendee del evento
+  // operativo (ver createCalendarEventWithMeet) y el botón "Agregar a Google Calendar", era
+  // el 3er mecanismo que le generaba al cliente hasta 3 eventos duplicados en su calendario
+  // personal por una sola reserva. El cliente conserva 2 formas de agregar la cita a su
+  // calendario: los 3 deep links (Google/Outlook/Yahoo) y el botón "Apple/iCal" — ambos vía
+  // buildAddCalLinks más arriba, ninguno de los dos requiere que el cliente sea attendee de
+  // nada ni recibe un adjunto real. El endpoint ?action=ics&token=... (buildBookingIcsContent,
+  // ver serveIcsDownload) sigue funcionando exactamente igual — es la descarga MANUAL detrás
+  // del botón "Apple/iCal", un mecanismo aparte que nunca formó parte de este adjunto.
 
   // US-37 — carga las imágenes embebidas correctas para ESTE tipo de cita/idioma (ver
   // buildInlineImagesForTemplate). Mismo criterio de resiliencia que el adjunto .ics: un
@@ -3835,7 +3691,7 @@ function renderConfirmationEmail(params: {
     logDebugUS37(inlineImagesMsg);
   }
 
-  return { subject, htmlBody: template.evaluate().getContent(), icsAttachment, inlineImages };
+  return { subject, htmlBody: template.evaluate().getContent(), inlineImages };
 }
 
 // Correo al CLIENTE cuando cancela su cita/clase desde la página visual de gestión (US-31) —
@@ -3872,12 +3728,13 @@ function renderCancellationEmail(params: {
 // US-37 — reemplaza por completo el botón único EXPERIMENTAL buildAddToCalendarLink (21 jul,
 // ver CLAUDE.md), ahora con el diseño de 4 botones aprobado por Dani/Gabriela. Título,
 // descripción y ubicación son compartidos entre los 3 links "deep link" (Google/Outlook/Yahoo,
-// ver buildAddCalLinks) y el .ics real (descarga y adjunto de invitación, ver
+// ver buildAddCalLinks) y el .ics de descarga manual (botón "Apple/iCal", ver
 // buildBookingIcsContent) para que las 4 formas de "agregar a calendario" muestren el mismo
 // contenido. `description`/`location` NUNCA deben incluir cédula, fecha de nacimiento,
-// teléfono ni correo del cliente — mismo criterio que la función original: ese fue justo el
-// dato sensible que motivó apagar la invitación nativa de Calendar.Events.insert()
-// (sendUpdates:'none').
+// teléfono ni correo del cliente — mismo criterio que el resto del correo: ese fue justo el
+// dato sensible que motivó no agregar nunca al cliente como attendee del evento operativo
+// (ver createCalendarEventWithMeet) ni adjuntarle una invitación .ics real al correo (ver
+// renderConfirmationEmail).
 function buildEventContentParts(params: {
   tipoCita: "initial" | "followup" | "measurement" | "pilates";
   idioma: "es" | "en";
@@ -3911,9 +3768,10 @@ function buildEventContentParts(params: {
 }
 
 // Arma las 3 URLs "deep link" (Google/Outlook/Yahoo) para que el CLIENTE agregue el evento a
-// SU propio calendario personal con un clic, más el link de descarga del .ics propio (ver
-// buildBookingIcsContent/doGet ?action=ics) — separado por completo de la invitación nativa de
-// Calendar.Events.insert()/.patch(), que sigue apagada (sendUpdates:'none').
+// SU propio calendario personal con un clic, más el link de descarga MANUAL del .ics propio
+// (ver buildBookingIcsContent/doGet ?action=ics) — estas son las 2 únicas formas que el
+// cliente tiene de agregar la cita a su calendario personal (ver comentario de
+// createCalendarEventWithMeet/renderConfirmationEmail sobre por qué se eliminaron las otras 2).
 //
 // ⚠️ LIMITACIÓN CONOCIDA, inherente a estos 3 proveedores (no a nuestra implementación): a
 // diferencia de addCalIcsLink (apunta a nuestro propio endpoint, que regenera el contenido con
@@ -4039,10 +3897,13 @@ function buildIcsContent(params: {
     `DESCRIPTION:${icsEscape(params.description)}`,
   ];
   if (params.location) lines.push(`LOCATION:${icsEscape(params.location)}`);
-  // ORGANIZER es opcional a propósito (ver getOrganizerEmailForTipoCita): un METHOD:REQUEST
-  // sin ORGANIZER no es 100% RFC 5546, pero los clientes de calendario reales son tolerantes,
-  // y preferimos degradar (invitación sin organizer) antes que romper el envío del correo si
-  // DANI_EMAIL/INSTRUCTORA_EMAIL no están configurados en Script Properties.
+  // ORGANIZER es opcional a propósito: nadie llama hoy a esta función con organizerEmail (el
+  // único caller que lo hacía, la invitación .ics adjunta al correo, fue eliminado el 2 ago —
+  // ver renderConfirmationEmail), pero el parámetro se mantiene por si algún caller futuro lo
+  // necesita. Un METHOD:REQUEST sin ORGANIZER no es 100% RFC 5546, pero los clientes de
+  // calendario reales son tolerantes — se prefiere degradar (invitación sin organizer) antes
+  // que romper el envío del correo si algún día vuelve a depender de una Script Property que
+  // no esté configurada.
   if (params.organizerEmail) lines.push(`ORGANIZER:mailto:${params.organizerEmail}`);
   if (params.attendeeEmail) {
     lines.push(`ATTENDEE;RSVP=TRUE;PARTSTAT=NEEDS-ACTION;CN=${icsEscape(params.attendeeEmail)}:mailto:${params.attendeeEmail}`);
@@ -4151,78 +4012,20 @@ function logDebugUS37(mensaje: string): void {
   }
 }
 
-// ⚠️ DIAGNÓSTICO TEMPORAL (US-37) — a diferencia de todo el logging anterior (que solo
-// reporta lo que NUESTRO código construyó/le pasó a GmailApp.sendEmail), esto le pregunta a
-// GMAIL MISMO si el mensaje YA ENTREGADO tiene el adjunto, buscándolo con GmailApp.search() y
-// llamando a .getAttachments() sobre el mensaje real. Sirve para distinguir dos causas muy
-// distintas de "el cliente no ve el adjunto": (a) GmailApp.sendEmail nunca lo adjuntó de
-// verdad (bug en el envío), o (b) si Gmail SÍ lo adjuntó pero "Mostrar original" no lo
-// despliega (bug de visualización/exportación del MIME, no del envío). Propio try/catch:
-// nunca debe interrumpir el flujo real de agendar/reagendar. Utilities.sleep() agrega ~2s a
-// la respuesta real del cliente mientras dura este diagnóstico — aceptado temporalmente, hay
-// que quitar esto junto con el resto del bloque de diagnóstico una vez resuelto el bug real.
-function verifySentEmailAttachmentsViaGmail(recipient: string, subject: string, token: string, origen: string): void {
-  try {
-    Utilities.sleep(2000);
-    const threads = GmailApp.search(`to:${recipient}`, 0, 5);
-    let foundMessage: GoogleAppsScript.Gmail.GmailMessage | null = null;
-    for (const thread of threads) {
-      const messages = thread.getMessages();
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (messages[i].getSubject() === subject) {
-          foundMessage = messages[i];
-          break;
-        }
-      }
-      if (foundMessage) break;
-    }
-
-    if (!foundMessage) {
-      logDebugUS37(
-        `[DIAGNÓSTICO-POSTENVÍO] ${origen}: no se encontró vía GmailApp.search el mensaje recién enviado a ${recipient} con subject="${subject}" (token ${token}) — puede ser demora de indexado de Gmail, no necesariamente ausencia del correo.`
-      );
-      return;
-    }
-
-    const realAttachments = foundMessage.getAttachments();
-    const detalle = realAttachments
-      .map((a, i) => `[${i}].name="${a.getName()}" [${i}].contentType="${a.getContentType()}" [${i}].size=${a.getSize()}`)
-      .join(" | ");
-    logDebugUS37(
-      `[DIAGNÓSTICO-POSTENVÍO] ${origen}: Gmail reporta ${realAttachments.length} adjunto(s) en el mensaje YA ENTREGADO a ${recipient} (token ${token}, subject="${subject}")` +
-      (detalle ? ` — ${detalle}` : "")
-    );
-  } catch (e) {
-    logDebugUS37(`[DIAGNÓSTICO-POSTENVÍO] ${origen}: fallo al verificar el mensaje real vía GmailApp.search (token ${token}): ${describeError(e)}`);
-  }
-}
-
-// Correo de Dani/instructora a usar como ORGANIZER de la invitación REQUEST adjunta al correo
-// de confirmación (ver renderConfirmationEmail). Decisión explícita (US-37): SÍ se incluye
-// ORGANIZER, aunque eso significa que si el cliente hace clic en "Aceptar/Rechazar" en su
-// cliente de calendario, algunos clientes (notablemente Outlook) le mandan un correo de RSVP
-// de vuelta a esta dirección. Dado el volumen bajo del negocio (unas pocas citas por día), esto
-// no debería ser un problema práctico — pero queda anotado acá y en CLAUDE.md por si en algún
-// momento se vuelve ruidoso y hay que reconsiderarlo. Best-effort: si la Script Property
-// correspondiente no está configurada, se omite el ORGANIZER en vez de lanzar error (mismo
-// criterio de resiliencia que el resto del correo de confirmación — un dato faltante acá nunca
-// debe bloquear el envío).
-function getOrganizerEmailForTipoCita(tipoCita: "initial" | "followup" | "measurement" | "pilates"): string | undefined {
-  const key = tipoCita === "pilates" ? LATE_CANCELLATION_PROP_INSTRUCTORA : LATE_CANCELLATION_PROP_DANI;
-  const value = String(PropertiesService.getScriptProperties().getProperty(key) || "").trim();
-  return value || undefined;
-}
+// verifySentEmailAttachmentsViaGmail() y getOrganizerEmailForTipoCita() (US-37) fueron
+// eliminadas el 2 ago: ambas existían únicamente para diagnosticar/alimentar la invitación
+// .ics adjunta al correo de confirmación, eliminada por el bug de duplicación de eventos (ver
+// comentario en renderConfirmationEmail). buildBookingIcsContent() y el endpoint
+// ?action=ics&token=... (serveIcsDownload) NO se tocaron — siguen funcionando igual.
 
 // Función de testing manual (US-11, checklist ítems 1/2/5) — genera las 4 combinaciones
 // (nutrición ES/EN x virtual/presencial, pilates ES/EN) y las envía por GmailApp a la
 // cuenta de testing para inspección visual real. Correr manualmente desde el editor de
 // Apps Script; no forma parte de ningún flujo automático (eso es US-12).
 // Segundo destinatario de prueba, agregado junto con US-37 (además de la cuenta de testing de
-// Gmail) específicamente para poder revisar el correo desde un cliente Outlook/Office 365
-// real — la cuenta de testing de Gmail no sirve para confirmar si Outlook detecta la
-// invitación .ics adjunta (METHOD:REQUEST) con su propio botón nativo "Aceptar/Rechazar".
-// Cuenta personal del usuario, NO la cuenta de testing del proyecto — no usar para nada más
-// que esta revisión visual puntual.
+// Gmail) para poder revisar el correo desde un cliente Outlook/Office 365 real. Cuenta
+// personal del usuario, NO la cuenta de testing del proyecto — no usar para nada más que esta
+// revisión visual puntual.
 const TESTING_SECONDARY_EMAIL = "juan.artavia.urena@est.una.ac.cr";
 
 function testSendConfirmationEmails(): void {
@@ -4240,7 +4043,6 @@ function testSendConfirmationEmails(): void {
       esVirtual: false,
       linkReagendar: linkReagendarFake,
       token: "test-token-1234",
-      correo: destinatario,
     },
     {
       tipoCita: "followup",
@@ -4252,7 +4054,6 @@ function testSendConfirmationEmails(): void {
       meetLink: "https://meet.google.com/fake-link-test",
       linkReagendar: linkReagendarFake,
       token: "test-token-1234",
-      correo: destinatario,
     },
     {
       tipoCita: "pilates",
@@ -4264,7 +4065,6 @@ function testSendConfirmationEmails(): void {
       meetLink: "https://meet.google.com/fake-link-pilates",
       linkReagendar: linkReagendarFake,
       token: "test-token-1234",
-      correo: destinatario,
     },
     {
       tipoCita: "pilates",
@@ -4276,27 +4076,26 @@ function testSendConfirmationEmails(): void {
       meetLink: "https://meet.google.com/fake-link-pilates-en",
       linkReagendar: linkReagendarFake,
       token: "test-token-1234",
-      correo: destinatario,
     },
   ];
 
-  // US-37 — cada caso también verifica visualmente los 4 botones "agregar a mi calendario" y
-  // la invitación .ics real adjunta (METHOD:REQUEST). El token es falso (no existe en ningún
-  // Sheet), así que el botón "Apple / iCal" del correo (addCalIcsLink, que apunta a
-  // ?action=ics&token=test-token-1234) va a mostrar el mensaje de "cita no encontrada" de
-  // serveIcsDownload si se hace clic desde este correo de prueba — comportamiento esperado,
-  // no un bug: para probar ese botón de verdad hace falta un token real (ver
-  // testSendConfirmationEmails vs. una prueba end-to-end contra una cita agendada de verdad).
+  // US-37 — cada caso también verifica visualmente los 4 botones "agregar a mi calendario"
+  // (ya no hay ningún adjunto .ics real que revisar, ver renderConfirmationEmail). El token es
+  // falso (no existe en ningún Sheet), así que el botón "Apple / iCal" del correo
+  // (addCalIcsLink, que apunta a ?action=ics&token=test-token-1234) va a mostrar el mensaje de
+  // "cita no encontrada" de serveIcsDownload si se hace clic desde este correo de prueba —
+  // comportamiento esperado, no un bug: para probar ese botón de verdad hace falta un token
+  // real (ver testSendConfirmationEmails vs. una prueba end-to-end contra una cita agendada de
+  // verdad).
   casos.forEach((caso) => {
-    const { subject, htmlBody, icsAttachment, inlineImages } = renderConfirmationEmail(caso);
+    const { subject, htmlBody, inlineImages } = renderConfirmationEmail(caso);
     destinatariosPrueba.forEach((destinatarioPrueba) => {
       GmailApp.sendEmail(destinatarioPrueba, `[TEST US-11/US-37] ${subject}`, "", {
         htmlBody,
-        attachments: icsAttachment ? [icsAttachment] : [],
         inlineImages,
       });
     });
-    Logger.log(`Enviado a ${destinatariosPrueba.join(", ")}: ${caso.tipoCita}/${caso.idioma}/esVirtual=${caso.esVirtual}/icsAttachment=${!!icsAttachment}`);
+    Logger.log(`Enviado a ${destinatariosPrueba.join(", ")}: ${caso.tipoCita}/${caso.idioma}/esVirtual=${caso.esVirtual}`);
   });
 }
 

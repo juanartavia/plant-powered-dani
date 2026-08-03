@@ -551,28 +551,6 @@ function createMockContext() {
         sandbox.__sentEmails = sandbox.__sentEmails || [];
         sandbox.__sentEmails.push({ to, subject, body, options });
       },
-      // Mock de US-37 (diagnóstico post-envío): verifySentEmailAttachmentsViaGmail() pregunta
-      // a "Gmail mismo" (no a nuestras variables) si el mensaje recién enviado trae el adjunto
-      // real. Este mock reconstruye "threads"/"messages" a partir de sandbox.__sentEmails en
-      // vez de un índice de búsqueda real — solo entiende el patrón "to:X" de la query (lo
-      // único que ese código realmente usa), no la sintaxis completa de búsqueda de Gmail.
-      search: (query) => {
-        const toMatch = (query.match(/to:(\S+)/) || [])[1];
-        const matches = (sandbox.__sentEmails || []).filter((e) => !toMatch || e.to === toMatch);
-        return matches.map((e) => ({
-          getMessages: () => [
-            {
-              getSubject: () => e.subject,
-              getAttachments: () =>
-                ((e.options && e.options.attachments) || []).map((blob) => ({
-                  getName: () => blob.getName(),
-                  getContentType: () => blob.getContentType(),
-                  getSize: () => (blob.getBytes ? blob.getBytes().length : blob.getDataAsString().length),
-                })),
-            },
-          ],
-        }));
-      },
     },
     // Mock de US-37: serveIcsDownload (doGet ?action=ics) usa ContentService en vez de
     // HtmlService porque necesita controlar el Content-Type de la respuesta (text/calendar,
