@@ -59,6 +59,10 @@ function formatDate(date, tz, pattern) {
   // arriba (blind spot ya documentado): sin este caso, el mock caía al formato genérico de
   // abajo (con espacio, sin 'T' ni 'Z'), que Outlook.live.com no acepta para startdt/enddt.
   if (pattern === "yyyy-MM-dd'T'HH:mm:ss'Z'") return `${y}-${mo}-${da}T${h}:${mi}:${s}Z`;
+  // Formato "local wall-clock" de Yahoo Calendar (buildAddCalLinks, fix bug Yahoo 3 ago) — sin
+  // 'Z': a diferencia de Google/Outlook, Yahoo interpreta st/et como hora local literal, así
+  // que este pattern se formatea en clientTimezone en vez de Etc/UTC (ver toLocalBasic).
+  if (pattern === "yyyyMMdd'T'HHmmss") return `${y}${mo}${da}T${h}${mi}${s}`;
   // yyyy-MM-dd'T'HH:mm:ss / "yyyy-MM-dd HH:mm:ss" / cualquier otro con todos los campos
   return `${y}-${mo}-${da} ${h}:${mi}:${s}`;
 }

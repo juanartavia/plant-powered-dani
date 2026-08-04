@@ -1316,12 +1316,15 @@ function getUrlParam(url, name) {
     esVirtual: false,
     token: "tok-45",
     durationMinutes: 60,
+    clientTimezone: "America/Costa_Rica",
   });
   assert(getUrlParam(links.addCalGoogleLink, "dates") === "20260810T150000Z/20260810T160000Z", "Google: dates en UTC básico (yyyyMMdd'T'HHmmss'Z'), duración de 60min (initial)");
   assert(getUrlParam(links.addCalOutlookLink, "startdt") === "2026-08-10T15:00:00Z", "Outlook: startdt en UTC extendido (yyyy-MM-dd'T'HH:mm:ss'Z'), NO en hora local");
   assert(getUrlParam(links.addCalOutlookLink, "enddt") === "2026-08-10T16:00:00Z", "Outlook: enddt igual, +60min");
-  assert(getUrlParam(links.addCalYahooLink, "st") === "20260810T150000Z", "Yahoo: st en UTC básico, igual que Google");
-  assert(getUrlParam(links.addCalYahooLink, "et") === "20260810T160000Z", "Yahoo: et en UTC básico");
+  // Fix bug Yahoo (validado por Luis, 3 ago): calendar.yahoo.com NO soporta el sufijo "Z" — st/et
+  // deben ir en hora LOCAL del cliente (09:00 CR, no 15:00 UTC), sin sufijo.
+  assert(getUrlParam(links.addCalYahooLink, "st") === "20260810T090000", "Yahoo: st en hora LOCAL de Costa Rica (09:00), SIN sufijo 'Z' — no la hora UTC cruda");
+  assert(getUrlParam(links.addCalYahooLink, "et") === "20260810T100000", "Yahoo: et en hora LOCAL, +60min");
   assert(getUrlParam(links.addCalGoogleLink, "location").indexOf("Santa Ana Town Center") >= 0, "presencial: la ubicación física aparece en el link (encoding correcto, decodeURIComponent lo recupera intacto)");
   assert(links.addCalIcsLink.indexOf("action=ics") >= 0 && links.addCalIcsLink.indexOf("token=tok-45") >= 0, "addCalIcsLink apunta a ?action=ics&token=<el token de la cita>");
 })();
@@ -1340,6 +1343,7 @@ function getUrlParam(url, name) {
     meetLink: "https://meet.google.com/abc-defg-hij",
     token: "tok-46",
     durationMinutes: 45,
+    clientTimezone: "America/Costa_Rica",
   });
   const location = getUrlParam(links.addCalGoogleLink, "location");
   assert(location === "Google Meet: https://meet.google.com/abc-defg-hij", "virtual: la ubicación es el link de Meet, no la dirección física del consultorio");
@@ -1360,6 +1364,7 @@ function getUrlParam(url, name) {
     meetLink: "https://meet.google.com/pilates-slot",
     token: "tok-47",
     durationMinutes: 60,
+    clientTimezone: "America/Costa_Rica",
   });
   assert(getUrlParam(links.addCalGoogleLink, "text") === "Clase de pilates — Plant Powered by Dani", "pilates: título distinto al de una cita de nutrición");
   assert(getUrlParam(links.addCalGoogleLink, "dates") === "20260815T160000Z/20260815T170000Z", "pilates dura 60min (durationMinutes pasado explícitamente por el caller, US-45)");
@@ -2152,6 +2157,50 @@ function getUrlParam(url, name) {
   const { timeslots, durationMinutes } = sandbox.fetchAvailability("pilates");
   assert(durationMinutes === 60, "durationMinutes de pilates sin cambios");
   assert(timeslots.indexOf(new Date(ts).toISOString()) >= 0, "fetchAvailability('pilates') sigue ofreciendo la clase marcada en su propio calendario de disponibilidad");
+})();
+
+// ── Test 85: buildAddCalLinks — fix bug Yahoo (3 ago, reportado por Luis con cuenta Yahoo
+// real): calendar.yahoo.com NO soporta el sufijo "Z" como Google/Outlook — st/et se
+// interpretan como hora LOCAL literal (wall-clock). Cita real a las 15:45 CR (UTC-6) se
+// creaba en Yahoo a las 21:45 porque se le mandaba el timestamp UTC crudo. Google/Outlook/.ics
+// siguen en UTC sin cambios — solo Yahoo necesita la hora en clientTimezone.
+(function test85() {
+  console.log("Test 85: buildAddCalLinks — Yahoo usa la hora LOCAL de clientTimezone, no UTC (fix bug real 3 ago)");
+  const { sandbox } = freshCtx();
+
+  // Caso CR (UTC-6, sin DST): cita real reportada por Luis, 15:45 hora Costa Rica.
+  const apptInstantCR = new sandbox.Date(sandbox.Date.UTC(2026, 7, 12, 21, 45, 0)); // 15:45 CR
+  const linksCR = sandbox.buildAddCalLinks({
+    tipoCita: "followup",
+    idioma: "es",
+    primerNombre: "Luis",
+    apptInstant: apptInstantCR,
+    esVirtual: false,
+    token: "tok-85-cr",
+    durationMinutes: 45,
+    clientTimezone: "America/Costa_Rica",
+  });
+  assert(getUrlParam(linksCR.addCalYahooLink, "st") === "20260812T154500", "Yahoo CR: st = 15:45 LOCAL (la hora real de la cita), NO 21:45 (la hora UTC cruda del bug real)");
+  assert(getUrlParam(linksCR.addCalYahooLink, "et") === "20260812T163000", "Yahoo CR: et = 16:30 LOCAL, +45min sobre la hora local");
+  assert(getUrlParam(linksCR.addCalGoogleLink, "dates") === "20260812T214500Z/20260812T223000Z", "Google sigue en UTC básico sin cambios (regresión)");
+  assert(getUrlParam(linksCR.addCalOutlookLink, "startdt") === "2026-08-12T21:45:00Z", "Outlook sigue en UTC extendido sin cambios (regresión)");
+
+  // Caso zona horaria de EEUU (America/New_York, UTC-4 en agosto por DST): cliente en EEUU.
+  const apptInstantUTC = new sandbox.Date(sandbox.Date.UTC(2026, 7, 12, 18, 0, 0)); // 14:00 New York (EDT)
+  const linksNY = sandbox.buildAddCalLinks({
+    tipoCita: "initial",
+    idioma: "en",
+    primerNombre: "Jane",
+    apptInstant: apptInstantUTC,
+    esVirtual: true,
+    meetLink: "https://meet.google.com/abc-defg-hij",
+    token: "tok-85-ny",
+    durationMinutes: 60,
+    clientTimezone: "America/New_York",
+  });
+  assert(getUrlParam(linksNY.addCalYahooLink, "st") === "20260812T140000", "Yahoo EEUU: st = 14:00 LOCAL (America/New_York, EDT UTC-4), no 18:00 UTC");
+  assert(getUrlParam(linksNY.addCalYahooLink, "et") === "20260812T150000", "Yahoo EEUU: et = 15:00 LOCAL, +60min");
+  assert(getUrlParam(linksNY.addCalGoogleLink, "dates") === "20260812T180000Z/20260812T190000Z", "Google sigue en UTC básico sin cambios para el cliente de EEUU");
 })();
 
 console.log(`\n${passed} pasaron, ${failed} fallaron`);

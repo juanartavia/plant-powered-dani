@@ -3637,6 +3637,7 @@ function renderConfirmationEmail(params: {
     meetLink: params.meetLink,
     token: params.token,
     durationMinutes,
+    clientTimezone: displayZone,
   });
   template.addCalGoogleLink = addCalLinks.addCalGoogleLink;
   template.addCalOutlookLink = addCalLinks.addCalOutlookLink;
@@ -3796,6 +3797,12 @@ function buildAddCalLinks(params: {
   // getPilatesClassDurationMinutes, resuelta por el caller — renderConfirmationEmail — antes
   // de llegar acá). Nutrición sigue pasando su duración fija por tipo.
   durationMinutes: number;
+  // Fix bug Yahoo (validado por Luis, 3 ago): calendar.yahoo.com NO soporta el sufijo "Z" como
+  // Google/Outlook — interpreta st/et como hora LOCAL literal (wall-clock), sin conversión de
+  // zona horaria. Por eso el link de Yahoo, a diferencia de Google/Outlook/.ics, necesita la
+  // misma zona horaria que ya se le muestra al cliente en el correo (displayZone en
+  // renderConfirmationEmail) para no mandar la hora UTC cruda como si fuera local.
+  clientTimezone: string;
 }): { addCalGoogleLink: string; addCalOutlookLink: string; addCalYahooLink: string; addCalIcsLink: string } {
   const { summary, description, location } = buildEventContentParts(params);
   const endInstant = new Date(params.apptInstant.getTime() + params.durationMinutes * 60000);
@@ -3806,6 +3813,12 @@ function buildAddCalLinks(params: {
   // proveedores con dos parsers distintos para el mismo instante UTC.
   const toUtcBasic = (instant: Date) => Utilities.formatDate(instant, "Etc/UTC", "yyyyMMdd'T'HHmmss'Z'");
   const toUtcExtended = (instant: Date) => Utilities.formatDate(instant, "Etc/UTC", "yyyy-MM-dd'T'HH:mm:ss'Z'");
+  // Yahoo: mismo instante, pero formateado en la zona LOCAL de la cita y SIN sufijo "Z" — Yahoo
+  // lo toma literal como wall-clock, así que si le mandamos el valor UTC (como a Google) el
+  // evento le queda desplazado por el offset completo de la zona horaria (ver bug real: cita
+  // 15:45 CR/UTC-6 creada en Yahoo a las 21:45).
+  const toLocalBasic = (instant: Date) =>
+    Utilities.formatDate(instant, params.clientTimezone, "yyyyMMdd'T'HHmmss");
 
   const addCalGoogleLink = `https://calendar.google.com/calendar/render?${[
     "action=TEMPLATE",
@@ -3831,8 +3844,8 @@ function buildAddCalLinks(params: {
     "view=d",
     "type=20",
     `title=${encodeURIComponent(summary)}`,
-    `st=${toUtcBasic(params.apptInstant)}`,
-    `et=${toUtcBasic(endInstant)}`,
+    `st=${toLocalBasic(params.apptInstant)}`,
+    `et=${toLocalBasic(endInstant)}`,
     `desc=${encodeURIComponent(description)}`,
     `in_loc=${encodeURIComponent(location)}`,
   ].join("&")}`;
@@ -4956,3 +4969,4 @@ function installRemindersTrigger(): void {
   ScriptApp.newTrigger("sendRemindersJob").timeBased().everyHours(1).create();
   Logger.log('Trigger de tiempo instalado: "sendRemindersJob" corre cada hora.');
 }
+
