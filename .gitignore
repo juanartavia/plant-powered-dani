@@ -23,7 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-.clasp.json
+.clasp.json*
+.claspignore.bak
 backend/test-harness/out/
 
 # Recuperación temporal del frontend de US-31 (OneDrive version history) — no comitear
