@@ -269,7 +269,7 @@ const TIME_ZONE = "America/Costa_Rica";
 // Producción (Sprint 3, deploy bajo la cuenta real de Dani): actualizar este valor a la URL
 // pública del deployment de producción antes de ir en vivo — es un valor distinto al de
 // testing, generado en su propio `clasp deploy`.
-const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbxzU6YQzHeT0l7h5gFsVhXgDNr8cJK1HclFkOy3y_oS5CHfuqlc_bfXifmQEG9IAz7GJQ/exec";
+const WEB_APP_URL = "https://script.google.com/macros/s/AKfycbw_a1pDrypaNB7Z7mQUBtC3NHENP98DpBq_gUhEp5qI1XWteCuPEZf3xBYHTPKeUiie/exec";
 
 // ⚠️ US-44 (30 jul): sin uso activo en fetchAvailability desde que nutrición pasó al mismo
 // modelo aditivo de pilates (US-43) — la disponibilidad real ahora sale de los bloques que
@@ -331,6 +331,26 @@ function getDurationForType(type: string): number {
     throw new Error(`Tipo de cita no válido: "${type}"`);
   }
   return duration;
+}
+
+// Pendiente desde la reunión original con el cliente (P8 de Preguntas_Reunion_02-07-2026),
+// nunca implementado hasta ahora: NUTRICIÓN no ofrece modalidad virtual los sábados, solo
+// presencial. Aplica a los 3 tipos de cita de nutrición (measurement ya es presencial-only
+// siempre, así que en la práctica solo afecta a initial/followup). Pilates no se toca —
+// siempre es virtual, sin selector de modalidad, nunca pasa por esta función. "Sábado" se
+// evalúa en TIME_ZONE (hora del negocio), igual que el resto de las reglas de agendamiento
+// — nunca en la hora del cliente.
+function esSabadoEnZonaDelNegocio(date: Date): boolean {
+  return Utilities.formatDate(date, TIME_ZONE, "u") === "6";
+}
+
+// Defensa en profundidad (mismo patrón que assertMinimumAge/assertValidTipoId): el frontend
+// ya deshabilita "Virtual" en sábado, pero bookTimeslot/rescheduleBooking nunca deben confiar
+// solo en eso.
+function assertModalidadPermitida(modalidad: string, date: Date): void {
+  if (modalidad === "virtual" && esSabadoEnZonaDelNegocio(date)) {
+    throw new Error("VIRTUAL_NO_DISPONIBLE_SABADO");
+  }
 }
 
 function doGet(e: GoogleAppsScript.Events.DoGet): GoogleAppsScript.HTML.HtmlOutput | GoogleAppsScript.Content.TextOutput {
@@ -2627,6 +2647,14 @@ function bookTimeslot(
     throw new Error("VENTANA_MINIMA_NO_CUMPLIDA");
   }
 
+  // Sábados sin modalidad virtual (defensa en profundidad, ver assertModalidadPermitida) —
+  // solo aplica a nutrición, pilates siempre es virtual y no pasa por acá. Chequeado DESPUÉS
+  // de la ventana mínima a propósito: un horario que ni siquiera cumple la anticipación
+  // mínima debe rechazarse por esa razón primero, sin importar en qué día caiga.
+  if (type !== "pilates") {
+    assertModalidadPermitida(modalidad, startTime);
+  }
+
   // FIX 1 (US-10): Sheet primero, Calendar después. Si appendBookingToSheet falla (p. ej.
   // 'CLASE_LLENA'), no se crea ningún evento de Calendar — cumple la nota 4 del CLAUDE.md
   // ("función atómica: si falla Sheets, no crear evento en Calendar"). Antes era al revés
@@ -3151,6 +3179,14 @@ function rescheduleBooking(token: string, newTimeslot: string, clientTimezone: s
   const minBookingTime = new Date(new Date().getTime() + minBookingHours * 60 * 60 * 1000);
   if (newStart.getTime() <= minBookingTime.getTime()) {
     throw new Error("VENTANA_MINIMA_NO_CUMPLIDA");
+  }
+
+  // Mismo chequeo de sábado sin modalidad virtual que bookTimeslot (ver
+  // assertModalidadPermitida) — la modalidad no cambia al reagendar, así que se revalida
+  // contra la modalidad ORIGINAL de la cita y el horario NUEVO. Solo aplica a nutrición.
+  // Chequeado DESPUÉS de la ventana mínima, mismo criterio que bookTimeslot.
+  if (booking.sheetName !== "Pilates") {
+    assertModalidadPermitida(booking.modalidad, newStart);
   }
 
   const newFecha = Utilities.formatDate(newStart, TIME_ZONE, "yyyy-MM-dd");

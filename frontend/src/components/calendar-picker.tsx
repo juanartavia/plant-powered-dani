@@ -108,6 +108,8 @@ const STRINGS = {
       edadMinima:
         "Debes tener al menos 15 años cumplidos para agendar una cita.",
       fechaNacimientoRequerida: "Selecciona tu fecha de nacimiento.",
+      virtualNoDisponibleSabado:
+        "Los sábados solo atendemos citas presenciales. Por favor elige la modalidad presencial u otro día.",
     },
     form: {
       nombre: "Nombre",
@@ -126,6 +128,7 @@ const STRINGS = {
       selectPlaceholder: "Seleccionar...",
       presencial: "Presencial",
       virtual: "Virtual",
+      saturdayVirtualUnavailable: "Los sábados solo atendemos citas presenciales.",
     },
   },
   en: {
@@ -168,6 +171,8 @@ const STRINGS = {
       edadMinima:
         "You must be at least 15 years old to book an appointment.",
       fechaNacimientoRequerida: "Please select your date of birth.",
+      virtualNoDisponibleSabado:
+        "Saturdays are in-person only. Please choose the in-person modality or another day.",
     },
     form: {
       nombre: "First name",
@@ -186,6 +191,7 @@ const STRINGS = {
       selectPlaceholder: "Select...",
       presencial: "In-person",
       virtual: "Virtual",
+      saturdayVirtualUnavailable: "Saturdays are in-person only.",
     },
   },
 } as const;
@@ -218,6 +224,7 @@ const KNOWN_ERROR_MESSAGES = {
   SLOT_NO_DISPONIBLE: "slotNoDisponible",
   CLASE_LLENA: "claseLlena",
   EDAD_MINIMA_NO_CUMPLIDA: "edadMinima",
+  VIRTUAL_NO_DISPONIBLE_SABADO: "virtualNoDisponibleSabado",
 } as const;
 
 function getErrorMessage(
@@ -598,6 +605,7 @@ export function CalendarPicker() {
               clientEmail={clientEmail}
               defaultValues={confirmedClient ?? existingClient}
               defaultModalidad={confirmedModalidad}
+              selectedTimeSlot={selectedTimeSlot}
             />
           )}
         </CardContent>
@@ -864,6 +872,19 @@ export function CalendarTimeslotPicker({
 const MIN_AGE_YEARS = 15;
 const CR_TIME_ZONE = "America/Costa_Rica";
 
+// Pendiente desde la reunión original con el cliente (P8 de Preguntas_Reunion_02-07-2026):
+// NUTRICIÓN no ofrece modalidad virtual los sábados. Igual que MIN_AGE_YEARS arriba, esto es
+// solo UX — la barrera real vive en el backend (assertModalidadPermitida en bookTimeslot/
+// rescheduleBooking). "Sábado" se evalúa en CR_TIME_ZONE (hora del negocio), nunca en la del
+// navegador del cliente, para coincidir exactamente con el criterio del backend.
+function isSaturdayInBusinessTimezone(date: Date): boolean {
+  return (
+    new Intl.DateTimeFormat("en-US", { timeZone: CR_TIME_ZONE, weekday: "short" }).format(
+      date
+    ) === "Sat"
+  );
+}
+
 // Fecha máxima seleccionable en el input de fecha de nacimiento: "hoy menos MIN_AGE_YEARS
 // años", calculada en zona horaria de Costa Rica. SOLO aritmética de año/mes/día como
 // strings/números — sin restar años sobre un objeto Date (mismo criterio que calculateAge
@@ -968,6 +989,7 @@ function ContactForm({
   clientEmail,
   defaultValues,
   defaultModalidad,
+  selectedTimeSlot,
 }: {
   handleSubmit: (e: React.FormEvent<HTMLFormElement>) => void;
   type: string;
@@ -975,12 +997,17 @@ function ContactForm({
   clientEmail: string;
   defaultValues: ClientRecord | null;
   defaultModalidad: string;
+  selectedTimeSlot: Date | undefined;
 }) {
   // measurement → siempre presencial; pilates → siempre virtual.
   // Para initial y followup el cliente elige.
   const showModalidad = type === "initial" || type === "followup";
   const autoModalidad =
     type === "measurement" ? "presencial" : type === "pilates" ? "virtual" : "";
+  // Sábado sin modalidad virtual (nutrición, ver isSaturdayInBusinessTimezone) — solo puede
+  // ser true cuando showModalidad ya es true (measurement/pilates no muestran este selector).
+  const virtualBlockedSaturday =
+    showModalidad && !!selectedTimeSlot && isSaturdayInBusinessTimezone(selectedTimeSlot);
   const t = STRINGS[uiLanguage].form;
   const tErrors = STRINGS[uiLanguage].errors;
   const dateFnsLocale = uiLanguage === "es" ? { locale: esLocale } : undefined;
@@ -1159,15 +1186,26 @@ function ContactForm({
             id="modalidad"
             name="modalidad"
             required
-            defaultValue={defaultModalidad}
+            defaultValue={
+              virtualBlockedSaturday && defaultModalidad === "virtual"
+                ? ""
+                : defaultModalidad
+            }
             className={selectClassName}
           >
             <option value="" disabled>
               {t.selectPlaceholder}
             </option>
             <option value="presencial">{t.presencial}</option>
-            <option value="virtual">{t.virtual}</option>
+            <option value="virtual" disabled={virtualBlockedSaturday}>
+              {t.virtual}
+            </option>
           </select>
+          {virtualBlockedSaturday && (
+            <p className="text-sm text-muted-foreground">
+              {t.saturdayVirtualUnavailable}
+            </p>
+          )}
         </div>
       ) : (
         <input type="hidden" name="modalidad" value={autoModalidad} />

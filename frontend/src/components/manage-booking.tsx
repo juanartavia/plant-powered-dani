@@ -105,6 +105,8 @@ const STRINGS = {
       CLASE_LLENA:
         "Esa clase de pilates ya está llena. Por favor elige otro horario disponible.",
       ASISTENCIA_SOLO_NUTRICION: "Esta opción solo aplica para citas de nutrición.",
+      VIRTUAL_NO_DISPONIBLE_SABADO:
+        "Los sábados solo atendemos citas presenciales, así que esta cita virtual no se puede reagendar a un sábado. Por favor elige otro día u horario.",
       default: "Ocurrió un error inesperado. Por favor intenta de nuevo o contáctanos directamente.",
     },
   },
@@ -155,6 +157,8 @@ const STRINGS = {
       CLASE_LLENA:
         "That pilates class is now full. Please choose another available time.",
       ASISTENCIA_SOLO_NUTRICION: "This option only applies to nutrition appointments.",
+      VIRTUAL_NO_DISPONIBLE_SABADO:
+        "Saturdays are in-person only, so this virtual appointment can't be rescheduled to a Saturday. Please choose another day or time.",
       default: "Something went wrong. Please try again or contact us directly.",
     },
   },
@@ -169,6 +173,7 @@ const KNOWN_ERROR_CODES = [
   "SLOT_NO_DISPONIBLE",
   "CLASE_LLENA",
   "ASISTENCIA_SOLO_NUTRICION",
+  "VIRTUAL_NO_DISPONIBLE_SABADO",
 ] as const;
 
 function getManageErrorMessage(

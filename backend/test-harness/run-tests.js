@@ -52,6 +52,57 @@ function isoInHours(h) {
   return new Date(Date.now() + h * 3600000).toISOString();
 }
 
+// Busca el próximo sábado (hora de negocio CR) que caiga al menos `minHours` horas en el
+// futuro, fijado a las 10:00 CR — usado por las pruebas de la restricción "sábados sin
+// modalidad virtual" (nutrición). CR es UTC-6 fijo sin DST (ver TZ_OFFSET_HOURS en
+// gas-mock.js), así que 10:00 CR = 16:00 UTC.
+function isoNextSaturdayAtLeastHours(minHours) {
+  const minInstant = Date.now() + minHours * 3600000;
+  let candidate = new Date(minInstant);
+  for (let i = 0; i < 21; i++) {
+    const fechaStr = formatDate(candidate, "America/Costa_Rica", "yyyy-MM-dd");
+    const weekday = formatDate(candidate, "America/Costa_Rica", "u"); // "6" = sábado
+    if (weekday === "6") {
+      const [y, mo, da] = fechaStr.split("-").map(Number);
+      const instant = new Date(Date.UTC(y, mo - 1, da, 16, 0, 0));
+      if (instant.getTime() >= minInstant) return instant.toISOString();
+    }
+    candidate = new Date(candidate.getTime() + 24 * 3600000);
+  }
+  throw new Error("isoNextSaturdayAtLeastHours: no se encontró un sábado válido en el rango de búsqueda");
+}
+
+// isoInHours, pero garantiza que el instante resultante NUNCA caiga en sábado (hora de
+// negocio CR) — usado por pruebas PREEXISTENTES que reagendan varias veces en modalidad
+// virtual con offsets fijos (Tests 40/41): sin esto, el offset fijo podía chocar de forma
+// incidental con la nueva restricción de "sábados sin modalidad virtual" dependiendo de en
+// qué día real se corra el harness. Solo empuja +24hrs si hace falta, nunca resta.
+function isoInHoursAvoidingSaturday(h) {
+  let d = new Date(Date.now() + h * 3600000);
+  while (formatDate(d, "America/Costa_Rica", "u") === "6") {
+    d = new Date(d.getTime() + 24 * 3600000);
+  }
+  return d.toISOString();
+}
+
+// Mismo criterio que isoNextSaturdayAtLeastHours, pero busca un día de LUNES A VIERNES (hora
+// de negocio CR) — usado por la prueba de regresión "martes-viernes sigue permitido".
+function isoNextWeekdayAtLeastHours(minHours) {
+  const minInstant = Date.now() + minHours * 3600000;
+  let candidate = new Date(minInstant);
+  for (let i = 0; i < 21; i++) {
+    const fechaStr = formatDate(candidate, "America/Costa_Rica", "yyyy-MM-dd");
+    const weekday = Number(formatDate(candidate, "America/Costa_Rica", "u")); // 1=lunes...7=domingo
+    if (weekday >= 1 && weekday <= 5) {
+      const [y, mo, da] = fechaStr.split("-").map(Number);
+      const instant = new Date(Date.UTC(y, mo - 1, da, 16, 0, 0));
+      if (instant.getTime() >= minInstant) return instant.toISOString();
+    }
+    candidate = new Date(candidate.getTime() + 24 * 3600000);
+  }
+  throw new Error("isoNextWeekdayAtLeastHours: no se encontró un día de semana válido en el rango de búsqueda");
+}
+
 // Simula la coerción REAL de Google Sheets sobre las celdas fecha/hora de una cita (bug
 // confirmado en producción, 21 jul: una fila measurement con fecha=2026-07-23/hora=10:00
 // no disparó su recordatorio de 48hrs pese a estar dentro de la ventana). El mock de este
@@ -1160,17 +1211,17 @@ function findAlertaReagendamientos(sandbox) {
   const row = findTokenRow(nutSheet, token);
 
   sandbox.__sentEmails = [];
-  sandbox.rescheduleBooking(token, isoInHours(520), "America/Costa_Rica"); // 1er reagendamiento
+  sandbox.rescheduleBooking(token, isoInHoursAvoidingSaturday(520), "America/Costa_Rica"); // 1er reagendamiento
   assert(!findAlertaReagendamientos(sandbox), "el 1er reagendamiento no dispara la alerta");
   assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 1, "contador_reagendamientos (col 24) queda en 1");
 
   sandbox.__sentEmails = [];
-  sandbox.rescheduleBooking(token, isoInHours(540), "America/Costa_Rica"); // 2do reagendamiento
+  sandbox.rescheduleBooking(token, isoInHoursAvoidingSaturday(540), "America/Costa_Rica"); // 2do reagendamiento
   assert(!findAlertaReagendamientos(sandbox), "el 2do reagendamiento tampoco dispara la alerta");
   assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 2, "contador_reagendamientos sube a 2");
 
   sandbox.__sentEmails = [];
-  sandbox.rescheduleBooking(token, isoInHours(560), "America/Costa_Rica"); // 3er reagendamiento
+  sandbox.rescheduleBooking(token, isoInHoursAvoidingSaturday(560), "America/Costa_Rica"); // 3er reagendamiento
   assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 3, "contador_reagendamientos sube a 3");
 
   const alerta = findAlertaReagendamientos(sandbox);
@@ -1196,12 +1247,12 @@ function findAlertaReagendamientos(sandbox) {
   const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
   const row = findTokenRow(nutSheet, token);
 
-  sandbox.rescheduleBooking(token, isoInHours(520), "America/Costa_Rica"); // 1ro
-  sandbox.rescheduleBooking(token, isoInHours(540), "America/Costa_Rica"); // 2do
-  sandbox.rescheduleBooking(token, isoInHours(560), "America/Costa_Rica"); // 3ro — ya dispara
+  sandbox.rescheduleBooking(token, isoInHoursAvoidingSaturday(520), "America/Costa_Rica"); // 1ro
+  sandbox.rescheduleBooking(token, isoInHoursAvoidingSaturday(540), "America/Costa_Rica"); // 2do
+  sandbox.rescheduleBooking(token, isoInHoursAvoidingSaturday(560), "America/Costa_Rica"); // 3ro — ya dispara
 
   sandbox.__sentEmails = [];
-  sandbox.rescheduleBooking(token, isoInHours(580), "America/Costa_Rica"); // 4to
+  sandbox.rescheduleBooking(token, isoInHoursAvoidingSaturday(580), "America/Costa_Rica"); // 4to
   assert(nutSheet.getRange(row, 24, 1, 1).getValue() === 4, "contador_reagendamientos sube a 4");
   const alerta4 = findAlertaReagendamientos(sandbox);
   assert(!!alerta4, "el 4to reagendamiento dispara la alerta DE NUEVO");
@@ -2201,6 +2252,116 @@ function getUrlParam(url, name) {
   assert(getUrlParam(linksNY.addCalYahooLink, "st") === "20260812T140000", "Yahoo EEUU: st = 14:00 LOCAL (America/New_York, EDT UTC-4), no 18:00 UTC");
   assert(getUrlParam(linksNY.addCalYahooLink, "et") === "20260812T150000", "Yahoo EEUU: et = 15:00 LOCAL, +60min");
   assert(getUrlParam(linksNY.addCalGoogleLink, "dates") === "20260812T180000Z/20260812T190000Z", "Google sigue en UTC básico sin cambios para el cliente de EEUU");
+})();
+
+// ── Test 86: sábados sin modalidad virtual (nutrición) — pendiente desde la reunión original ──
+// con el cliente (P8 de Preguntas_Reunion_02-07-2026), nunca implementado hasta ahora. Solo
+// afecta a NUTRICIÓN (initial/followup) los sábados — measurement ya es presencial-only
+// siempre, y pilates no se toca (siempre virtual, sin selector de modalidad).
+(function test86() {
+  console.log("Test 86: nutrición (initial) + sábado + virtual → rechazado con VIRTUAL_NO_DISPONIBLE_SABADO");
+  const { sandbox } = freshCtx();
+  const saturdayIso = isoNextSaturdayAtLeastHours(72);
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const rowsBefore = nutSheet.data.length;
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "initial", saturdayIso, "Sofia", "Rojas", "sofia86@test.com", "8888-1111", "cedula", "1-1111-1111",
+      "1990-01-01", "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "VIRTUAL_NO_DISPONIBLE_SABADO", "lanza VIRTUAL_NO_DISPONIBLE_SABADO");
+  assert(nutSheet.data.length === rowsBefore, "no se escribe ninguna fila en Nutrición (rechazado antes de tocar el Sheet)");
+  assert((sandbox.__sentEmails || []).length === 0, "no se envía ningún correo (ni confirmación ni notificación interna)");
+})();
+
+// ── Test 87: mismo bloqueo para "followup" (regresión de tipo — measurement ya era ─────────
+// presencial-only siempre, así que no hace falta un caso aparte para él).
+(function test87() {
+  console.log("Test 87: nutrición (followup) + sábado + virtual → rechazado con VIRTUAL_NO_DISPONIBLE_SABADO");
+  const { sandbox } = freshCtx();
+  const saturdayIso = isoNextSaturdayAtLeastHours(72);
+  let threw = null;
+  try {
+    sandbox.bookTimeslot(
+      "followup", saturdayIso, "Carlos", "Mora", "carlos87@test.com", "8888-2222", "cedula", "1-2222-2222",
+      "1990-01-01", "es", "virtual", "America/Costa_Rica"
+    );
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "VIRTUAL_NO_DISPONIBLE_SABADO", "followup también se bloquea en sábado + virtual");
+})();
+
+// ── Test 88: sábado + PRESENCIAL → sigue permitido, sin cambios ────────────────────────────
+(function test88() {
+  console.log("Test 88: nutrición + sábado + presencial → permitido, sin cambios");
+  const { sandbox } = freshCtx();
+  const saturdayIso = isoNextSaturdayAtLeastHours(72);
+  const token = sandbox.bookTimeslot(
+    "initial", saturdayIso, "Laura", "Vindas", "laura88@test.com", "8888-3333", "cedula", "1-3333-3333",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  assert(!!token, "se agenda exitosamente un sábado en modalidad presencial");
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  assert(row > 0, "la fila queda escrita en Nutrición");
+  assert(nutSheet.getRange(row, 13, 1, 1).getValue() === "presencial", "modalidad guardada como presencial");
+})();
+
+// ── Test 89: martes a viernes + virtual → sin cambios, sigue permitido (regresión explícita) ─
+(function test89() {
+  console.log("Test 89: nutrición + lunes-viernes + virtual → sigue permitido (regresión explícita)");
+  const { sandbox } = freshCtx();
+  const weekdayIso = isoNextWeekdayAtLeastHours(72);
+  const token = sandbox.bookTimeslot(
+    "initial", weekdayIso, "Marco", "Solano", "marco89@test.com", "8888-4444", "cedula", "1-4444-4444",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  assert(!!token, "sigue permitido agendar virtual entre semana, sin ningún cambio de comportamiento");
+})();
+
+// ── Test 90: reagendar una cita VIRTUAL hacia un sábado → bloqueado igual que agendar ───────
+(function test90() {
+  console.log("Test 90: reagendar una cita virtual hacia un sábado → rechazado con VIRTUAL_NO_DISPONIBLE_SABADO");
+  const { sandbox } = freshCtx();
+  // Cita original entre semana, bien lejos (>24hrs) para no chocar con CANCELLATION_HOURS.
+  const weekdayIso = isoNextWeekdayAtLeastHours(200);
+  const token = sandbox.bookTimeslot(
+    "initial", weekdayIso, "Paula", "Jimenez", "paula90@test.com", "8888-5555", "cedula", "1-5555-5555",
+    "1990-01-01", "es", "virtual", "America/Costa_Rica"
+  );
+  const saturdayIso = isoNextSaturdayAtLeastHours(72);
+  let threw = null;
+  try {
+    sandbox.rescheduleBooking(token, saturdayIso, "America/Costa_Rica");
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw === "VIRTUAL_NO_DISPONIBLE_SABADO", "reagendar hacia un sábado con modalidad virtual se bloquea igual que agendar");
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Agendada", "el estado de la cita original NO cambia — el reagendamiento se bloqueó por completo");
+})();
+
+// ── Test 91: reagendar una cita PRESENCIAL hacia un sábado → sigue permitido, sin cambios ──
+(function test91() {
+  console.log("Test 91: reagendar una cita presencial hacia un sábado → permitido, sin cambios");
+  const { sandbox } = freshCtx();
+  const weekdayIso = isoNextWeekdayAtLeastHours(200);
+  const token = sandbox.bookTimeslot(
+    "initial", weekdayIso, "Ricardo", "Alfaro", "ricardo91@test.com", "8888-6666", "cedula", "1-6666-6666",
+    "1990-01-01", "es", "presencial", "America/Costa_Rica"
+  );
+  const saturdayIso = isoNextSaturdayAtLeastHours(72);
+  const returnedToken = sandbox.rescheduleBooking(token, saturdayIso, "America/Costa_Rica");
+  assert(returnedToken === token, "reagendar una cita presencial hacia un sábado sigue permitido sin cambios");
+  const nutSheet = sandbox.SpreadsheetApp.openById().getSheetByName("Nutrición");
+  const row = findTokenRow(nutSheet, token);
+  assert(nutSheet.getRange(row, 16, 1, 1).getValue() === "Reagendada", "estado pasa a 'Reagendada'");
 })();
 
 console.log(`\n${passed} pasaron, ${failed} fallaron`);
