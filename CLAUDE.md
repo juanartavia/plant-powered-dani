@@ -656,6 +656,8 @@ backend/package.json → "build": "tsc && node copy-to-dist.js"
 ```
 **`copy-to-dist.js` NO copia `appsscript.json`** — copiar manualmente de la raíz a `dist/` ANTES del primer `clasp push` en cuentas nuevas (nota #49-preprod).
 
+**`copy-to-dist.js` SÍ copia `frontend/dist/index.html` → `dist/index.html` automáticamente (fix 7 ago) — YA NO hace falta ningún `cp`/`copy` manual del portal antes de `clasp push`.** El portal (`frontend/`) se compila aparte con `vite build` hacia `frontend/dist/index.html` (single file, `vite-plugin-singlefile`) — un folder totalmente distinto del `dist/` raíz que lee `clasp push` (`rootDir` en `.clasp.json`). Antes de este fix, correr solo `backend: npm run build` dejaba `dist/index.html` intacto con lo que hubiera ahí antes, y `clasp push` publicaba un portal viejo en silencio aunque el backend sí se hubiera actualizado — así se coló en real el fix de sábados sin modalidad virtual. Orden obligatorio: `frontend: npm run build` ANTES que `backend: npm run build` — si `frontend/dist/index.html` no existe, `copy-to-dist.js` ahora **falla fuerte** con un error explícito en vez de copiar algo viejo o saltarse el paso.
+
 **Scope de manifest:** `https://mail.google.com/` agregado en US-37. Scope OAuth nuevo requiere autorización manual una vez. US-43 a US-49 no requirieron scope nuevo.
 
 ### Test harness
@@ -960,7 +962,9 @@ Por `executeAs: USER_DEPLOYING`, el alias debe estar verificado en la cuenta que
 ### Deployment existente
 ```powershell
 cd C:\dev\plant-powered-dani
-cd backend
+cd frontend
+npm run build
+cd ..\backend
 npm run build
 cd ..
 clasp push
@@ -970,6 +974,8 @@ git add .
 git commit -m "descripción"
 git push
 ```
+**Orden obligatorio: `frontend: npm run build` SIEMPRE antes que `backend: npm run build`.** Desde el fix del 7 ago, `copy-to-dist.js` copia `frontend/dist/index.html` → `dist/index.html` automáticamente como parte del build de `backend/` — ya NO hace falta ningún `cp`/`copy` manual del portal. Si `frontend/dist/index.html` no existe (frontend nunca compilado, o carpeta borrada), el build de `backend/` falla fuerte con un error explícito en vez de dejar `dist/index.html` viejo y publicarlo en silencio con `clasp push`.
+
 Claude Code puede correr toda la secuencia con acceso a terminal.
 
 ### Cuenta nueva desde cero
@@ -980,7 +986,7 @@ Claude Code puede correr toda la secuencia con acceso a terminal.
 # 3. clasp login
 # 4. clasp create --type standalone --title "TITULO" --rootDir ./dist
 # 5. CRÍTICO: copy appsscript.json dist\appsscript.json
-# 6. cd backend; npm run build; cd ..; clasp push
+# 6. cd frontend; npm run build; cd ..\backend; npm run build; cd ..; clasp push
 # 7. Script Properties: CALENDARS (con [""]), NUTRICION_AVAILABILITY_CALENDAR_ID,
 #    PILATES_CALENDAR_ID, PILATES_AVAILABILITY_CALENDAR_ID, DANI_EMAIL,
 #    INSTRUCTORA_EMAIL, ALI_EMAIL (y PILATES_SENDER_EMAIL si Opción B)
@@ -994,7 +1000,7 @@ Claude Code puede correr toda la secuencia con acceso a terminal.
 ```
 
 ### Notas importantes
-`C:\dev\plant-powered-dani`, nunca OneDrive. `&&` no funciona en PowerShell nativo. `rootDir` en `dist/`. Siempre push antes de deploy. `-V` explícito siempre. `copy-to-dist.js` no copia `appsscript.json`. Copiar/pegar `deploymentId`. Código del editor web: JS puro, sin TypeScript.
+`C:\dev\plant-powered-dani`, nunca OneDrive. `&&` no funciona en PowerShell nativo. `rootDir` en `dist/`. Siempre push antes de deploy. `-V` explícito siempre. `copy-to-dist.js` no copia `appsscript.json` (seguir copiándolo a mano en cuentas nuevas), pero desde el 7 ago SÍ copia `frontend/dist/index.html` automáticamente (build de `frontend/` siempre ANTES que el de `backend/`, o el build de `backend/` falla fuerte). Copiar/pegar `deploymentId`. Código del editor web: JS puro, sin TypeScript.
 
 ---
 
